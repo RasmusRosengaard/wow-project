@@ -1,3 +1,4 @@
 requests>=2.31
 pyarrow>=15
 duckdb>=0.10
+pytest>=8
