@@ -17,7 +17,30 @@ Business model (decided, don't revisit without the human): free in-game addon
 (Blizzard requires addons to be free) + paid external data service — Discord
 alerts, dashboards, custom filters. The TSM / Raider.IO pattern. Competitors: TSM
 (coarse regional sale rates, hostile UX), Saddlebag Exchange (alerts). Our edge:
-validated per-realm liquidity + appearance-level intelligence.
+validated sell-realm liquidity + cross-realm snipe routing + appearance-level
+intelligence.
+
+## Market structure (Warbands — decided 2026-07-18, core to the product)
+
+Since The War Within, the warband bank makes **gold account-wide** and lets
+**unsoulbound BoE items move between a player's characters on any realm**. The
+gear/transmog AH is still per connected realm (separate listings, buyer pools,
+prices) — so cheap listings rot on low-pop realms while hubs pay full price.
+That asymmetry IS the product:
+
+- The user picks **sell realms** (their high/full-pop hub realms). We run full
+  snapshot-diff sale inference there → real sold-price percentiles + sales/day.
+- A lightweight **region scanner** sweeps every other EU connected realm's
+  current listings (no sale inference needed on the buy side).
+- **Validated snipe** = a listing on any realm priced well below the sell
+  realm's sold-price percentile for that item/variant, on an item that is
+  liquid there — net of the 5% AH cut and transfer friction.
+- Caveat to model later: not every item survives the warband-bank route
+  (warbound / BoP); the appearance layer needs a per-item transferability flag.
+
+Rate-limit math holds: deep collection ~6 req/h per sell realm; scanning all
+~100 EU connected realms hourly is ~100 dumps/h against a 36,000 req/h limit.
+Buy-side scans don't need snapshot history — latest listings per realm suffice.
 
 **Current phase: 0 — prove the sale-inference signal is real before building more.**
 
@@ -169,11 +192,20 @@ python analyze.py --cr-id 1096 item 152510 --price 2500000   # copper
    **Gate: only proceed to Phase 1 if liquid-item per_day lands within ~2x of
    TSM and the relist heuristic caught the test repost.**
 
-### Phase 1 — hardening
-Retention (compact snapshots older than ~7 days into daily per-item aggregates
-before deleting), multi-realm config, systemd unit / Windows Task Scheduler
-examples in README, `--since` flag for incremental diffing if event rebuilds get
-slow.
+### Phase 1 — cross-realm engine + hardening
+The Warbands market structure (see section above) drives this phase:
+- Config split: **sell realms** (deep hourly snapshots + sale inference, as
+  today) vs **scan realms** (everything else in the region).
+- Region scanner: sweep all other EU connected realms, keep only the *latest*
+  listings per realm (`data/listings/{cr_id}.parquet`, overwritten each sweep —
+  no history, no diffing on the buy side).
+- First snipe-check CLI: join scan-realm listings against sell-realm sold-price
+  percentiles + sales/day; flag listings below a discount threshold net of the
+  5% AH cut. This is the end-to-end "validated snipe" proof.
+- Hardening carried over: retention on sell-realm snapshots (compact >7 days
+  into daily per-item aggregates before deleting), systemd unit / Windows Task
+  Scheduler examples in README, `--since` flag for incremental diffing if event
+  rebuilds get slow.
 
 ### Phase 2 — commodities feed
 Region-wide collector + quantity-delta inference (see API facts). Separate
@@ -182,13 +214,16 @@ schema; do not force gear and commodities into one table.
 ### Phase 3 — appearance layer
 itemId → appearanceId via wago.tools DB2 exports (`ItemModifiedAppearance`),
 cached locally; static API as fallback. Per appearance: count of source items,
-obtainability flag (manual curation acceptable at first), region-wide AH
-scarcity. This is the differentiator — design the schema carefully.
+obtainability flag (manual curation acceptable at first), **warband
+transferability flag** (warbound / BoP items can't ride the warband bank to a
+sell realm), region-wide AH scarcity. This is the differentiator — design the
+schema carefully.
 
 ### Phase 4 — deal score + Discord alerts (first paid feature)
-Score = f(discount vs sold-price percentile, sales_per_day, appearance
-scarcity). Webhook alert engine with per-user watchlist config. Payments require
-the human's explicit ToS sign-off first.
+Score = f(discount vs the *sell realm's* sold-price percentile net of 5% AH
+cut, sell-realm sales_per_day, appearance scarcity), attached to a route: buy
+realm → sell realm. Webhook alert engine with per-user config (their sell
+realms + watchlist). Payments require the human's explicit ToS sign-off first.
 
 ### Phase 5 — free companion addon + web dashboard
 Addon overlays Deal Score on tooltips/sniper results (free, per Blizzard

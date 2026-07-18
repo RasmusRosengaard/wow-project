@@ -84,10 +84,16 @@ against TSM's regional sale rate. Same order of magnitude = signal is real.
 
 ## Roadmap once the signal validates
 
-Region commodity feed (`/data/wow/auctions/commodities`) → appearance-scarcity
-layer (ItemModifiedAppearance mappings via wago.tools + the static item API) →
-deal score (discount vs. sold-percentile × liquidity × appearance rarity) →
-Discord webhook alerts (first paid feature) → web dashboard.
+Warbands changed the game: gold is account-wide and unsoulbound BoEs move
+between realms via the warband bank, but the gear AH is still per realm — cheap
+listings rot on low-pop realms while hub realms pay full price. So the plan:
+
+Cross-realm snipe engine (scan every EU realm's listings, validate against
+*sold* prices on your chosen high-pop sell realms, net of the 5% AH cut) →
+region commodity feed (`/data/wow/auctions/commodities`) → appearance-scarcity
+layer (ItemModifiedAppearance mappings via wago.tools + the static item API,
+plus a warband-transferability flag) → deal score with buy-realm → sell-realm
+routing → Discord webhook alerts (first paid feature) → web dashboard.
 
 ## Notes
 
