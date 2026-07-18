@@ -35,21 +35,23 @@ validated per-realm liquidity + appearance-level intelligence.
 - No "WoW"/"Warcraft" in product branding; "for World of Warcraft" as a
   description is the accepted form.
 
-## Current state (as of handoff)
+## Current state (updated 2026-07-18, Phase 0 tasks 1–3 done)
 
 | File | Purpose |
 |---|---|
 | `blizz.py` | `.env` loader, OAuth client-credentials token, `api_get()`, realm-slug → connected-realm-id lookup |
-| `fetch_snapshot.py` | Collector CLI: polls one connected realm, writes hourly parquet snapshots (If-Modified-Since aware) |
+| `fetch_snapshot.py` | Collector CLI: polls one connected realm, writes hourly parquet snapshots (If-Modified-Since aware); logs to console + rotating `data/logs/collector.log`, backs off on 429/5xx, skips malformed-JSON bodies |
+| `tests/test_diff.py` | pytest suite for `classify_pair`: all five classifications, oversized-gap downgrade, relist-consumption edges (`pytest -q`; root `conftest.py` makes top-level modules importable) |
 | `diff_snapshots.py` | **Core IP.** Diffs consecutive snapshots, classifies every vanished auction, writes events parquet |
 | `analyze.py` | DuckDB CLI: liquidity summary + per-item sold-price distribution / percentile check |
 | `requirements.txt` | `requests`, `pyarrow`, `duckdb` (Python 3.10+) |
 | `.env.example` | `BLIZZ_CLIENT_ID`, `BLIZZ_CLIENT_SECRET`, `BLIZZ_REGION=eu` |
 
-Verified: full pipeline runs green on synthetic fixtures covering all five
-classifications (see Phase 0 task 2). **Never run against the live API yet** —
-needs the human's credentials and a 48h collection window.
-Not yet present: git repo, tests/, logging, retention, CI.
+Verified: `pytest -q` green (11 tests covering all five classifications and the
+edge cases in Phase 0 task 2). **Never run against the live API yet** — needs
+the human's credentials and a 48h collection window.
+Not yet present: retention, CI. Next up: task 4 (blocked on the human's 48h
+run + in-game verification protocol).
 
 ## Architecture & data layout
 

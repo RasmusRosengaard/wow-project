@@ -23,6 +23,8 @@ summaries: sales/day, sold-price percentiles, sell-through, current cheapest.
    pip install -r requirements.txt
    ```
 3. `cp .env.example .env` and paste in your ID/secret. Never commit `.env`.
+4. Optional sanity check (no API calls): `pytest -q` — the inference logic's
+   test suite should pass.
 
 ## Run
 
@@ -42,7 +44,9 @@ python analyze.py --cr-id 1096 item 152510 --price 2500000   # price in copper
 
 The loop polls every 10 min but only downloads when Blizzard publishes a new
 hourly dump (`If-Modified-Since`), so it's ~6 tiny requests/hour against a
-36,000/hour limit. A big EU realm produces roughly 50–100k non-commodity
+36,000/hour limit. The collector survives errors (retries with backoff on
+429/5xx, skips garbled responses) and logs to the console plus a rotating
+`data/logs/collector.log`. A big EU realm produces roughly 50–100k non-commodity
 auctions per snapshot; zstd parquet keeps 48h of data in the tens of MB.
 Prices are in **copper** (10,000 copper = 1 gold).
 
