@@ -40,6 +40,9 @@ python fetch_snapshot.py --cr-id 1096 --loop
 python diff_snapshots.py --cr-id 1096
 python analyze.py --cr-id 1096 summary
 python analyze.py --cr-id 1096 item 152510 --price 2500000   # price in copper
+
+# 4. Verification: trace your test items to see how each vanish was classified
+python analyze.py --cr-id 1096 trace <test_item_id>
 ```
 
 The loop polls every 10 min but only downloads when Blizzard publishes a new

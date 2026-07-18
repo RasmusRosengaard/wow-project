@@ -64,7 +64,7 @@ Buy-side scans don't need snapshot history — latest listings per realm suffice
 |---|---|
 | `blizz.py` | `.env` loader, OAuth client-credentials token, `api_get()`, realm-slug → connected-realm-id lookup |
 | `fetch_snapshot.py` | Collector CLI: polls one connected realm, writes hourly parquet snapshots (If-Modified-Since aware); logs to console + rotating `data/logs/collector.log`, backs off on 429/5xx, skips malformed-JSON bodies |
-| `tests/test_diff.py` | pytest suite for `classify_pair`: all five classifications, oversized-gap downgrade, relist-consumption edges (`pytest -q`; root `conftest.py` makes top-level modules importable) |
+| `tests/` | pytest suite (`pytest -q`; root `conftest.py` makes top-level modules importable). `test_diff.py`: all five classifications + gap/relist edges. `test_fetch.py`: `bonus_key`/`rows` purity, backoff, malformed-JSON skip. `test_pipeline.py`: snapshots-on-disk → `diff_snapshots.main()` → analyze commands, incl. idempotent rebuild |
 | `diff_snapshots.py` | **Core IP.** Diffs consecutive snapshots, classifies every vanished auction, writes events parquet |
 | `analyze.py` | DuckDB CLI: liquidity summary + per-item sold-price distribution / percentile check |
 | `requirements.txt` | `requests`, `pyarrow`, `duckdb` (Python 3.10+) |
@@ -158,6 +158,7 @@ python fetch_snapshot.py --cr-id 1096 --loop        # collect (48h+)
 python diff_snapshots.py --cr-id 1096               # build events
 python analyze.py --cr-id 1096 summary --top 30
 python analyze.py --cr-id 1096 item 152510 --price 2500000   # copper
+python analyze.py --cr-id 1096 trace 152510   # per-auction classifications (verification)
 ```
 
 ## Human-only tasks (never attempt; ask and wait)

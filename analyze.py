@@ -9,6 +9,11 @@
       Sold-price distribution for one item; --price (in COPPER) tells you what
       percentile a candidate snipe sits at among *actual* inferred sales.
 
+  python analyze.py --cr-id 1096 trace 152510
+      Every disappearance event for one item, in time order — how each vanished
+      auction was classified. Built for the verification protocol: post/cancel/
+      buy your test items, then trace them here to check the classifications.
+
 Prices print in gold (1g = 10,000 copper). Item names: wowhead.com/item=<id>
 """
 import argparse
@@ -91,6 +96,20 @@ def cmd_item(con: duckdb.DuckDBPyConnection, item_id: int, price: float | None) 
                   f"SOLD prices (lower = better snipe)")
 
 
+def cmd_trace(con: duckdb.DuckDBPyConnection, item_id: int) -> None:
+    con.sql(f"""
+        SELECT strftime(to_timestamp(ts), '%Y-%m-%d %H:%M') AS vanished_at_utc,
+               auction_id,
+               classification,
+               round(unit_price / 10000.0, 2)               AS unit_g,
+               quantity,
+               time_left                                    AS last_seen_bucket,
+               gap_seconds
+        FROM ev WHERE item_id = {int(item_id)}
+        ORDER BY ts, auction_id
+    """).show()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -101,13 +120,17 @@ def main() -> None:
     i = sub.add_parser("item")
     i.add_argument("item_id", type=int)
     i.add_argument("--price", type=float, help="candidate price in copper")
+    t = sub.add_parser("trace")
+    t.add_argument("item_id", type=int)
     args = ap.parse_args()
 
     con = connect(args.cr_id)
     if args.cmd == "summary":
         cmd_summary(con, args.top)
-    else:
+    elif args.cmd == "item":
         cmd_item(con, args.item_id, args.price)
+    else:
+        cmd_trace(con, args.item_id)
 
 
 if __name__ == "__main__":
