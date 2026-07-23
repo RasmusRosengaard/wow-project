@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Auction House API Log — AH Snipe Dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14170f; --panel: #1b1f15; --panel-raised: #23281a;
+    --border: #3a4029; --border-bright: #565f38;
+    --text: #eef0e6; --text-dim: #97a084;
+    --toxic: #a6e600; --toxic-dim: #7fb300; --brass: #c9963e; --ember: #ff7a45; --gold: #ffd651;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.05), transparent 60%);
+    min-height: 100vh; margin: 0; padding: 1.5rem;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.1rem; }
+  h1 { font-size: 1.3rem; margin: 0; font-weight: 800; letter-spacing: -0.01em; }
+  .lede { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin: 0; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 1.25rem; display: flex; flex-direction: column; gap: 0.9rem;
+  }
+  label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); display: flex; flex-direction: column; gap: 0.35rem; }
+  select {
+    background: var(--panel-raised); border: 1px solid var(--border-bright); color: var(--text);
+    border-radius: 3px; padding: 0.5rem; font-size: 0.9rem;
+  }
+  select:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
+  .summary { font-size: 0.8rem; color: var(--text-dim); }
+  .summary strong { color: var(--toxic); font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
+  ul#times {
+    list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto;
+    border-top: 1px solid var(--border);
+  }
+  ul#times li {
+    font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; font-size: 0.85rem;
+    padding: 0.45rem 0.2rem; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; gap: 1rem;
+  }
+  ul#times li:nth-child(odd) { background: rgba(255,255,255,0.02); }
+  .ago { color: var(--text-dim); font-size: 0.78rem; }
+  .empty, .error { color: var(--text-dim); font-size: 0.85rem; padding: 0.5rem 0; }
+  .error { color: var(--ember); }
+  .nav { font-size: 0.8rem; color: var(--text-dim); }
+  .nav a { color: var(--brass); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Auction House API Log</h1>
+  <p class="lede">
+    Every timestamp our collector actually received <em>new</em> auction-house
+    data from Blizzard for a realm — not when we polled, only when Blizzard
+    had genuinely published something new (a no-op poll never appears here).
+    Public, no account needed.
+  </p>
+  <div class="card">
+    <label>Realm
+      <select id="realm"></select>
+    </label>
+    <div class="summary" id="summary"></div>
+    <ul id="times"></ul>
+    <div class="empty" id="empty" style="display:none;">No snapshots recorded for this realm yet.</div>
+    <div class="error" id="error" style="display:none;"></div>
+  </div>
+  <div class="nav"><a href="/">&larr; Back to dashboard</a></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function timeAgo(seconds) {
+  const diff = Math.max(0, Date.now() / 1000 - seconds);
+  if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
+  return `${Math.round(diff / 86400)}d ago`;
+}
+
+async function loadRealms() {
+  const r = await fetch("/api/log/realms");
+  const data = await r.json();
+  const sel = $("realm");
+  if (!data.realms.length) {
+    sel.innerHTML = `<option>no realms collected yet</option>`;
+    sel.disabled = true;
+    return null;
+  }
+  sel.innerHTML = data.realms.map(re => `<option value="${re.id}">${re.name}</option>`).join("");
+  return data.realms[0].id;
+}
+
+async function loadLog(sell) {
+  $("error").style.display = "none";
+  const r = await fetch(`/api/log?sell=${encodeURIComponent(sell)}`);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    $("error").textContent = body.detail || "Couldn't load the log for this realm.";
+    $("error").style.display = "block";
+    $("summary").textContent = "";
+    $("times").innerHTML = "";
+    $("empty").style.display = "none";
+    return;
+  }
+  const data = await r.json();
+  $("summary").innerHTML = `<strong>${data.count}</strong> new-data retrievals recorded for ${data.realm_name}`;
+  $("empty").style.display = data.timestamps.length ? "none" : "block";
+  $("times").innerHTML = data.timestamps.map(ts => `
+    <li>
+      <span>${new Date(ts * 1000).toLocaleString()}</span>
+      <span class="ago">${timeAgo(ts)}</span>
+    </li>
+  `).join("");
+}
+
+(async function init() {
+  const first = await loadRealms();
+  if (first == null) return;
+  await loadLog(first);
+  $("realm").addEventListener("change", (e) => loadLog(e.target.value));
+})();
+</script>
+</body>
+</html>

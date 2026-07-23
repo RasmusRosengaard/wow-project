@@ -227,14 +227,69 @@ def _list_collected_realms() -> list[int]:
     return sorted(ids)
 
 
-@app.get("/api/realms")
-def api_realms(user: User = Depends(current_subscribed_user)) -> dict:
+def _realms_payload(cr_ids: list[int]) -> list[dict]:
     realms = []
-    for cr_id in _list_collected_realms():
+    for cr_id in cr_ids:
         info = _realm_info(cr_id)
         realms.append({"id": cr_id, "name": info.get("name") or str(cr_id), "slug": info.get("slug")})
     realms.sort(key=lambda r: r["name"])
-    return {"realms": realms}
+    return realms
+
+
+@app.get("/api/realms")
+def api_realms(user: User = Depends(current_subscribed_user)) -> dict:
+    return {"realms": _realms_payload(_list_collected_realms())}
+
+
+def _list_snapshotted_realms() -> list[int]:
+    """Every realm with at least one raw snapshot file -- the precondition
+    for /api/log, distinct from _list_collected_realms() (which requires
+    diff_snapshots.py to have run). In practice these almost always
+    coincide since collect_all.py re-diffs on every new snapshot, but the
+    log is about *retrieval*, not inference, so it checks the raw source."""
+    snap_dir = DATA / "snapshots"
+    if not snap_dir.exists():
+        return []
+    ids = []
+    for p in snap_dir.iterdir():
+        if p.is_dir() and any(p.glob("*.parquet")):
+            try:
+                ids.append(int(p.name))
+            except ValueError:
+                continue
+    return sorted(ids)
+
+
+@app.get("/api/log/realms")
+def api_log_realms() -> dict:
+    """Public -- unlike /api/realms, this powers the public /log page (no
+    login required, see CLAUDE.md's "Auction house API log" entry): realm
+    names/slugs aren't sensitive, they're just Blizzard's own public realm
+    directory, so there's nothing to gate here."""
+    return {"realms": _realms_payload(_list_snapshotted_realms())}
+
+
+@app.get("/api/log")
+def api_log(sell: int) -> dict:
+    """Public: every timestamp a NEW auction-house snapshot was actually
+    retrieved for this realm, newest first. Backed directly by
+    data/snapshots/{sell}/*.parquet filenames (each is the epoch second of
+    that snapshot's Last-Modified header) rather than a separate log --
+    fetch_snapshot.py's If-Modified-Since check means a file only gets
+    written when Blizzard actually published something new, so the file
+    list already *is* an honest, complete retrieval log with no extra
+    logging infrastructure needed."""
+    snap_dir = DATA / "snapshots" / str(sell)
+    if not snap_dir.exists():
+        raise HTTPException(404, f"no snapshots collected for realm {sell}")
+    timestamps = sorted((int(p.stem) for p in snap_dir.glob("*.parquet")), reverse=True)
+    info = _realm_info(sell)
+    return {
+        "realm_id": sell,
+        "realm_name": info.get("name") or str(sell),
+        "count": len(timestamps),
+        "timestamps": timestamps,
+    }
 
 
 @app.get("/api/status")
@@ -284,6 +339,13 @@ def subscribe_page() -> FileResponse:
 @app.get("/profile")
 def profile_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "profile.html")
+
+
+@app.get("/log")
+def log_page() -> FileResponse:
+    """Public page, no auth check -- unlike every other page here, it must
+    NOT redirect to /login on a 401 since its APIs never return one."""
+    return FileResponse(ROOT / "static" / "log.html")
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
