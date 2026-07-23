@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Register — AH Snipe Dashboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0f1115; color: #e6e6e6;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 1rem;
+  }
+  form {
+    background: #1a1d24; border-radius: 8px; padding: 2rem;
+    width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 0.9rem;
+  }
+  h1 { font-size: 1.1rem; margin: 0 0 0.5rem; }
+  label { font-size: 0.8rem; color: #9aa0aa; display: flex; flex-direction: column; gap: 0.3rem; }
+  input {
+    background: #0f1115; border: 1px solid #333; color: #e6e6e6;
+    border-radius: 4px; padding: 0.5rem 0.6rem; font-size: 0.9rem;
+  }
+  button {
+    background: #3b7ddd; border: none; color: white; border-radius: 4px;
+    padding: 0.6rem; cursor: pointer; font-size: 0.9rem; margin-top: 0.3rem;
+  }
+  button:hover { background: #2f68c0; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .error { color: #ff8080; font-size: 0.8rem; min-height: 1em; }
+  .switch { font-size: 0.8rem; color: #9aa0aa; text-align: center; }
+  .switch a { color: #3b9dff; }
+</style>
+</head>
+<body>
+<form id="form">
+  <h1>Create account</h1>
+  <label>Email <input type="email" id="email" required autocomplete="username"></label>
+  <label>Password <input type="password" id="password" required autocomplete="new-password" minlength="8"></label>
+  <div id="error" class="error"></div>
+  <button type="submit" id="submit">Register</button>
+  <div class="switch">Already have an account? <a href="/login">Log in</a></div>
+</form>
+<script>
+document.getElementById("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("submit");
+  const err = document.getElementById("error");
+  err.textContent = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("email").value,
+        password: document.getElementById("password").value,
+      }),
+    });
+    if (r.ok) {
+      // Registered but not logged in yet -- FastAPI-Users doesn't auto-login
+      // on register; send them to log in with their new credentials.
+      window.location.href = "/login";
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    const detail = data.detail;
+    if (detail === "REGISTER_USER_ALREADY_EXISTS") {
+      err.textContent = "An account with that email already exists.";
+    } else if (detail && typeof detail === "object" && detail.code === "REGISTER_INVALID_PASSWORD") {
+      err.textContent = detail.reason || "Password doesn't meet requirements.";
+    } else {
+      err.textContent = "Registration failed -- try again.";
+    }
+  } catch (e) {
+    err.textContent = "Network error -- try again.";
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

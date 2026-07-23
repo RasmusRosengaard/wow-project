@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Log in — AH Snipe Dashboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0f1115; color: #e6e6e6;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 1rem;
+  }
+  form {
+    background: #1a1d24; border-radius: 8px; padding: 2rem;
+    width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 0.9rem;
+  }
+  h1 { font-size: 1.1rem; margin: 0 0 0.5rem; }
+  label { font-size: 0.8rem; color: #9aa0aa; display: flex; flex-direction: column; gap: 0.3rem; }
+  input {
+    background: #0f1115; border: 1px solid #333; color: #e6e6e6;
+    border-radius: 4px; padding: 0.5rem 0.6rem; font-size: 0.9rem;
+  }
+  button {
+    background: #3b7ddd; border: none; color: white; border-radius: 4px;
+    padding: 0.6rem; cursor: pointer; font-size: 0.9rem; margin-top: 0.3rem;
+  }
+  button:hover { background: #2f68c0; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .error { color: #ff8080; font-size: 0.8rem; min-height: 1em; }
+  .switch { font-size: 0.8rem; color: #9aa0aa; text-align: center; }
+  .switch a { color: #3b9dff; }
+</style>
+</head>
+<body>
+<form id="form">
+  <h1>Log in</h1>
+  <label>Email <input type="email" id="email" required autocomplete="username"></label>
+  <label>Password <input type="password" id="password" required autocomplete="current-password"></label>
+  <div id="error" class="error"></div>
+  <button type="submit" id="submit">Log in</button>
+  <div class="switch">No account? <a href="/register">Register</a></div>
+</form>
+<script>
+document.getElementById("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("submit");
+  const err = document.getElementById("error");
+  err.textContent = "";
+  btn.disabled = true;
+  try {
+    const body = new URLSearchParams();
+    body.set("username", document.getElementById("email").value);
+    body.set("password", document.getElementById("password").value);
+    const r = await fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (r.ok) {
+      window.location.href = "/";
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    err.textContent = data.detail === "LOGIN_BAD_CREDENTIALS"
+      ? "Incorrect email or password."
+      : "Login failed -- try again.";
+  } catch (e) {
+    err.textContent = "Network error -- try again.";
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

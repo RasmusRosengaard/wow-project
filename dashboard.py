@@ -16,19 +16,24 @@ import argparse
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import analyze
 import blizz
 import snipe_check
+from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users
+from db import User
 from item_names import NameCache
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
 app = FastAPI(title="AH Snipe Dashboard")
+
+app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
+app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
 
 # Realm name/slug never changes -- cache in-process for the life of the
 # server rather than a file cache, to keep this dashboard-only concern out of
@@ -108,10 +113,16 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
     return out
 
 
+@app.get("/api/me")
+async def api_me(user: User = Depends(current_active_user)) -> dict:
+    return {"email": user.email, "subscription_status": user.subscription_status}
+
+
 @app.get("/api/snipes")
 def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
-                top: int = 50, sort: str = Query("discount"), names: bool = False) -> dict:
+                top: int = 50, sort: str = Query("discount"), names: bool = False,
+                user: User = Depends(current_active_user)) -> dict:
     events_path = DATA / "events" / f"{sell}.parquet"
     if not events_path.exists():
         raise HTTPException(400, f"{events_path} not found -- run diff_snapshots.py --cr-id {sell} first")
@@ -136,7 +147,7 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
 
 
 @app.get("/api/status")
-def api_status(sell: int) -> dict:
+def api_status(sell: int, user: User = Depends(current_active_user)) -> dict:
     state_path = DATA / "state" / f"{sell}.json"
     last_modified = None
     if state_path.exists():
@@ -162,6 +173,16 @@ def api_config() -> dict:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(ROOT / "static" / "dashboard.html")
+
+
+@app.get("/login")
+def login_page() -> FileResponse:
+    return FileResponse(ROOT / "static" / "login.html")
+
+
+@app.get("/register")
+def register_page() -> FileResponse:
+    return FileResponse(ROOT / "static" / "register.html")
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")

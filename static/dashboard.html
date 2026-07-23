@@ -72,7 +72,10 @@
 </style>
 </head>
 <body>
-<h1>AH Snipe Dashboard</h1>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+  <h1>AH Snipe Dashboard</h1>
+  <button id="logout" style="background:#2a2d34; border:1px solid #444; color:#e6e6e6; border-radius:4px; padding:0.4rem 0.8rem; cursor:pointer; font-size:0.8rem;">Log out</button>
+</div>
 
 <div id="caveat" class="caveat"></div>
 
@@ -296,7 +299,17 @@ function scheduleAuto() {
 }
 $("auto").addEventListener("change", scheduleAuto);
 
+$("logout").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+  window.location.href = "/login";
+});
+
 (async function init() {
+  const me = await fetch("/api/me").catch(() => null);
+  if (!me || !me.ok) {
+    window.location.href = "/login";
+    return;
+  }
   try {
     const r = await fetch("/api/config");
     const cfg = await r.json();

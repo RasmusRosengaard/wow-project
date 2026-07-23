@@ -18,9 +18,9 @@ Staged deliberately — each stage ships and gets verified before the next.
 
 | Stage | Status | Notes |
 |---|---|---|
-| 1 — GitHub repo, CI, branch protection | **Done** | Repo: `github.com/RasmusRosengaard/wow-project` (private). `.github/workflows/ci.yml` runs `pytest -q` on every push/PR to `main`; branch protection requires the `test` check to pass before merge. **Still human-only, not done**: Railway account/project/Postgres addon, Stripe account + €5/mo Price object, secrets set in Railway. |
-| 2 — Auth (FastAPI-Users, Postgres) | Not started | |
-| 3 — Stripe subscription | Not started | Blocked on the human's Stripe account existing (Price ID needed). ToS re-read already confirmed by the human 2026-07-23 — payments are clear to build. |
+| 1 — GitHub repo, CI, branch protection | **Done** | Repo: `github.com/RasmusRosengaard/wow-project` (private). `.github/workflows/ci.yml` runs `pytest -q` on every push/PR to `main`; branch protection requires the `test` check to pass before merge. **Still human-only, not done**: Railway account/project/Postgres addon, secrets set in Railway. |
+| 2 — Auth (FastAPI-Users, Postgres) | **Done** | `db.py` (async SQLAlchemy, `User` model), `auth.py` (cookie-session backend), `static/login.html`/`register.html`, `dashboard.py`'s API routes gated behind `current_active_user`. Alembic migrations (`alembic/`) — one so far, creates the `user` table. 25 tests (`test_auth.py` + updated `test_dashboard.py`) all run against SQLite, no external DB needed in CI. Found and fixed a real bug: `CookieTransport` defaults `cookie_secure=True`, which silently drops the session cookie over local `http://` — now env-toggled via `COOKIE_SECURE` (`false` in dev, unset/true in production). |
+| 3 — Stripe subscription | Not started | Test-mode Stripe keys already in local `.env` (renamed `PUBLISHABLE_KEY`/`SECRET_KEY` → `STRIPE_PUBLISHABLE_KEY`/`STRIPE_SECRET_KEY` to avoid colliding with the new `SECRET` auth-signing var). Still needed: the €5/mo Price object, `STRIPE_WEBHOOK_SECRET` (needs a real deployed URL to register against), and per Stripe's own current guidance, a **restricted key** (`rk_`) scoped to Checkout/Customers/Subscriptions/Webhooks rather than a full secret key. ToS re-read already confirmed by the human 2026-07-23 — payments are clear to build. |
 | 4 — All-realm collection + sell-realm picker | Not started | |
 | 5 — CD (Railway auto-deploy + migrations-on-deploy) | Not started | Blocked on the Railway project existing. |
 
