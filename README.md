@@ -179,9 +179,10 @@ auth and a live Stripe subscription gating the dashboard (**done**,
 appearance-scarcity layer (ItemModifiedAppearance mappings via wago.tools +
 the static item API) → deal score with buy-realm → sell-realm routing →
 Discord webhook alerts → free companion addon. See `PROGRESS.md` for the
-current staged status and immediate next steps (a sell-realm picker in the
-UI and a real pricing page are ahead of the commodity feed; the UI design
-pass is done as of 2026-07-23).
+current staged status and immediate next steps (a restricted Stripe key is
+the main thing ahead of the commodity feed; the UI design pass and dashboard
+QoL pass -- sell-realm picker, budget filter, grouped duplicates, instant
+client-side sorting -- are both done as of 2026-07-23).
 
 ## Notes
 

@@ -9,7 +9,7 @@ Last updated: 2026-07-23.
 ## Status at a glance
 
 **Live and working right now**, at `https://wow-project-production.up.railway.app`:
-- Register / log in / log out.
+- Register / log in / log out; subscribe/cancel/status all on the profile page.
 - Subscribe via Stripe (**live mode, real payments** — human decision
   2026-07-23) → dashboard access unlocks automatically via webhook.
 - Server-side data collection running every ~10 minutes for FULL/HIGH-pop EU
@@ -18,22 +18,18 @@ Last updated: 2026-07-23.
   "Wait for CI" → build → deploy → DB migration, all automatic).
 - Every page (dashboard, login, register, subscribe, profile) runs one
   consistent designed look — see "UI design pass" below.
+- Sell-realm dropdown (`/api/realms`), min/max gold budget filter, grouped
+  duplicate-item snipes (best deal on top, expandable), and instant
+  client-side table sorting — see "Dashboard QoL pass" below.
 
 **Not built yet**, in priority order — see "Next up" below for detail:
-1. Sell-realm picker in the dashboard UI (server has multi-realm data, UI still takes a free-typed realm id).
-2. A pricing/explainer page (what you get, what the money funds).
-3. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
+1. Restricted Stripe key (still the full `sk_live_...` secret).
+2. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
 
 ## Next up (short list, do these in roughly this order)
-0. **Login Subscribe flow** - Profile page, subscribe, cancel, status, etc.
-1. **Sell-realm picker** — `/api/realms` endpoint + dropdown in the dashboard, replacing the free-typed realm id box. Backend already has the multi-realm data.
-2. **Pricing/explainer page** — what the €4.99/mo gets you, and that it funds scaling data collection to more realms. Currently `/subscribe` has a bare feature list, no real pitch.
-2.1. **Min/max gold filter** For ah sniper
-2.2  **Multiple snipes on same item** Make a dropdown, show biggest snipe at top and so on down.
-
-3. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction).
-4. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
-5. Phase 2 (commodities feed) and Phase 3 (appearance/scarcity layer) — see "Longer-term roadmap".
+1. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction).
+2. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
+3. Phase 2 (commodities feed) and Phase 3 (appearance/scarcity layer) — see "Longer-term roadmap".
 
 **Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (Stripe Dashboard → Developers → Webhooks) needs updating to match by hand — it won't happen automatically.
 
@@ -47,7 +43,7 @@ Turning the local single-user tool into a hosted product. Full design in
 | 1 | GitHub repo, CI, branch protection | **Done** — private repo, `pytest -q` on every push, branch protection requires it. |
 | 2 | Email auth (FastAPI-Users + Postgres) | **Done** — register/login/logout, cookie sessions, API routes gated. |
 | 3 | Stripe subscription | **Done, live mode** — see detail below. |
-| 4 | Server-side collection + realm picker | **Done (backend); UI picker still pending** — see detail below. |
+| 4 | Server-side collection + realm picker | **Done** — backend and UI dropdown both shipped. |
 | 5 | CD (Railway auto-deploy + DB migrations) | **Done** — live URL, Wait-for-CI verified working end to end. |
 
 ### Stage 3 detail — Stripe (done 2026-07-23, deployed straight to live mode)
@@ -73,8 +69,7 @@ fixed by calling `.to_dict()` once up front (needed on the retrieved
 `Subscription` object too, same issue).
 
 Still open: a restricted (`rk_live_...`) key instead of the full secret key
-(see "Next up"); a real pricing/explainer page instead of `/subscribe`'s
-bare feature list.
+(see "Next up").
 
 ### Stage 4 detail — server-side collection (backend done 2026-07-23)
 
@@ -98,7 +93,7 @@ job are **fully deleted** (human decision: this product is never run
 locally as a going concern) — Railway is the sole collection path. Local
 dev Postgres stopped, not removed, for local Stage-3+-adjacent dev only.
 
-Still missing: the `/api/realms` + dropdown UI piece (see "Next up" #1).
+The `/api/realms` + dropdown UI piece is done — see "Dashboard QoL pass" below.
 
 ### UI design pass (done 2026-07-23)
 
@@ -123,6 +118,42 @@ Folded in the two QoL fixes from the old "Next up" #4 at the same time:
 min-discount filter is now a real percentage input (0–100, was a raw 0–1
 fraction) and the names/icons toggle is gone — resolving item_id → name/icon
 is always on now, there was no real reason to ever turn it off.
+
+### Dashboard QoL pass (done 2026-07-23)
+
+Four requests worked in one batch, all client-facing on `dashboard.html`
+plus the two small backend additions they needed:
+
+- **Sell-realm picker** — new `GET /api/realms` (`dashboard.py`) lists every
+  realm with a `data/events/{cr}.parquet` file (i.e. actually collected),
+  each resolved to a display name via the existing `_realm_info()` cache.
+  The dashboard's free-typed realm-id number box is now a `<select>`
+  populated from this on load, falling back to a plain "no realms collected
+  yet" option if the list comes back empty.
+- **Min/max gold filter** — `snipe_check.find_snipes()` gained `min_gold`/
+  `max_gold` params (filtering on the *buy*-side unit price, i.e. what
+  you'd actually spend — that's the number a budget cap means for an "AH
+  sniper"), threaded through `/api/snipes` and the `--min-gold`/`--max-gold`
+  CLI flags. Two new number inputs in the dashboard's filter bar, both
+  optional (blank = no bound).
+- **Duplicate snipes grouped** — when the same item/variant shows up as a
+  snipe more than once (different buy realms, or several auctions on one),
+  the ledger now shows one row per item with the single best deal (highest
+  discount%) on top, plus a `▾ N` toggle to expand and see the rest, still
+  best-first. Purely a client-side `static/dashboard.html` change — the API
+  still returns the flat row list, `renderTable()` groups it.
+- **No-lag sorting** — every sort click used to re-fetch `/api/snipes` over
+  the network just to reorder rows the browser already had. Sorting is now
+  entirely client-side (`renderTable()`/`compareRows()`): clicking a column
+  header reorders the already-loaded batch instantly, with an ascending/
+  descending toggle on repeat clicks (▲/▼ indicator). All seven columns are
+  sortable now, not just the three the server's `SORT_COLUMNS` supported
+  before (buy realm, item name, and variant are new). The trade-off: the
+  fetched batch is always the server's discount-ranked top N, so re-sorting
+  by e.g. sell price reorders *within* that batch rather than asking the
+  server for a differently-ranked top N — acceptable for the "reorder what's
+  on screen instantly" goal this was solving; Refresh/auto-refresh still
+  re-fetches the accurate discount-ranked set.
 
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
@@ -174,7 +205,7 @@ instead (Linux binary, never touches that policy).
 | Billing | `billing.py`, `static/subscribe.html` |
 | Item name/icon/quality cache | `item_names.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
-| Tests | `tests/` — 104 passing (`pytest -q`), no external services needed |
+| Tests | `tests/` — 109 passing (`pytest -q`), no external services needed |
 
 ## Where to look for more
 

@@ -74,11 +74,13 @@
     display: flex; flex-direction: column; font-size: 0.68rem; color: var(--text-dim);
     gap: 0.3rem; text-transform: uppercase; letter-spacing: 0.05em;
   }
-  .bar input {
+  .bar input, .bar select {
     background: var(--bg); border: 1px solid var(--border-bright); color: var(--text);
     border-radius: 3px; padding: 0.4rem 0.55rem; width: 8.5rem; font-size: 0.85rem;
+    font-family: inherit;
   }
-  .bar input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
+  .bar select { width: 11rem; }
+  .bar input:focus-visible, .bar select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
   .bar input[type=checkbox] { width: auto; }
   .bar button#refresh {
     background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
@@ -98,12 +100,23 @@
     border-bottom: 1px solid var(--border-bright);
   }
   th.active { color: var(--toxic); }
+  th .dir { display: inline-block; width: 0.7em; opacity: 0.8; }
   tbody tr { border-bottom: 1px solid var(--border); }
   tbody tr:hover { background: var(--panel); }
+  tbody tr.sub-row { background: var(--panel); }
+  tbody tr.sub-row:hover { background: var(--panel-raised); }
+  tbody tr.sub-row td:first-child { position: relative; }
+  tbody tr.sub-row td { color: var(--text-dim); }
   .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; }
   .item-cell a { display: flex; line-height: 0; }
   .item-icon { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--border-bright); flex-shrink: 0; }
   .item-cell a .item-icon:hover { border-color: var(--toxic); cursor: pointer; }
+  .group-toggle {
+    background: var(--panel-raised); border: 1px solid var(--border-bright); color: var(--text-dim);
+    border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.68rem; cursor: pointer;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin-left: 0.2rem;
+  }
+  .group-toggle:hover { border-color: var(--toxic); color: var(--toxic); }
   .empty { color: var(--text-dim); padding: 1.5rem 0; text-align: center; font-size: 0.85rem; }
 
   /* ---------- Coin display ---------- */
@@ -151,9 +164,11 @@
 <div class="ticker" id="ticker"></div>
 
 <div class="bar">
-  <label>Sell realm <input id="sell" type="number" placeholder="e.g. 1403"></label>
+  <label>Sell realm <select id="sell"></select></label>
   <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
   <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
+  <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
+  <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
   <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
   <label>Top <input id="top" type="number" value="50"></label>
   <button id="refresh">Refresh</button>
@@ -165,13 +180,13 @@
 <table>
   <thead>
     <tr>
-      <th data-sort="none">Buy realm</th>
-      <th data-sort="none">Item</th>
-      <th data-sort="none">Variant</th>
-      <th data-sort="none">Buy</th>
-      <th data-sort="gold">Sell p25</th>
-      <th data-sort="per_day">Sales/day</th>
-      <th data-sort="discount">Discount %</th>
+      <th data-sort="buy_realm">Buy realm <span class="dir"></span></th>
+      <th data-sort="item">Item <span class="dir"></span></th>
+      <th data-sort="variant">Variant <span class="dir"></span></th>
+      <th data-sort="buy">Buy <span class="dir"></span></th>
+      <th data-sort="gold">Sell p25 <span class="dir"></span></th>
+      <th data-sort="per_day">Sales/day <span class="dir"></span></th>
+      <th data-sort="discount">Discount % <span class="dir"></span></th>
     </tr>
   </thead>
   <tbody id="rows"></tbody>
@@ -182,11 +197,65 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+// Table sort is entirely client-side (see renderTable) -- clicking a column
+// header never re-fetches, it just re-orders whatever's already loaded. The
+// fetch itself always asks the server for the discount-ranked top N (the
+// primary "best snipes" ordering); re-sorting by another column reorders
+// within that same fetched batch rather than asking the server for a
+// differently-ranked top N, which is what makes it instant instead of
+// round-tripping on every click.
 let sort = "discount";
+let sortDir = "desc";
 let timer = null;
-let currentRows = [];
+let currentRows = [];    // raw rows exactly as last fetched from the server
+let displayRows = [];    // flattened, on-screen order (main + expanded sub-rows) -- what tooltip lookups index into
+let openGroups = new Set();  // group keys the user has expanded to see every listing for that item/variant
 let currentRegion = null;
 let currentSellSlug = null;
+
+const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "per_day", "discount"]);
+const SORT_VALUE = {
+  buy_realm: r => (r.buy_realm_name || "").toLowerCase(),
+  item: r => (r.name || String(r.item_id)).toLowerCase(),
+  variant: r => (r.variant || "").toLowerCase(),
+  buy: r => r.buy_copper,
+  gold: r => r.sell_copper,
+  per_day: r => r.per_day,
+  discount: r => r.discount_pct,
+};
+
+function compareRows(a, b) {
+  const val = SORT_VALUE[sort];
+  const va = val(a), vb = val(b);
+  const cmp = (typeof va === "number" && typeof vb === "number")
+    ? va - vb
+    : String(va).localeCompare(String(vb));
+  return sortDir === "asc" ? cmp : -cmp;
+}
+
+// Multiple listings can snipe the same item/variant (different buy realms,
+// or several auctions on one) -- group them so the ledger shows one line per
+// item, with the single best deal on top, instead of drowning duplicates.
+function groupKey(row) {
+  return `${row.item_id}|${row.variant_raw ?? ""}`;
+}
+
+function buildGroups(rows) {
+  const map = new Map();
+  const order = [];
+  for (const row of rows) {
+    const key = groupKey(row);
+    if (!map.has(key)) { map.set(key, []); order.push(key); }
+    map.get(key).push(row);
+  }
+  // Within a group, "biggest snipe" always means highest discount% -- that's
+  // fixed regardless of which column the overall table is currently sorted
+  // by, since it's what makes one listing the group's best representative.
+  return order.map(key => ({
+    key,
+    rows: map.get(key).slice().sort((a, b) => b.discount_pct - a.discount_pct),
+  }));
+}
 
 function params() {
   const p = new URLSearchParams();
@@ -195,9 +264,11 @@ function params() {
   p.set("min_discount", (Number($("min_discount_pct").value) / 100).toString());
   p.set("min_per_day", $("min_per_day").value);
   p.set("top", $("top").value);
-  p.set("sort", sort);
+  p.set("sort", "discount");
   p.set("names", "true");  // always on -- names/icons aren't worth making optional
   if ($("items").value.trim()) p.set("items", $("items").value.trim());
+  if ($("min_gold").value.trim()) p.set("min_gold", $("min_gold").value.trim());
+  if ($("max_gold").value.trim()) p.set("max_gold", $("max_gold").value.trim());
   return p;
 }
 
@@ -289,6 +360,65 @@ async function loadStatus(sell) {
   } catch (e) { /* leave last-known status visible */ }
 }
 
+function buildRowHtml(row, idx, group, isSub) {
+  const color = row.quality_color || "inherit";
+  const ue = undermineUrl(row);
+  let icon = "";
+  if (row.icon) {
+    const img = `<img class="item-icon" src="${row.icon}" alt="" onerror="this.style.display='none'">`;
+    icon = ue
+      ? `<a href="${ue}" target="_blank" rel="noopener" title="View ${row.name ?? row.item_id} on Undermine Exchange">${img}</a>`
+      : img;
+  }
+  const toggle = (group && group.rows.length > 1)
+    ? `<button class="group-toggle" data-group="${group.key}" title="${group.rows.length} listings for this item -- click to see them all, best first">${openGroups.has(group.key) ? "&#9652;" : "&#9662;"} ${group.rows.length}</button>`
+    : "";
+  return `
+    <tr class="${isSub ? "sub-row" : ""}">
+      <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
+      <td><div class="item-cell" data-row="${idx}">${icon}<span style="color:${color}">${row.name ?? row.item_id}</span>${toggle}</div></td>
+      <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
+      <td class="num">${formatMoney(row.buy_copper)}</td>
+      <td class="num">${formatMoney(row.sell_copper)}</td>
+      <td class="num">${row.per_day.toFixed(2)}</td>
+      <td class="num">${row.discount_pct.toFixed(1)}</td>
+    </tr>`;
+}
+
+// Pure re-render of whatever's already in currentRows -- no network call, so
+// clicking a column header or expanding a group is instant (the "lag" fixed
+// here was every sort click round-tripping to /api/snipes just to reorder
+// rows the browser already had).
+function renderTable() {
+  const groups = buildGroups(currentRows);
+  groups.sort((a, b) => compareRows(a.rows[0], b.rows[0]));
+
+  displayRows = [];
+  const html = [];
+  groups.forEach(group => {
+    const best = group.rows[0];
+    displayRows.push(best);
+    html.push(buildRowHtml(best, displayRows.length - 1, group, false));
+    if (openGroups.has(group.key)) {
+      group.rows.slice(1).forEach(row => {
+        displayRows.push(row);
+        html.push(buildRowHtml(row, displayRows.length - 1, null, true));
+      });
+    }
+  });
+
+  $("rows").innerHTML = html.join("");
+  $("empty").style.display = groups.length ? "none" : "block";
+  $("empty").textContent = "No snipes at these thresholds.";
+
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    const active = th.dataset.sort === sort;
+    th.classList.toggle("active", active);
+    const dirEl = th.querySelector(".dir");
+    if (dirEl) dirEl.textContent = active ? (sortDir === "asc" ? "▲" : "▼") : "";
+  });
+}
+
 async function loadSnipes() {
   const sell = $("sell").value;
   if (!sell) return;
@@ -297,8 +427,9 @@ async function loadSnipes() {
   if (r.status === 402) { window.location.href = "/subscribe"; return; }
   if (!r.ok) {
     const err = await r.json().catch(() => ({detail: r.statusText}));
-    $("rows").innerHTML = "";
-    $("empty").style.display = "block";
+    currentRows = [];
+    openGroups.clear();
+    renderTable();
     $("empty").textContent = err.detail || "error loading snipes";
     hideTooltip();
     return;
@@ -309,42 +440,15 @@ async function loadSnipes() {
   currentRegion = data.region;
   currentSellSlug = data.sell_realm_slug;
   currentRows = data.rows;
-  const tbody = $("rows");
-  tbody.innerHTML = "";
-  $("empty").style.display = data.rows.length ? "none" : "block";
-  $("empty").textContent = "No snipes at these thresholds.";
-  data.rows.forEach((row, i) => {
-    const tr = document.createElement("tr");
-    const color = row.quality_color || "inherit";
-    const ue = undermineUrl(row);
-    let icon = "";
-    if (row.icon) {
-      const img = `<img class="item-icon" src="${row.icon}" alt="" onerror="this.style.display='none'">`;
-      icon = ue
-        ? `<a href="${ue}" target="_blank" rel="noopener" title="View ${row.name ?? row.item_id} on Undermine Exchange">${img}</a>`
-        : img;
-    }
-    tr.innerHTML = `
-      <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
-      <td><div class="item-cell" data-row="${i}">${icon}<span style="color:${color}">${row.name ?? row.item_id}</span></div></td>
-      <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
-      <td class="num">${formatMoney(row.buy_copper)}</td>
-      <td class="num">${formatMoney(row.sell_copper)}</td>
-      <td class="num">${row.per_day.toFixed(2)}</td>
-      <td class="num">${row.discount_pct.toFixed(1)}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-  document.querySelectorAll("th[data-sort]").forEach(th => {
-    th.classList.toggle("active", th.dataset.sort === sort);
-  });
+  openGroups.clear();  // fresh fetch -- collapse groups back to best-first summaries
+  renderTable();
   await loadStatus(sell);
 }
 
 document.getElementById("rows").addEventListener("mouseover", (e) => {
   const cell = e.target.closest(".item-cell");
   if (!cell) return;
-  const row = currentRows[Number(cell.dataset.row)];
+  const row = displayRows[Number(cell.dataset.row)];
   if (row) showTooltip(row, e.clientX, e.clientY);
 });
 document.getElementById("rows").addEventListener("mousemove", (e) => {
@@ -354,12 +458,25 @@ document.getElementById("rows").addEventListener("mousemove", (e) => {
 document.getElementById("rows").addEventListener("mouseout", (e) => {
   if (e.target.closest(".item-cell") && !e.relatedTarget?.closest(".item-cell")) hideTooltip();
 });
+document.getElementById("rows").addEventListener("click", (e) => {
+  const btn = e.target.closest(".group-toggle");
+  if (!btn) return;
+  const key = btn.dataset.group;
+  if (openGroups.has(key)) openGroups.delete(key); else openGroups.add(key);
+  hideTooltip();
+  renderTable();
+});
 
 document.querySelectorAll("th[data-sort]").forEach(th => {
   th.addEventListener("click", () => {
-    if (th.dataset.sort === "none") return;
-    sort = th.dataset.sort;
-    loadSnipes();
+    const col = th.dataset.sort;
+    if (sort === col) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sort = col;
+      sortDir = NUMERIC_SORT_KEYS.has(col) ? "desc" : "asc";
+    }
+    renderTable();
   });
 });
 
@@ -376,6 +493,42 @@ $("logout").addEventListener("click", async () => {
   window.location.href = "/login";
 });
 
+async function loadRealms() {
+  try {
+    const r = await fetch("/api/realms");
+    if (!r.ok) return [];
+    const data = await r.json();
+    return data.realms || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Replaces the old free-typed realm-id box -- the server already knows which
+// realms it has collected (data/events/{cr}.parquet exists), so pick from
+// those instead of guessing an id.
+async function populateRealmPicker(defaultSell) {
+  const realms = await loadRealms();
+  const sel = $("sell");
+  sel.innerHTML = "";
+  if (!realms.length) {
+    const opt = document.createElement("option");
+    opt.value = defaultSell || "";
+    opt.textContent = defaultSell ? `Realm ${defaultSell} (uncollected?)` : "No realms collected yet";
+    sel.appendChild(opt);
+    return;
+  }
+  for (const realm of realms) {
+    const opt = document.createElement("option");
+    opt.value = realm.id;
+    opt.textContent = realm.name;
+    sel.appendChild(opt);
+  }
+  if (defaultSell && realms.some(realm => String(realm.id) === String(defaultSell))) {
+    sel.value = String(defaultSell);
+  }
+}
+
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
   if (!me || !me.ok) {
@@ -387,11 +540,13 @@ $("logout").addEventListener("click", async () => {
     window.location.href = "/subscribe";
     return;
   }
+  let defaultSell = null;
   try {
     const r = await fetch("/api/config");
     const cfg = await r.json();
-    if (cfg.default_sell) $("sell").value = cfg.default_sell;
-  } catch (e) { /* no default, user fills it in */ }
+    defaultSell = cfg.default_sell;
+  } catch (e) { /* no default, user picks one */ }
+  await populateRealmPicker(defaultSell);
   if ($("sell").value) await loadSnipes();
   scheduleAuto();
 })();

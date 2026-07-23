@@ -177,6 +177,7 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
 @app.get("/api/snipes")
 def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
+                min_gold: float | None = None, max_gold: float | None = None,
                 top: int = 50, sort: str = Query("discount"), names: bool = False,
                 user: User = Depends(current_subscribed_user)) -> dict:
     events_path = DATA / "events" / f"{sell}.parquet"
@@ -191,6 +192,7 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
     con = analyze.connect(sell)
     rows = snipe_check.find_snipes(con, sell, items=item_ids, min_discount=min_discount,
                                    min_per_day=min_per_day, sell_percentile=sell_percentile,
+                                   min_gold=min_gold, max_gold=max_gold,
                                    top=top, sort=sort)
     name_cache = NameCache() if names else None
     out_rows = [_row_to_json(r, name_cache) for r in rows]
@@ -200,6 +202,32 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
         "rows": out_rows, "count": len(out_rows), "caveat": snipe_check.CAVEAT,
         "region": blizz.REGION, "sell_realm_slug": _realm_info(sell)["slug"],
     }
+
+
+def _list_collected_realms() -> list[int]:
+    """A realm is "collected" once diff_snapshots.py has produced its events
+    file -- that's the same precondition /api/snipes already 400s on, so this
+    is exactly the set of realms the picker can usefully offer."""
+    events_dir = DATA / "events"
+    if not events_dir.exists():
+        return []
+    ids = []
+    for p in events_dir.glob("*.parquet"):
+        try:
+            ids.append(int(p.stem))
+        except ValueError:
+            continue
+    return sorted(ids)
+
+
+@app.get("/api/realms")
+def api_realms(user: User = Depends(current_subscribed_user)) -> dict:
+    realms = []
+    for cr_id in _list_collected_realms():
+        info = _realm_info(cr_id)
+        realms.append({"id": cr_id, "name": info.get("name") or str(cr_id), "slug": info.get("slug")})
+    realms.sort(key=lambda r: r["name"])
+    return {"realms": realms}
 
 
 @app.get("/api/status")

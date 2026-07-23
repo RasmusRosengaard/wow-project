@@ -196,6 +196,25 @@ def test_find_snipes_sort_gold_orders_by_sell_price(tmp_path, monkeypatch):
     assert [r["item_id"] for r in gold_order] == [105, 101]  # higher sell_p_g first
 
 
+def test_find_snipes_respects_min_gold(data_dir, monkeypatch):
+    """The only listing cheap enough to qualify (10_000 copper = 1g) is
+    excluded once min_gold asks for at least 2g."""
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1, min_gold=2) == []
+
+
+def test_find_snipes_respects_max_gold(data_dir, monkeypatch):
+    """The qualifying listing is 1g -- a max_gold below that excludes it,
+    a max_gold above it keeps it."""
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1, max_gold=0.5) == []
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1, max_gold=5)
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == 101
+
+
 def test_parse_items_combines_flag_and_file(tmp_path):
     f = tmp_path / "watchlist.txt"
     f.write_text("1\n2 3\n")

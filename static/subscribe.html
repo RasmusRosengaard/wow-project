@@ -17,15 +17,33 @@
     background: var(--bg); color: var(--text);
     background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.05), transparent 60%);
     display: flex; align-items: center; justify-content: center;
-    min-height: 100vh; margin: 0; padding: 1rem;
+    min-height: 100vh; margin: 0; padding: 1.5rem;
   }
+  .wrap { width: 100%; max-width: 460px; display: flex; flex-direction: column; gap: 1.25rem; }
+
+  .pitch { text-align: center; }
+  .pitch h1 {
+    font-size: 1.5rem; margin: 0 0 0.5rem; font-weight: 800; letter-spacing: -0.01em;
+    line-height: 1.25;
+  }
+  .pitch h1 .accent { color: var(--toxic); }
+  .pitch p { margin: 0; color: var(--text-dim); font-size: 0.88rem; line-height: 1.5; }
+
+  .steps {
+    display: flex; flex-direction: column; gap: 0.7rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 1.1rem 1.2rem;
+  }
+  .step { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.82rem; }
+  .step .n {
+    font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+    color: var(--toxic); font-weight: 700; flex-shrink: 0; width: 1.1rem;
+  }
+  .step .t { color: var(--text); }
+  .step .t b { color: var(--text); font-weight: 700; }
+
   .card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-    padding: 2rem; width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 1.1rem;
-  }
-  h1 {
-    font-size: 1.15rem; margin: 0; font-weight: 800;
-    text-transform: uppercase; letter-spacing: -0.01em;
+    background: var(--panel); border: 1px solid var(--border-bright); border-radius: 6px;
+    padding: 1.6rem; display: flex; flex-direction: column; gap: 1.1rem;
   }
   .price {
     font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
@@ -33,34 +51,56 @@
   }
   .price span { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 0.85rem; color: var(--text-dim); font-weight: 400; }
   ul {
-    margin: 0; padding-left: 1.1rem; color: var(--text); font-size: 0.88rem;
+    margin: 0; padding-left: 1.1rem; color: var(--text); font-size: 0.86rem;
     display: flex; flex-direction: column; gap: 0.5rem;
   }
   li::marker { color: var(--toxic); }
   button {
     background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
     border-radius: 3px; padding: 0.65rem; cursor: pointer; font-size: 0.88rem;
-    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 0.3rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 0.2rem;
   }
   button:hover { background: var(--toxic-dim); border-color: var(--toxic-dim); }
   button:disabled { opacity: 0.6; cursor: default; }
-  button:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
   .error { color: var(--ember); font-size: 0.8rem; min-height: 1em; }
   .note { color: var(--text-dim); font-size: 0.75rem; }
+  .fund { color: var(--text-dim); font-size: 0.8rem; text-align: center; line-height: 1.5; }
+  .fund b { color: var(--brass); }
+  .nav { text-align: center; font-size: 0.8rem; }
+  .nav a { color: var(--text-dim); }
+  .nav a:hover { color: var(--brass); }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>Subscribe</h1>
-  <div class="price">€4.99 <span>/ month</span></div>
-  <ul>
-    <li>Live, auto-refreshing snipe dashboard across every collected realm</li>
-    <li>Sold-price percentiles validated against real inferred sales, not fictional listing prices</li>
-    <li>Your subscription funds expanding data collection to more realms</li>
-  </ul>
-  <div id="error" class="error"></div>
-  <button id="subscribe">Subscribe with Stripe</button>
-  <div class="note">Redirects to Stripe's secure checkout. Cancel anytime from your Stripe receipt email.</div>
+<div class="wrap">
+  <div class="pitch">
+    <h1>Listing prices lie.<br>We show what things <span class="accent">actually sold for.</span></h1>
+    <p>Every other sniper flags items cheap against fictional asking prices. We infer real sold prices from Blizzard's own auction snapshots, then route the discount across every EU realm to your warband bank.</p>
+  </div>
+
+  <div class="steps">
+    <div class="step"><span class="n">1</span><span class="t">We collect hourly AH snapshots on your <b>sell realm</b> and infer what actually sold, not what's merely listed.</span></div>
+    <div class="step"><span class="n">2</span><span class="t">We sweep every other EU realm's current listings for the same items and variants.</span></div>
+    <div class="step"><span class="n">3</span><span class="t">Anything priced well below your sell realm's real sold price, net of the 5% AH cut, shows up as a validated snipe.</span></div>
+  </div>
+
+  <div class="card">
+    <div class="price">€4.99 <span>/ month</span></div>
+    <ul>
+      <li>Live, auto-refreshing snipe dashboard across every collected realm</li>
+      <li>Sold-price percentiles validated against real inferred sales, not fictional listing prices</li>
+      <li>Pick any collected sell realm, not just one fixed default</li>
+      <li>Filter by budget, liquidity, and discount threshold</li>
+    </ul>
+    <div id="error" class="error"></div>
+    <button id="subscribe">Subscribe with Stripe</button>
+    <div class="note">Redirects to Stripe's secure checkout. Cancel anytime from your profile page.</div>
+  </div>
+
+  <div class="fund">Your subscription is what pays for the data collection itself — <b>funding more realms</b> means more validated snipes for everyone, not just a bigger bill.</div>
+
+  <div class="nav"><a href="/">&larr; Back to dashboard</a></div>
 </div>
 <script>
 document.getElementById("subscribe").addEventListener("click", async () => {

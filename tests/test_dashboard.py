@@ -278,6 +278,38 @@ def test_api_snipes_rejects_bad_sort(data_dir, monkeypatch):
     assert r.status_code == 400
 
 
+def test_api_snipes_respects_min_gold_and_max_gold(data_dir, monkeypatch):
+    """The one qualifying listing is 1g (10_000 copper) -- min_gold above
+    that or max_gold below it should filter it out."""
+    run_diff(monkeypatch)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "min_per_day": 0.1, "min_gold": 2})
+    assert r.json()["rows"] == []
+
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "min_per_day": 0.1, "max_gold": 0.5})
+    assert r.json()["rows"] == []
+
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "min_per_day": 0.1, "max_gold": 5})
+    assert r.json()["count"] == 1
+
+
+def test_api_realms_lists_collected_realms(data_dir, monkeypatch):
+    run_diff(monkeypatch)
+    r = client.get("/api/realms")
+    assert r.status_code == 200
+    realms = r.json()["realms"]
+    assert {"id": SELL_CR, "name": f"Realm {SELL_CR}", "slug": f"realm-{SELL_CR}"} in realms
+
+
+def test_api_realms_empty_when_nothing_collected(tmp_path, monkeypatch):
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)
+    r = client.get("/api/realms")
+    assert r.status_code == 200
+    assert r.json()["realms"] == []
+
+
 def test_api_status_reports_last_modified(data_dir):
     r = client.get("/api/status", params={"sell": SELL_CR})
     assert r.status_code == 200

@@ -55,6 +55,7 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
+                min_gold: float | None = None, max_gold: float | None = None,
                 top: int = 50, sort: str = "discount") -> list[dict]:
     """Sold-price stats come from `sales` (a view over inferred_sale events,
     set up by analyze.connect). Listings come from every scanned realm except
@@ -66,6 +67,13 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     ordinary gear -- joined with IS NOT DISTINCT FROM since NULL = NULL is
     false in SQL and a plain USING join would drop every non-pet match."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
+    # Filters on the buy-side price -- what you'd actually spend on the
+    # snipe -- since that's the number an "AH sniper" budget cap means.
+    price_filter = ""
+    if min_gold is not None:
+        price_filter += f" AND b.buy_unit_price >= {float(min_gold) * 10000}"
+    if max_gold is not None:
+        price_filter += f" AND b.buy_unit_price <= {float(max_gold) * 10000}"
     con.execute(f"""
         CREATE OR REPLACE VIEW listings AS
         SELECT * FROM read_parquet('{(DATA / "listings" / "*.parquet").as_posix()}')
@@ -105,6 +113,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
          AND b.pet_quality_id IS NOT DISTINCT FROM s.pet_quality_id
         WHERE (s.sell_price * 0.95 - b.buy_unit_price) / (s.sell_price * 0.95)
               >= {float(min_discount)}
+              {price_filter}
         ORDER BY {SORT_COLUMNS[sort]}
         LIMIT {int(top)}
     """)
@@ -148,6 +157,10 @@ def main() -> None:
                     help="minimum inferred sales/day on the sell realm (liquidity floor)")
     ap.add_argument("--sell-percentile", type=float, default=0.25,
                     help="percentile of sold prices to require the discount against (default 0.25)")
+    ap.add_argument("--min-gold", type=float, default=None,
+                    help="minimum buy price in gold (budget floor, skips trivial junk)")
+    ap.add_argument("--max-gold", type=float, default=None,
+                    help="maximum buy price in gold (budget ceiling)")
     ap.add_argument("--top", type=int, default=50)
     ap.add_argument("--sort", choices=sorted(SORT_COLUMNS), default="discount",
                     help="sort order for results (default discount)")
@@ -170,6 +183,7 @@ def main() -> None:
     con = analyze.connect(args.sell)
     rows = find_snipes(con, args.sell, items=items, min_discount=args.min_discount,
                        min_per_day=args.min_per_day, sell_percentile=args.sell_percentile,
+                       min_gold=args.min_gold, max_gold=args.max_gold,
                        top=args.top, sort=sort)
     print_snipes(rows, resolve_names=args.names)
 
