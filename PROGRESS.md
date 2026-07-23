@@ -7,6 +7,23 @@ Replaces the old one-off `HANDOFF.md` snapshot (removed 2026-07-23).
 
 Last updated: 2026-07-23.
 
+## Hosted SaaS pivot (active initiative)
+
+Turning the local single-user tool into a hosted product: email
+login/register, €5/month Stripe subscription gating the sniper page, and
+deep collection expanded to all ~100 EU realms so subscribers pick their own
+sell realm. Full design in `~/.claude/plans/unified-nibbling-simon.md`
+(Railway host, FastAPI-Users auth, GitHub Actions CI + Railway native CD).
+Staged deliberately — each stage ships and gets verified before the next.
+
+| Stage | Status | Notes |
+|---|---|---|
+| 1 — GitHub repo, CI, branch protection | **Done** | Repo: `github.com/RasmusRosengaard/wow-project` (private). `.github/workflows/ci.yml` runs `pytest -q` on every push/PR to `main`; branch protection requires the `test` check to pass before merge. **Still human-only, not done**: Railway account/project/Postgres addon, Stripe account + €5/mo Price object, secrets set in Railway. |
+| 2 — Auth (FastAPI-Users, Postgres) | Not started | |
+| 3 — Stripe subscription | Not started | Blocked on the human's Stripe account existing (Price ID needed). ToS re-read already confirmed by the human 2026-07-23 — payments are clear to build. |
+| 4 — All-realm collection + sell-realm picker | Not started | |
+| 5 — CD (Railway auto-deploy + migrations-on-deploy) | Not started | Blocked on the Railway project existing. |
+
 ## Phase status
 
 | Phase | Status | Notes |
@@ -48,8 +65,13 @@ Last updated: 2026-07-23.
 4. Phase 2: commodities feed (region-wide, separate schema — do not merge with gear).
 5. Phase 3: appearance layer (`ItemModifiedAppearance` mapping via wago.tools DB2 exports + static API fallback).
 6. Optional: revisit the Phase 0 validation protocol (`VALIDATION.md`) if the sale-inference signal's accuracy becomes a live concern.
-7. CI/CD, so every update to API/python/database/web actually published and deploys.
-8. Web: 1. Login/Register with authentication (email), 2. Subscriptions with stripe (for now only 1 for 5 euros/month), 3. Subs can acces the sniper page (for now only supports draenor as seller realm), 4. Start collecting data for all realms, so the user  can choose seller realms themself.
+7. ~~CI/CD~~ — Stage 1 done, see "Hosted SaaS pivot" above. Full CD (auto-deploy) is Stage 5, still pending the Railway project.
+8. ~~Web: login/subscriptions/all-realm collection~~ — see "Hosted SaaS pivot" above (Stages 2-4).
+
+**Immediate blocker on the pivot's own next step (Stage 2)**: none — Stage 2
+(auth) can be built and tested against a local/Dockerized Postgres without
+needing the Railway project to exist yet. Railway/Stripe account creation
+can happen in parallel, whenever the human gets to it.
 
 ## Where to look for more
 
