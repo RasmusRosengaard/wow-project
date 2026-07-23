@@ -210,14 +210,20 @@ Blizzard's in-game item-quality colors (`item_names.QUALITY_COLORS`) were
 designed for dark UI panels — measured contrast against the new
 `--paper` background before shipping, and every one of them fails WCAG AA
 as *text* color except Rare/Epic (Common/white is literally invisible,
-Uncommon green is ~1.3:1). Fixed by rendering rarity as a small colored
-swatch dot (`.q-dot`) next to the item name instead of coloring the name
-text itself — item names now always render in `--ink` (always legible),
-the dot carries the color coding instead (no text-contrast requirement for
-a small saturated swatch). This is the one deliberate JS change alongside
-the CSS/markup rewrite (`qualityDot()` in `buildRowHtml`/`showTooltip`) —
-otherwise the "only markup/CSS changed" convention from the first design
-pass held.
+Uncommon green is ~1.3:1). First fix attempt (a small colored dot next to
+the name) was rejected by the human — rarity should read the way it does
+in-game or in the name, not as a disconnected swatch. **Revised fix**: an
+inset colored ring around the item icon itself (`.item-icon`/`.tt-icon`,
+via a `--q` CSS custom property set inline per row), matching how WoW's own
+UI frames item art by quality. This also happens to fully dodge the
+contrast problem rather than needing a workaround for it: the ring renders
+against the icon's own artwork, not the page background, so even a white/
+Common ring stays visible (verified against a real render.worldofwarcraft.com
+icon in the local preview below — the white ring shows as a visible inset
+edge against the icon's darker art). Item names render in plain `--ink`
+throughout. This is the one deliberate JS change alongside the CSS/markup
+rewrite (`iconStyle()` in `buildRowHtml`/`showTooltip`) — otherwise the
+"only markup/CSS changed" convention from the first design pass held.
 
 **Verification**: no backend changed (`pytest -q` stayed green throughout,
 145 passing), but this was still checked in a real browser before shipping

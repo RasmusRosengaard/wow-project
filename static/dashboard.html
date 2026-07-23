@@ -114,13 +114,19 @@
   tbody tr.sub-row td { color: var(--text-dim); }
   .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; }
   .item-cell a { display: flex; line-height: 0; }
-  .item-icon { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--hairline-strong); flex-shrink: 0; }
+  /* Rarity as a colored frame around the icon art (like WoW's own UI),
+     not the name's text color -- Blizzard's quality palette (near-white
+     for Common, saturated green/cyan for others) was built for dark panels
+     and fails contrast as *text* on paper. An inset ring renders against
+     the icon's own artwork, not the page background, so it stays visible
+     (including white/Common) regardless of page theme -- set inline per
+     row via --q (falls back to a neutral hairline when unknown). */
+  .item-icon {
+    width: 24px; height: 24px; border-radius: 3px; flex-shrink: 0;
+    border: 1px solid var(--hairline-strong);
+    box-shadow: inset 0 0 0 2px var(--q, transparent);
+  }
   .item-cell a .item-icon:hover { border-color: var(--bullion); cursor: pointer; }
-  /* Rarity as a swatch, not text color -- Blizzard's in-game quality
-     palette (near-white for Common, saturated green/cyan for others) was
-     designed for dark panels and fails contrast on paper; a dot sidesteps
-     the problem instead of fighting it. */
-  .q-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.15); flex-shrink: 0; }
   .group-toggle {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--text-dim);
     border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.68rem; cursor: pointer;
@@ -150,7 +156,11 @@
     padding: 0.65rem 0.8rem; font-size: 0.8rem; color: var(--text-dim);
   }
   #tooltip .tt-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem; }
-  #tooltip .tt-icon { width: 36px; height: 36px; border-radius: 3px; border: 1px solid var(--hairline-strong); }
+  #tooltip .tt-icon {
+    width: 36px; height: 36px; border-radius: 3px;
+    border: 1px solid var(--hairline-strong);
+    box-shadow: inset 0 0 0 2px var(--q, transparent);
+  }
   #tooltip .tt-name { font-weight: 700; font-size: 0.95rem; line-height: 1.2; color: var(--ink); display: flex; align-items: center; gap: 0.4rem; }
   #tooltip .tt-sub { color: var(--text-dim); font-size: 0.7rem; margin-bottom: 0.4rem; }
   #tooltip .tt-row { display: flex; justify-content: space-between; gap: 1rem; margin: 0.2rem 0; }
@@ -347,24 +357,25 @@ function undermineUrl(row) {
   return `https://undermine.exchange/#${currentRegion}-${currentSellSlug}/${row.item_id}`;
 }
 
-// Rarity as a small swatch dot rather than the name's text color -- see the
-// .q-dot CSS comment: Blizzard's quality palette was built for dark panels
-// and most of it fails contrast on this page's paper background.
-function qualityDot(color) {
-  return color ? `<span class="q-dot" style="background:${color}"></span>` : "";
+// Rarity renders as a colored inset ring around the icon art (see the
+// .item-icon/.tt-icon CSS) via the --q custom property, not the name's text
+// color -- Blizzard's quality palette was built for dark panels and most of
+// it fails contrast as *text* on this page's paper background.
+function iconStyle(color) {
+  return color ? ` style="--q:${color}"` : "";
 }
 
 function showTooltip(row, x, y) {
   const tt = $("tooltip");
   const icon = row.icon
-    ? `<img class="tt-icon" src="${row.icon}" alt="" onerror="this.style.display='none'">`
+    ? `<img class="tt-icon"${iconStyle(row.quality_color)} src="${row.icon}" alt="" onerror="this.style.display='none'">`
     : "";
   const ue = undermineUrl(row);
   tt.innerHTML = `
     <div class="tt-head">
       ${icon}
       <div>
-        <div class="tt-name">${qualityDot(row.quality_color)}${row.name ?? ("item " + row.item_id)}</div>
+        <div class="tt-name">${row.name ?? ("item " + row.item_id)}</div>
         <div class="tt-sub">Item ${row.item_id}${row.variant_raw ? " &middot; " + row.variant : ""}</div>
       </div>
     </div>
@@ -423,7 +434,7 @@ function buildRowHtml(row, idx, group, isSub) {
   const ue = undermineUrl(row);
   let icon = "";
   if (row.icon) {
-    const img = `<img class="item-icon" src="${row.icon}" alt="" onerror="this.style.display='none'">`;
+    const img = `<img class="item-icon"${iconStyle(row.quality_color)} src="${row.icon}" alt="" onerror="this.style.display='none'">`;
     icon = ue
       ? `<a href="${ue}" target="_blank" rel="noopener" title="View ${row.name ?? row.item_id} on Undermine Exchange">${img}</a>`
       : img;
@@ -434,7 +445,7 @@ function buildRowHtml(row, idx, group, isSub) {
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
-      <td><div class="item-cell" data-row="${idx}">${icon}${qualityDot(row.quality_color)}<span>${row.name ?? row.item_id}</span>${toggle}</div></td>
+      <td><div class="item-cell" data-row="${idx}">${icon}<span>${row.name ?? row.item_id}</span>${toggle}</div></td>
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>
