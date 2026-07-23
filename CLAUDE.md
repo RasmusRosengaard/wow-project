@@ -71,9 +71,7 @@ Buy-side scans don't need snapshot history — latest listings per realm suffice
 | `fetch_snapshot.py` | Sell-realm collector CLI: polls one connected realm, writes hourly parquet snapshots (If-Modified-Since aware); logs to console + rotating `data/logs/collector.log`, backs off on 429/5xx, skips malformed-JSON bodies |
 | `scan_region.py` | **Phase 1.** Region scanner: sweeps every EU connected realm's *current* listings (no history, `--exclude` to skip sell realms already deep-collected) into `data/listings/{cr_id}.parquet`, overwritten each sweep. Reuses `bonus_key`/`get_auctions_with_backoff` from `fetch_snapshot.py`. Logs to `data/logs/scanner.log` |
 | `snipe_check.py` | **Phase 1.** Joins `data/listings/*.parquet` (any realm but the sell realm) against the sell realm's `sales` view (from `analyze.connect`) on `(item_id, bonus_key)`; flags listings below a sold-price percentile net of the 5% AH cut, above a liquidity floor. `--items`/`--items-file` restrict to a hand-curated watchlist. Prints `snipe_check.CAVEAT` every run: an AH listing is guaranteed unsoulbound (BoP can't be listed), so it can always ride the warband bank — just don't equip/use it before moving it |
-| `run_cycle.py` | **Phase 1.** One full pipeline pass: poll sell realm → scan region → (once 2+ sell-realm snapshots exist) rebuild events → snipe-check. Does one pass and exits; meant to be re-run roughly hourly (Blizzard's dump cadence), not looped internally |
-| `collect_all.py` | **Stage 4 of the hosted pivot.** The server-side equivalent of `run_cycle.py` — but for every FULL/HIGH-population EU realm, not one hand-picked sell realm (scope decided 2026-07-23, not literally all ~100 realms). `deep_collect_realm_ids()` caches the population-filtered realm list in-process (via the new `blizz.connected_realm_population()`); `collect_all()` polls+diffs+prunes each of those, then runs an **unscoped** `scan_region.sweep()` (every EU realm's listings, regardless of population — the cross-realm thesis needs cheap listings from low-pop realms too). `prune_old_snapshots()` — 14-day retention, always keeps 2+ — is no longer a someday-TODO now that this runs indefinitely on a server. Called hourly by `dashboard.py`'s background loop when `ENABLE_BACKGROUND_COLLECTION=true` (Railway only) |
-| `run_cycle_task.ps1` | Windows Task Scheduler wrapper around `run_cycle.py --sell 1403`; appends output to `data/logs/run_cycle_task.log` (no console in a scheduled task). Registered as task **AHSnipePipeline**, hourly, indefinitely — see "Scheduled automation" below |
+| `collect_all.py` | **Stage 4 of the hosted pivot; the sole collection path as of 2026-07-23.** Replaced the local `run_cycle.py` + Windows Task Scheduler (`AHSnipePipeline`), both removed — see "Scheduled automation" below. Deep-collects every FULL/HIGH-population EU realm, not one hand-picked sell realm (scope decided 2026-07-23, not literally all ~100 realms). `deep_collect_realm_ids()` caches the population-filtered realm list in-process (via the new `blizz.connected_realm_population()`); `collect_all()` polls+diffs+prunes each of those, then runs an **unscoped** `scan_region.sweep()` (every EU realm's listings, regardless of population — the cross-realm thesis needs cheap listings from low-pop realms too). `prune_old_snapshots()` — 14-day retention, always keeps 2+ — is no longer a someday-TODO now that this runs indefinitely on a server. Called hourly by `dashboard.py`'s background loop when `ENABLE_BACKGROUND_COLLECTION=true` (Railway only, unset/off for local dev) |
 | `dashboard.py` | **Dashboard (pulled forward from Phase 5, see Process deviation below).** FastAPI app, read-only web layer over `snipe_check.find_snipes()` — does not run the pipeline itself. `GET /api/snipes` mirrors `snipe_check.py`'s CLI flags as query params, returns JSON rows + the shared `snipe_check.CAVEAT` string (never omitted, even when empty), plus raw-copper prices (`buy_copper`/`sell_copper` — formatting happens client-side per the "copper end to end" convention), `buy_realm_name` (via `blizz.connected_realm_realms()`, in-process cached), and a smarter `variant` summary — `ilvl NNN` parsed from bonus-list modifier type 28 **only when `names=true` and the claimed value is within `ILVL_PLAUSIBILITY_MULTIPLE` (5x) of the item's own catalog level** (`item_names.NameCache.base_level()`); otherwise falls back to a bonus-count summary. This plausibility check exists because the modifier isn't Blizzard-documented and produced nonsense for non-scaling items (e.g. a classic wand showed "ilvl 1112" against a real base level of ~35, caught 2026-07-23) — full raw `bonus_key` still included as `variant_raw` regardless. **The CLI (`snipe_check.py`/`print_snipes`) intentionally does NOT get this treatment** — it keeps printing the raw `bonus_key` string as-is; the smarter variant display, quality colors, icons, and plausibility check are dashboard-only, by design, not a gap to close. When `names=true`, rows also carry `icon`/`quality_color` from `item_names.NameCache`, and the response carries top-level `region`/`sell_realm_slug` for building an Undermine Exchange link (`https://undermine.exchange/#{region}-{sell_realm_slug}/{item_id}`, confirmed against a real example). `GET /api/status` surfaces `data/state/{cr}.json`'s collector `last_modified` + listings-sweep freshness, so a stalled scheduled task is visible in the UI, not silently hidden. `GET /` serves `static/dashboard.html`. `python dashboard.py --sell 1403` runs it on `127.0.0.1:8000` |
 | `static/dashboard.html` | Single static file, vanilla JS, no build step/Node/npm. Sortable/filterable table over `/api/snipes` with WoW-flavored presentation: quality-colored item names, gold/silver/copper coin-icon money formatting, a custom mouse-hover tooltip (icon, colored name, prices — informational only) mimicking an in-game item tooltip. **The item icon itself (not the tooltip) is the Undermine Exchange link** — the tooltip repositions on every `mousemove` to follow the cursor, so a link inside it was unreachable; clicking the stable table-row icon opens the item's Undermine Exchange page in a new tab instead (fixed 2026-07-23). Persistent caveat banner, freshness indicators, ~60s client-side polling auto-refresh |
 | `Dockerfile` / `.dockerignore` / `docker-entrypoint.sh` | Packages the web app (not the local collection pipeline) into a container; runs `alembic upgrade head` before serving. **Deployed** as of 2026-07-23 — see the Railway section below |
@@ -176,17 +174,15 @@ policy at all. Useful if Railway CLI access is needed again later.
 
 ### Scheduled automation
 
-**Local collection is disabled (human decision, 2026-07-23)** now that the
-hosted path is live — `collect_all.py` running hourly in-process inside the
-Railway deployment (see above) is the sole collection path going forward.
-The **AHSnipePipeline** Windows Task Scheduler task (created 2026-07-20,
-would run `run_cycle.py --sell 1403` hourly through `run_cycle_task.ps1`,
-logging to `data/logs/run_cycle_task.log`) still exists but is **Disabled**,
-not removed — re-enabling it is a one-line PowerShell command below if
-local collection is ever needed again (e.g. the hosted deployment goes
-down). The local dev Postgres container (`wow-project-pg`) was stopped, not
-removed, for the same reason — its data is still there if local Stage 3/4
-development needs it again.
+**Local collection is fully retired (human decision, 2026-07-23)**:
+`run_cycle.py`, `run_cycle_task.ps1`, and the Windows Task Scheduler task
+**AHSnipePipeline** (created 2026-07-20) are all deleted/unregistered, not
+just paused. `collect_all.py` running hourly in-process inside the Railway
+deployment is the *only* collection path now — this product is explicitly
+not meant to be run locally as a going concern; local work is for changing
+code, then letting CI/Railway deploy it (see README's "The deploy flow").
+The local dev Postgres container (`wow-project-pg`) was stopped (not
+removed) for local Stage 3+ development/testing only.
 
 The original reasoning for rejecting a **cloud** scheduled agent (a fresh,
 stateless Claude routine checkout with no access to local `.env` or
@@ -195,14 +191,6 @@ it doesn't apply to the Railway deployment, which has its own persistent
 Volume and its own `.env`-equivalent (Railway env vars) and therefore *can*
 accumulate history across restarts. That's the loophole that made moving
 collection off the human's machine viable at all.
-
-Manage the local scheduled task from an elevated or normal PowerShell:
-```
-Get-ScheduledTask -TaskName AHSnipePipeline | Get-ScheduledTaskInfo   # status / next run
-Start-ScheduledTask -TaskName AHSnipePipeline                         # run now
-Disable-ScheduledTask -TaskName AHSnipePipeline                       # pause
-Unregister-ScheduledTask -TaskName AHSnipePipeline -Confirm:$false    # remove
-```
 
 ## Architecture & data layout
 
@@ -289,22 +277,23 @@ multi-interval relist windows) belong after Phase 0, not during.
 
 ## Commands
 
+These are standalone debugging/inspection tools now — none of them are how
+the product actually runs (`collect_all.py` inside the deployed app is).
+Useful for e.g. manually checking a realm's data or testing a change locally
+before pushing.
+
 ```
 python fetch_snapshot.py --find silvermoon          # realm slug -> cr-id
-python fetch_snapshot.py --cr-id 1096 --loop        # collect (48h+)
+python fetch_snapshot.py --cr-id 1096 --loop        # collect (48h+), local debugging only
 python diff_snapshots.py --cr-id 1096               # build events
 python analyze.py --cr-id 1096 summary --top 30
 python analyze.py --cr-id 1096 item 152510 --price 2500000   # copper
 python analyze.py --cr-id 1096 trace 152510   # per-auction classifications (verification)
 python scan_region.py --exclude 1403          # one sweep of all EU realms except your sell realm(s)
-python scan_region.py --exclude 1403 --loop   # sweep hourly, forever
 python snipe_check.py --sell 1403             # flag discounted listings vs sell-realm sold prices
 python snipe_check.py --sell 1403 --items-file watchlist.txt --min-discount 0.3
-python run_cycle.py --sell 1403               # one full pass: poll+scan+diff+snipe-check
-                                               # re-run hourly, e.g. `/loop 1h python run_cycle.py --sell 1403`
-python dashboard.py --sell 1403               # live web dashboard on http://127.0.0.1:8000
-                                               # (read-only; run_cycle.py/Task Scheduler must still
-                                               # be producing data for it to show anything fresh)
+python dashboard.py --sell 1403               # local dev server on http://127.0.0.1:8000
+                                               # (leave ENABLE_BACKGROUND_COLLECTION unset locally)
 ```
 
 ## Human-only tasks (never attempt; ask and wait)
