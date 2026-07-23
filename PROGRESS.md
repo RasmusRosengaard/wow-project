@@ -60,12 +60,13 @@ Staged deliberately — each stage ships and gets verified before the next.
 ## Next steps (rough order)
 
 1. Enable Railway's "Wait for CI" setting so the deploy pipeline actually gates on tests passing, not just runs them in parallel.
-2. `billing.py` (Stage 3): Stripe Checkout + webhook, gate the dashboard on `subscription_status == "active"`.
-3. `/api/realms` + a sell-realm dropdown in the dashboard UI (Stage 4's remaining piece — the server has multi-realm data now, the frontend doesn't expose it yet).
-4. Decide whether Phase 3 still needs a per-item transferability flag, or whether the existing CLI/dashboard NOTE text already covers the real risk (see Phase 3 row above).
-5. Phase 2: commodities feed (region-wide, separate schema — do not merge with gear).
-6. Phase 3: appearance layer (`ItemModifiedAppearance` mapping via wago.tools DB2 exports + static API fallback).
-7. Optional: revisit the Phase 0 validation protocol (`VALIDATION.md`) if the sale-inference signal's accuracy becomes a live concern.
+2. `billing.py` (Stage 3): Stripe Checkout + webhook. **Now unblocked** — a real deployed URL exists (`https://wow-project-production.up.railway.app`) to register the webhook endpoint against, which was the blocker before. Gate the dashboard on `subscription_status == "active"`. **Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (and anywhere else the URL is hardcoded/documented) needs updating to match — it won't happen automatically.
+3. UI design pass on the dashboard — using the `frontend-design` skill/plugin for a more intentional visual pass (current styling was written directly, not run through it).
+4. `/api/realms` + a sell-realm dropdown in the dashboard UI (Stage 4's remaining piece — the server has multi-realm data now, the frontend doesn't expose it yet).
+5. Decide whether Phase 3 still needs a per-item transferability flag, or whether the existing CLI/dashboard NOTE text already covers the real risk (see Phase 3 row above).
+6. Phase 2: commodities feed (region-wide, separate schema — do not merge with gear).
+7. Phase 3: appearance layer (`ItemModifiedAppearance` mapping via wago.tools DB2 exports + static API fallback).
+8. Optional: revisit the Phase 0 validation protocol (`VALIDATION.md`) if the sale-inference signal's accuracy becomes a live concern.
 
 **Immediate blocker on the pivot's own next step (Stage 2)**: none — Stage 2
 (auth) can be built and tested against a local/Dockerized Postgres without
