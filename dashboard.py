@@ -14,6 +14,7 @@ sell realm you've collected.
 """
 import argparse
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -54,6 +55,30 @@ ENABLE_BACKGROUND_COLLECTION = os.environ.get("ENABLE_BACKGROUND_COLLECTION", "f
 # fetch_once()'s If-Modified-Since check keeps the no-op polls cheap.
 COLLECTION_INTERVAL_SECONDS = 10 * 60
 
+# Real production data (this deployment's own /log page, 2026-07-23 evening)
+# showed the "no fixed clock time" assumption above was overly cautious for
+# at least this realm: 7 consecutive Draenor retrievals all landed within a
+# ~1.5-minute band around :19-:20 past the hour. Poll tightly through a
+# generous window around that mark so a real update gets caught within
+# TIGHT_INTERVAL_SECONDS instead of up to the full 10-minute baseline; fall
+# back to the normal cadence the rest of the hour so total request volume
+# for a quiet 44 minutes/hour barely changes. The window is deliberately
+# wider (16 min) than the observed band (~1.5 min) since this schedule is
+# shared across every deep-collected realm, not tuned per-realm -- other
+# realms likely publish at a slightly different offset. Revisit with a
+# per-realm learned offset if this window turns out too narrow/wide once
+# more realms have enough /log history to check.
+TIGHT_WINDOW_START_MINUTE = 12
+TIGHT_WINDOW_END_MINUTE = 28
+TIGHT_INTERVAL_SECONDS = 45
+
+
+def _next_poll_interval_seconds(now: datetime.datetime | None = None) -> int:
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if TIGHT_WINDOW_START_MINUTE <= now.minute < TIGHT_WINDOW_END_MINUTE:
+        return TIGHT_INTERVAL_SECONDS
+    return COLLECTION_INTERVAL_SECONDS
+
 
 async def _collection_loop() -> None:
     import collect_all as collect_all_module
@@ -62,14 +87,17 @@ async def _collection_loop() -> None:
             await asyncio.to_thread(collect_all_module.collect_all)
         except Exception:
             log.exception("background collection cycle failed")
-        await asyncio.sleep(COLLECTION_INTERVAL_SECONDS)
+        await asyncio.sleep(_next_poll_interval_seconds())
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = None
     if ENABLE_BACKGROUND_COLLECTION:
-        log.info("starting background collection loop (every %ss)", COLLECTION_INTERVAL_SECONDS)
+        log.info("starting background collection loop (every %ss, or %ss during the "
+                 "expected publish window :%s-:%s past the hour)",
+                 COLLECTION_INTERVAL_SECONDS, TIGHT_INTERVAL_SECONDS,
+                 TIGHT_WINDOW_START_MINUTE, TIGHT_WINDOW_END_MINUTE)
         task = asyncio.create_task(_collection_loop())
     yield
     if task is not None:
@@ -181,6 +209,7 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
 def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
+                min_sell_now: float | None = None,
                 min_sales: int = 2, max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
                 top: int = 50, sort: str = Query("discount"), names: bool = False,
@@ -197,7 +226,8 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
     con = analyze.connect(sell)
     rows = snipe_check.find_snipes(con, sell, items=item_ids, min_discount=min_discount,
                                    min_per_day=min_per_day, sell_percentile=sell_percentile,
-                                   min_gold=min_gold, max_gold=max_gold, min_sales=min_sales,
+                                   min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
+                                   min_sales=min_sales,
                                    max_appearance_sources=max_appearance_sources,
                                    max_per_item=max_per_item,
                                    top=top, sort=sort)

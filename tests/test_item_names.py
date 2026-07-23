@@ -19,11 +19,12 @@ def cache_path(tmp_path, monkeypatch):
     return path
 
 
-def stub_details(monkeypatch, name="Ornate Spyglass", quality="COMMON", level=35, calls=None):
+def stub_details(monkeypatch, name="Ornate Spyglass", quality="COMMON", level=35,
+                 inventory_type=None, calls=None):
     def fake(item_id):
         if calls is not None:
             calls.append(item_id)
-        return {"name": name, "quality": quality, "level": level}
+        return {"name": name, "quality": quality, "level": level, "inventory_type": inventory_type}
     monkeypatch.setattr(item_names, "_fetch_item_details", fake)
 
 
@@ -69,6 +70,38 @@ def test_pet_quality_color_uses_positional_palette(cache_path, monkeypatch):
     assert nc.quality_color(PET_ITEM, pet_quality_id=99) is None  # out of range -> unknown
 
 
+def test_inventory_type_resolves_and_caches(cache_path, monkeypatch):
+    calls = []
+    stub_details(monkeypatch, inventory_type="PROFESSION_TOOL", calls=calls)
+    nc = NameCache()
+    assert nc.inventory_type(2901) == "PROFESSION_TOOL"
+    assert nc.inventory_type(2901) == "PROFESSION_TOOL"
+    assert calls == [2901]  # second call served from cache, not refetched
+
+
+def test_inventory_type_none_is_cached_not_refetched_forever(cache_path, monkeypatch):
+    """Most items (reagents, consumables, quest items) have no
+    inventory_type at all -- that's a real, common, permanent answer, not
+    "not fetched yet," so it must not trigger a refetch on every call."""
+    calls = []
+    stub_details(monkeypatch, inventory_type=None, calls=calls)
+    nc = NameCache()
+    assert nc.inventory_type(6948) is None
+    assert nc.inventory_type(6948) is None
+    assert calls == [6948]
+
+
+def test_inventory_type_unknown_item_returns_none(cache_path, monkeypatch):
+    monkeypatch.setattr(item_names, "_fetch_item_details", lambda item_id: None)
+    nc = NameCache()
+    assert nc.inventory_type(999999) is None
+
+
+def test_inventory_type_pet_cage_returns_none(cache_path, monkeypatch):
+    nc = NameCache()
+    assert nc.inventory_type(PET_ITEM) is None
+
+
 def test_base_level_resolves_and_caches(cache_path, monkeypatch):
     calls = []
     stub_details(monkeypatch, level=636, calls=calls)
@@ -84,28 +117,31 @@ def test_base_level_none_for_pet_cage_item(cache_path, monkeypatch):
 
 
 def test_single_fetch_populates_name_quality_and_level_together(cache_path, monkeypatch):
-    """get(), quality_color(), and base_level() should share one fetch per
-    item rather than each re-hitting the API."""
+    """get(), quality_color(), base_level(), and inventory_type() should
+    share one fetch per item rather than each re-hitting the API."""
     calls = []
-    stub_details(monkeypatch, name="Ornate Spyglass", quality="COMMON", level=35, calls=calls)
+    stub_details(monkeypatch, name="Ornate Spyglass", quality="COMMON", level=35,
+                 inventory_type="HEAD", calls=calls)
     nc = NameCache()
     assert nc.get(5507) == "Ornate Spyglass"
     assert nc.quality_color(5507) == "#ffffff"
     assert nc.base_level(5507) == 35
+    assert nc.inventory_type(5507) == "HEAD"
     assert calls == [5507]
 
 
 def test_backfills_quality_and_level_for_pre_existing_name_only_cache(cache_path, monkeypatch):
-    """A cache file written before quality/level support only has the name
-    string cached -- quality_color()/base_level() must still resolve by
+    """A cache file written before quality/level/inventory_type support only
+    has the name string cached -- the newer accessors must still resolve by
     fetching independently, not silently return None forever."""
     cache_path.write_text(json.dumps({"items": {"5507": "Ornate Spyglass"}, "pets": {}}))
     calls = []
-    stub_details(monkeypatch, quality="RARE", level=40, calls=calls)
+    stub_details(monkeypatch, quality="RARE", level=40, inventory_type="CHEST", calls=calls)
     nc = NameCache()
     assert nc.get(5507) == "Ornate Spyglass"  # already cached, no fetch needed for this alone
     assert nc.quality_color(5507) == "#0070dd"  # triggers the backfill fetch
     assert nc.base_level(5507) == 40  # already backfilled by the quality_color() call
+    assert nc.inventory_type(5507) == "CHEST"  # already backfilled too
     assert calls == [5507]
 
 

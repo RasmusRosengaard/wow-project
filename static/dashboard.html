@@ -3,6 +3,18 @@
 <head>
 <meta charset="utf-8">
 <title>AH Snipe Dashboard</title>
+<script>
+  // Runs before first paint, deliberately separate from the main script at
+  // the end of body -- setting the theme attribute after CSS has already
+  // rendered would show a flash of the wrong theme. Saved choice wins over
+  // the system preference (that's the point of a manual toggle); the
+  // system preference is only the fallback for a first-ever visit.
+  (function () {
+    var saved = localStorage.getItem("theme");
+    var theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
 <style>
   :root {
     color-scheme: light;
@@ -23,6 +35,27 @@
     --alert: #b0392f;
     --alert-bg: rgba(176,57,47,0.08);
     --coin-gold: #d4af37; --coin-silver: #b7b7b7; --coin-copper: #b87333;
+  }
+  /* Same "assay ledger" identity, same-thesis dark variant -- not a
+     different theme, the same certificate under gallery lighting. Applied
+     via a data-theme attribute (see the theme-toggle script) rather than
+     a bare prefers-color-scheme media query, since the toggle needs to be
+     able to override the system preference either direction and persist
+     the choice. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #14161a;
+    --card: #1b1e24;
+    --hairline: #333844;
+    --hairline-strong: #454b59;
+    --ink: #e8eaed;
+    --text-dim: #8b93a3;
+    --bullion: #d4af61;
+    --bullion-dim: #b8934f;
+    --verified: #3fa9a0;
+    --verified-bg: rgba(63,169,160,0.14);
+    --alert: #e0645a;
+    --alert-bg: rgba(224,100,90,0.14);
   }
   * { box-sizing: border-box; }
   body {
@@ -58,6 +91,7 @@
     text-decoration: none; font-weight: 600; font-family: inherit;
   }
   .nav a:hover, .nav button:hover { border-color: var(--hairline-strong); color: var(--ink); }
+  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.4rem 0.55rem; }
 
   /* ---------- Shell: filter rail + content ---------- */
   .shell { display: flex; align-items: flex-start; gap: 1.25rem; padding: 1.25rem 1.5rem; max-width: 1500px; margin-inline: auto; }
@@ -98,7 +132,9 @@
   #refresh:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
 
   /* ---------- Ledger table ---------- */
-  .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hairline); border-radius: 6px; }
+  .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hairline); border-radius: 6px; transition: opacity 0.15s ease; }
+  .table-wrap.loading { opacity: 0.5; pointer-events: none; }
+  #refresh:disabled { opacity: 0.7; cursor: default; }
   table { border-collapse: collapse; width: 100%; font-size: 0.85rem; min-width: 640px; }
   th, td { padding: 0.55rem 0.7rem; text-align: right; border-bottom: 1px solid var(--hairline); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
@@ -122,9 +158,12 @@
      (including white/Common) regardless of page theme -- set inline per
      row via --q (falls back to a neutral hairline when unknown). */
   .item-icon {
-    width: 24px; height: 24px; border-radius: 3px; flex-shrink: 0;
+    /* Bigger + a thicker ring than the first pass -- 24px/2px read as
+       nearly invisible at a glance; 28px/3px gives the color real
+       presence without swallowing the icon art underneath. */
+    width: 28px; height: 28px; border-radius: 4px; flex-shrink: 0;
     border: 1px solid var(--hairline-strong);
-    box-shadow: inset 0 0 0 2px var(--q, transparent);
+    box-shadow: inset 0 0 0 3px var(--q, transparent);
   }
   .item-cell a .item-icon:hover { border-color: var(--bullion); cursor: pointer; }
   .group-toggle {
@@ -157,9 +196,9 @@
   }
   #tooltip .tt-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem; }
   #tooltip .tt-icon {
-    width: 36px; height: 36px; border-radius: 3px;
+    width: 40px; height: 40px; border-radius: 4px;
     border: 1px solid var(--hairline-strong);
-    box-shadow: inset 0 0 0 2px var(--q, transparent);
+    box-shadow: inset 0 0 0 3px var(--q, transparent);
   }
   #tooltip .tt-name { font-weight: 700; font-size: 0.95rem; line-height: 1.2; color: var(--ink); display: flex; align-items: center; gap: 0.4rem; }
   #tooltip .tt-sub { color: var(--text-dim); font-size: 0.7rem; margin-bottom: 0.4rem; }
@@ -190,6 +229,7 @@
     <span class="seal-label">Validated Data</span>
   </div>
   <div class="nav">
+    <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
     <a href="/log">Log</a>
     <a href="/profile">Profile</a>
     <button id="logout">Log out</button>
@@ -204,6 +244,7 @@
     <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
     <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
     <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
+    <label>Min sell realm low (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
     <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
     <label>Top <input id="top" type="number" value="50"></label>
     <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
@@ -217,7 +258,7 @@
   </aside>
 
   <main class="content">
-    <div class="table-wrap">
+    <div class="table-wrap" id="table-wrap">
     <table>
       <thead>
         <tr>
@@ -321,6 +362,10 @@ function params() {
   if ($("items").value.trim()) p.set("items", $("items").value.trim());
   if ($("min_gold").value.trim()) p.set("min_gold", $("min_gold").value.trim());
   if ($("max_gold").value.trim()) p.set("max_gold", $("max_gold").value.trim());
+  // Filters on "Sell realm low" (the sell realm's current cheapest live
+  // listing), distinct from min/max buy above -- excludes low-value junk
+  // that happens to clear the discount% threshold anyway.
+  if ($("min_sell_now").value.trim()) p.set("min_sell_now", $("min_sell_now").value.trim());
   // Caps how many listings of the same item/variant can fill the "top"
   // budget -- without this, one popular item with dozens of live auctions
   // could crowd out variety before client-side grouping ever sees the rest.
@@ -489,30 +534,44 @@ function renderTable() {
   });
 }
 
+// Covers both the manual Refresh click and the 60s auto-refresh timer,
+// since both go through loadSnipes() -- a silent auto-refresh with no
+// feedback was as confusing as a manual click with no feedback.
+function setLoading(isLoading) {
+  $("refresh").disabled = isLoading;
+  $("refresh").textContent = isLoading ? "Loading…" : "Refresh";
+  $("table-wrap").classList.toggle("loading", isLoading);
+}
+
 async function loadSnipes() {
   const sell = $("sell").value;
   if (!sell) return;
-  const r = await fetch(`/api/snipes?${params().toString()}`);
-  if (r.status === 401) { window.location.href = "/login"; return; }
-  if (r.status === 402) { window.location.href = "/subscribe"; return; }
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({detail: r.statusText}));
-    currentRows = [];
-    openGroups.clear();
+  setLoading(true);
+  try {
+    const r = await fetch(`/api/snipes?${params().toString()}`);
+    if (r.status === 401) { window.location.href = "/login"; return; }
+    if (r.status === 402) { window.location.href = "/subscribe"; return; }
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.statusText}));
+      currentRows = [];
+      openGroups.clear();
+      renderTable();
+      $("empty").textContent = err.detail || "error loading snipes";
+      hideTooltip();
+      return;
+    }
+    const data = await r.json();
+    // data.caveat (the warband/BoP note) is intentionally not displayed --
+    // removed from the UI per product decision; still in the API response.
+    currentRegion = data.region;
+    currentSellSlug = data.sell_realm_slug;
+    currentRows = data.rows;
+    openGroups.clear();  // fresh fetch -- collapse groups back to best-first summaries
     renderTable();
-    $("empty").textContent = err.detail || "error loading snipes";
-    hideTooltip();
-    return;
+    await loadStatus(sell);
+  } finally {
+    setLoading(false);
   }
-  const data = await r.json();
-  // data.caveat (the warband/BoP note) is intentionally not displayed --
-  // removed from the UI per product decision; still in the API response.
-  currentRegion = data.region;
-  currentSellSlug = data.sell_realm_slug;
-  currentRows = data.rows;
-  openGroups.clear();  // fresh fetch -- collapse groups back to best-first summaries
-  renderTable();
-  await loadStatus(sell);
 }
 
 document.getElementById("rows").addEventListener("mouseover", (e) => {
@@ -562,6 +621,25 @@ $("logout").addEventListener("click", async () => {
   await fetch("/auth/logout", { method: "POST" }).catch(() => {});
   window.location.href = "/login";
 });
+
+// Theme itself is already set pre-paint by the inline <head> script (avoids
+// a flash of the wrong theme); this just wires the toggle and keeps the
+// button's icon/label in sync with whichever theme is currently active.
+function applyThemeButtonState() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  const btn = $("theme-toggle");
+  btn.textContent = dark ? "☀" : "☽";  // sun to switch to light, moon to switch to dark
+  const label = dark ? "Switch to light mode" : "Switch to dark mode";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+$("theme-toggle").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  applyThemeButtonState();
+});
+applyThemeButtonState();
 
 async function loadRealms() {
   try {

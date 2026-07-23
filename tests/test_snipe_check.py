@@ -12,6 +12,7 @@ import pytest
 import analyze
 import appearance
 import diff_snapshots
+import item_names
 import snipe_check
 from fetch_snapshot import SCHEMA
 from scan_region import LISTING_SCHEMA
@@ -27,6 +28,20 @@ def isolate_appearance_cache(tmp_path, monkeypatch):
     reads CACHE_PATH (data/appearances.json) unless redirected -- no test
     should depend on whatever the real, gitignored local cache contains."""
     monkeypatch.setattr(appearance, "CACHE_PATH", tmp_path / "appearances_test_cache.json")
+
+
+@pytest.fixture(autouse=True)
+def isolate_item_names_cache(tmp_path, monkeypatch):
+    """When max_appearance_sources is set, find_snipes() also instantiates a
+    real item_names.NameCache (to exclude profession tools) -- same
+    isolation reasoning as isolate_appearance_cache above, plus a stub for
+    the live Blizzard API call so these tests stay offline/deterministic.
+    Default: no item is a profession tool, matching the vast majority of
+    real items -- tests that care about the exclusion override this."""
+    monkeypatch.setattr(item_names, "CACHE_PATH", tmp_path / "item_names_test_cache.json")
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {"name": None, "quality": None, "level": None,
+                                          "inventory_type": None})
 
 
 def write_appearance_cache(path, item_sources: dict[int, int]):
@@ -449,6 +464,38 @@ def test_find_snipes_max_appearance_sources_excludes_uncached_items(data_dir, mo
     con = analyze.connect(SELL_CR)
     assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1,
                                    max_appearance_sources=5) == []
+
+
+def test_find_snipes_max_appearance_sources_excludes_profession_tools(data_dir, monkeypatch):
+    """A profession tool (Mining Pick, Fishing Pole, etc.) trivially has a
+    low appearance_sources just because few items share that slot's model --
+    but those slots aren't part of the visible paperdoll/transmog system at
+    all, so it must be excluded even though it looks "unique" by the raw
+    count. Confirmed live: inventory_type.type == "PROFESSION_TOOL" for
+    real items (Mining Pick, Blacksmith Hammer, Fishing Pole)."""
+    run_diff(monkeypatch)
+    write_appearance_cache(appearance.CACHE_PATH, {101: 1})
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {"name": None, "quality": None, "level": None,
+                                          "inventory_type": "PROFESSION_TOOL"})
+    con = analyze.connect(SELL_CR)
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1,
+                                   max_appearance_sources=1) == []
+
+
+def test_find_snipes_max_appearance_sources_keeps_real_gear(data_dir, monkeypatch):
+    """A normal equipment slot (e.g. a head item) is unaffected by the
+    profession-tool exclusion -- only PROFESSION_TOOL/PROFESSION_GEAR are."""
+    run_diff(monkeypatch)
+    write_appearance_cache(appearance.CACHE_PATH, {101: 1})
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {"name": None, "quality": None, "level": None,
+                                          "inventory_type": "HEAD"})
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1,
+                                   max_appearance_sources=1)
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == 101
 
 
 def test_parse_items_combines_flag_and_file(tmp_path):

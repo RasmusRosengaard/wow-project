@@ -32,9 +32,14 @@ PET_QUALITY_COLORS = ["#9d9d9d", "#ffffff", "#1eff00", "#0070dd", "#a335ee", "#f
 
 
 def _fetch_item_details(item_id: int) -> dict | None:
-    """name + quality + catalog level in one call -- quality/level ride along
-    for free since they're on the same /item/{id} response the name lookup
-    already needs."""
+    """name + quality + catalog level + inventory slot type in one call --
+    they all ride along for free on the same /item/{id} response the name
+    lookup already needs. inventory_type is a real structured field
+    Blizzard's API returns (e.g. "PROFESSION_TOOL", "HEAD", "TWOHWEAPON"),
+    confirmed live against real items (Mining Pick, Blacksmith Hammer,
+    Fishing Pole all return PROFESSION_TOOL; profession accessory-slot gear
+    returns PROFESSION_GEAR) -- not a guess like the undocumented bonus
+    modifiers elsewhere in this project."""
     try:
         r = api_get(f"/data/wow/item/{item_id}", "static")
         if r.status_code != 200:
@@ -44,6 +49,7 @@ def _fetch_item_details(item_id: int) -> dict | None:
             "name": j.get("name"),
             "quality": (j.get("quality") or {}).get("type"),
             "level": j.get("level"),
+            "inventory_type": (j.get("inventory_type") or {}).get("type"),
         }
     except (Exception, SystemExit):
         return None
@@ -86,16 +92,17 @@ class NameCache:
         self._cache.setdefault("pet_icons", {})
         self._cache.setdefault("item_quality", {})
         self._cache.setdefault("item_level", {})
+        self._cache.setdefault("item_inventory_type", {})
         self._dirty = False
 
     def _ensure_item_details(self, item_id: int) -> None:
-        """Fetch name+quality+level together and backfill whichever of the
-        three caches a pre-existing entry is missing -- a cache file written
-        before quality/level support has the name but not those, so don't
-        assume a name-cache hit means everything else is cached too."""
+        """Fetch name+quality+level+inventory_type together and backfill
+        whichever cache a pre-existing entry is missing -- a cache file
+        written before a field existed has the name but not that field, so
+        don't assume a name-cache hit means everything else is cached too."""
         key = str(item_id)
         if key in self._cache["items"] and key in self._cache["item_quality"] \
-                and key in self._cache["item_level"]:
+                and key in self._cache["item_level"] and key in self._cache["item_inventory_type"]:
             return
         details = _fetch_item_details(item_id)
         if not details:
@@ -106,6 +113,13 @@ class NameCache:
             self._cache["item_quality"][key] = details["quality"]
         if details.get("level") is not None:
             self._cache["item_level"][key] = details["level"]
+        # Unlike quality/level above, always record inventory_type even
+        # when it's None -- most items genuinely have no inventory_type
+        # (reagents, consumables, quest items aren't equippable at all), so
+        # a truthy-only write here would mean the key never lands in the
+        # cache for the common case, and _ensure_item_details would refetch
+        # every single one of those items on every call forever.
+        self._cache["item_inventory_type"][key] = details.get("inventory_type")
         self._dirty = True
 
     def get(self, item_id: int, pet_species_id: int | None = None) -> str:
@@ -144,6 +158,17 @@ class NameCache:
             return None
         self._ensure_item_details(item_id)
         return self._cache["item_level"].get(str(item_id))
+
+    def inventory_type(self, item_id: int) -> str | None:
+        """The equipment slot type (e.g. "HEAD", "PROFESSION_TOOL"), or None
+        if unknown/not equippable. Used to filter profession tool/accessory
+        slots (PROFESSION_TOOL, PROFESSION_GEAR) out of transmog-rarity
+        results -- those slots aren't part of the visible paperdoll model at
+        all, so "unique transmog" never meaningfully applied to them."""
+        if item_id == PET_CAGE_ITEM_ID:
+            return None
+        self._ensure_item_details(item_id)
+        return self._cache["item_inventory_type"].get(str(item_id))
 
     def icon(self, item_id: int, pet_species_id: int | None = None) -> str | None:
         """Icon asset URL from Blizzard's render CDN, or None if unresolved --

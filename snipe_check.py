@@ -54,11 +54,20 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
           "listed), so it can ride the warband bank to your sell realm -- just "
           "don't equip/use it before moving it, or it may bind to that character.")
 
+# Blizzard's real inventory_type.type values for profession tool/accessory
+# slots (confirmed live 2026-07-23 against real items -- Mining Pick,
+# Blacksmith Hammer, Fishing Pole all return PROFESSION_TOOL; the newer
+# profession-accessory slot returns PROFESSION_GEAR). Neither slot is part
+# of the visible paperdoll model, so "unique transmog" never meaningfully
+# applied to them -- excluded from max_appearance_sources results below.
+NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
+
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
+                min_sell_now: float | None = None,
                 min_sales: int = 2, max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
                 top: int = 50, sort: str = "discount") -> list[dict]:
@@ -118,7 +127,14 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     never built) regardless of whether this filter is set, so callers can
     display it either way. Applied in Python after the SQL query rather than
     joined in SQL, since the cache is a local JSON file, not a DB table --
-    fine because candidate rows per query are always small.
+    fine because candidate rows per query are always small. Also excludes
+    NON_TRANSMOG_INVENTORY_TYPES (profession tool/accessory slots, confirmed
+    live against Blizzard's item API -- e.g. Mining Pick, Fishing Pole) --
+    those slots aren't part of the visible paperdoll model at all, so a low
+    appearance_sources for one of them isn't a meaningful "unique look" the
+    way it is for real transmog-visible gear. This lookup uses
+    item_names.NameCache, so filtering by max_appearance_sources can incur
+    one Blizzard API call per never-before-seen item (cached after).
 
     max_per_item (added 2026-07-23) caps how many listings of the *same*
     item/variant can appear in the results, keeping the best (highest
@@ -127,7 +143,17 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     auctions across scan realms could fill the entire `top` budget by itself,
     crowding out variety. `top` still caps the total row count; max_per_item
     caps rows per item on top of that -- e.g. top=500, max_per_item=1 means
-    up to 500 *distinct* items."""
+    up to 500 *distinct* items.
+
+    min_sell_now (added 2026-07-23) filters on the sell realm's current
+    cheapest live listing (`sell_now_g`/`sell_now_copper`), distinct from
+    min_gold/max_gold which filter the *buy*-side price. Useful for
+    excluding low-value junk that happens to clear the discount threshold --
+    a listing where the sell realm itself only ever sells for a few silver
+    isn't worth the trip regardless of discount%. A row with no current
+    listing on the sell realm (cheapest_now IS NULL) is excluded when this
+    is set, same reasoning as max_appearance_sources: can't prove it clears
+    a floor that isn't known."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -136,6 +162,8 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         price_filter += f" AND b.buy_unit_price >= {float(min_gold) * 10000}"
     if max_gold is not None:
         price_filter += f" AND b.buy_unit_price <= {float(max_gold) * 10000}"
+    if min_sell_now is not None:
+        price_filter += f" AND s.cheapest_now >= {float(min_sell_now) * 10000}"
     # When appearance-filtering, pull a wider SQL candidate pool since rows
     # get dropped *after* the query (the appearance cache is a local JSON
     # file, not something to join in SQL) -- otherwise a top-50 SQL LIMIT
@@ -232,9 +260,16 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     for r in rows:
         r["appearance_sources"] = appearances.source_count(r["item_id"])
     if max_appearance_sources is not None:
+        # Profession tool/accessory slots aren't part of the visible
+        # paperdoll model -- see NON_TRANSMOG_INVENTORY_TYPES -- so they're
+        # excluded here even when their appearance_sources happens to look
+        # "unique" (a small item pool trivially produces low source counts).
+        names = NameCache()
         rows = [r for r in rows
                 if r["appearance_sources"] is not None
-                and r["appearance_sources"] <= max_appearance_sources]
+                and r["appearance_sources"] <= max_appearance_sources
+                and names.inventory_type(r["item_id"]) not in NON_TRANSMOG_INVENTORY_TYPES]
+        names.save()
     return rows[: int(top)]
 
 
@@ -280,6 +315,10 @@ def main() -> None:
                     help="minimum buy price in gold (budget floor, skips trivial junk)")
     ap.add_argument("--max-gold", type=float, default=None,
                     help="maximum buy price in gold (budget ceiling)")
+    ap.add_argument("--min-sell-now", type=float, default=None,
+                    help="minimum current sell-realm price in gold (excludes low-value junk "
+                         "regardless of discount%%; rows with no current sell-realm listing "
+                         "are excluded when this is set)")
     ap.add_argument("--min-sales", type=int, default=2,
                     help="minimum number of inferred sales required to trust the sold-price "
                          "percentile (default 2 -- a single sale can be an unverified "
@@ -288,7 +327,8 @@ def main() -> None:
                     help="only show items whose transmog appearance is granted by at most N "
                          "distinct items region-wide (1 = unique look); requires "
                          "data/appearances.json -- see appearance.py --refresh. Items missing "
-                         "from the appearance cache are excluded when this is set")
+                         "from the appearance cache are excluded when this is set. Profession "
+                         "tool/accessory items are always excluded (not real transmog slots)")
     ap.add_argument("--max-per-item", type=int, default=None,
                     help="cap how many listings of the same item/variant can appear in the "
                          "results (keeps the highest-discount ones); combine with --top for "
@@ -316,6 +356,7 @@ def main() -> None:
     rows = find_snipes(con, args.sell, items=items, min_discount=args.min_discount,
                        min_per_day=args.min_per_day, sell_percentile=args.sell_percentile,
                        min_gold=args.min_gold, max_gold=args.max_gold,
+                       min_sell_now=args.min_sell_now,
                        min_sales=args.min_sales,
                        max_appearance_sources=args.max_appearance_sources,
                        max_per_item=args.max_per_item,

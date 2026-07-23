@@ -441,3 +441,33 @@ def test_realm_info_returns_none_fields_on_failure(monkeypatch):
     monkeypatch.setattr(dashboard, "_realm_info_cache", {})
     monkeypatch.setattr(blizz, "connected_realm_realms", lambda cr_id: (_ for _ in ()).throw(RuntimeError))
     assert dashboard._realm_info(1403) == {"name": None, "slug": None}
+
+
+def test_poll_interval_is_tight_inside_the_expected_publish_window():
+    """Real production data (7 consecutive Draenor retrievals landing within
+    ~1.5 minutes of each other) showed AH data reliably arrives around
+    :19-:20 past the hour for at least this realm -- poll every
+    TIGHT_INTERVAL_SECONDS through a generous window around that mark
+    instead of waiting up to the full 10-minute baseline."""
+    import datetime
+    inside = datetime.datetime(2026, 7, 23, 21, 20, 0, tzinfo=datetime.timezone.utc)
+    assert dashboard._next_poll_interval_seconds(inside) == dashboard.TIGHT_INTERVAL_SECONDS
+
+
+def test_poll_interval_is_normal_outside_the_expected_publish_window():
+    import datetime
+    outside = datetime.datetime(2026, 7, 23, 21, 45, 0, tzinfo=datetime.timezone.utc)
+    assert dashboard._next_poll_interval_seconds(outside) == dashboard.COLLECTION_INTERVAL_SECONDS
+
+
+def test_poll_interval_window_boundaries():
+    import datetime
+    start = datetime.datetime(2026, 7, 23, 21, dashboard.TIGHT_WINDOW_START_MINUTE, 0,
+                              tzinfo=datetime.timezone.utc)
+    just_before_end = datetime.datetime(2026, 7, 23, 21, dashboard.TIGHT_WINDOW_END_MINUTE - 1, 59,
+                                        tzinfo=datetime.timezone.utc)
+    at_end = datetime.datetime(2026, 7, 23, 21, dashboard.TIGHT_WINDOW_END_MINUTE, 0,
+                               tzinfo=datetime.timezone.utc)
+    assert dashboard._next_poll_interval_seconds(start) == dashboard.TIGHT_INTERVAL_SECONDS
+    assert dashboard._next_poll_interval_seconds(just_before_end) == dashboard.TIGHT_INTERVAL_SECONDS
+    assert dashboard._next_poll_interval_seconds(at_end) == dashboard.COLLECTION_INTERVAL_SECONDS
