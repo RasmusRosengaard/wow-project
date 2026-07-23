@@ -177,26 +177,60 @@ names/icons toggle was removed (always on now). Per explicit human
 instruction, the repeated caveat/NOTE banner was also removed from the
 dashboard UI entirely — see the `dashboard.html` table entry above.
 
-**Full visual rethink — proposed, not yet decided or built (2026-07-23).**
-Human explicitly wants to move away from this "Undermine cartel" identity
-entirely, toward a "professional enterprise" feel, across all six pages
-(the five above plus the new `static/log.html`) — noted because the current
-dark-bg/toxic-green pattern is itself one of the three generic "AI dashboard"
-looks the `frontend-design` skill warns against, so this isn't just a
-palette swap. Direction proposed but **not yet confirmed by the human**:
-"assay office / commodities exchange" instead of "hacker terminal" — named
-palette `--graphite #14161a`/`--panel #1b1e24`/`--panel-raised #242832`/
-`--hairline #333844`/`--ink #e8eaed`/`--text-dim #8b93a3`/`--bullion #d4af61`
-(signature gold accent — literal tie to the product being about gold
-prices)/`--verified #3fa9a0` (patina-teal, reserved for confirmed/validated
-states only); keep system-font stacks (no webfont) per the existing
-offline-capable convention; a **Validation Seal** signature element — a
-small hairline-stamp mark on listings that clear the real validation
-thresholds, echoing assay/bullion certification and tying directly to the
-product's core thesis ("validated," not just cheap); a persistent left nav
-rail instead of the current top masthead, across all 6 pages. **Do not
-build this until the human explicitly signs off on the plan** — last left
-mid-conversation when the `/log` feature request came up instead.
+**Full visual rethink — in progress, dashboard.html done, other 5 pages not
+started yet (2026-07-23).** Human wants to move away from the "Undermine
+cartel" identity entirely, toward a "professional enterprise" feel, across
+all six pages (the five above plus `static/log.html`) — noted because the
+old dark-bg/toxic-green pattern is itself one of the three generic "AI
+dashboard" looks the `frontend-design` skill warns against, so this was
+never just a palette swap. **First proposal (dark "assay office /
+commodities exchange") was rejected** — human's "professional enterprise"
+meant light/white, not another dark theme with a different accent.
+Revised and built direction, "assay ledger / certificate on paper":
+`--paper #f6f7f5` (cool near-white base — deliberately not warm cream, to
+avoid the OTHER generic AI-dashboard cliché), `--card #ffffff`, `--hairline
+#d8dbd4`/`--hairline-strong #c3c8bd`, `--ink #14161a`/`--text-dim #5b6259`,
+`--bullion #a67c2e` (signature muted gold — literal tie to the product
+being about gold prices, deliberately darker/less "coin-bright" than a
+first pass so it holds contrast on white), `--verified #2f7d72` (deep
+verdigris-teal, reserved for the Validation Seal and "fresh" states only).
+System-font stacks kept (no webfont), `ui-monospace` for data, unchanged
+from before. **Validation Seal** signature element: one small hairline
+circular stamp (checkmark ring, `--verified`) in the top bar next to the
+wordmark — not per-row (a certificate has one seal, not one per line item)
+— paired with a small "Validated Data" label; encodes the product's actual
+thesis, not decoration. Layout: a left filter rail (`.filters`) replacing
+the old horizontal control bar, top bar keeps nav (`/log`, `/profile`,
+log out) — collapses to a stacked column under 900px width (same
+`flex-direction: column` pattern the mobile table-overflow fix already
+used elsewhere on this page).
+
+**Real accessibility bug caught and fixed during the build, not after**:
+Blizzard's in-game item-quality colors (`item_names.QUALITY_COLORS`) were
+designed for dark UI panels — measured contrast against the new
+`--paper` background before shipping, and every one of them fails WCAG AA
+as *text* color except Rare/Epic (Common/white is literally invisible,
+Uncommon green is ~1.3:1). Fixed by rendering rarity as a small colored
+swatch dot (`.q-dot`) next to the item name instead of coloring the name
+text itself — item names now always render in `--ink` (always legible),
+the dot carries the color coding instead (no text-contrast requirement for
+a small saturated swatch). This is the one deliberate JS change alongside
+the CSS/markup rewrite (`qualityDot()` in `buildRowHtml`/`showTooltip`) —
+otherwise the "only markup/CSS changed" convention from the first design
+pass held.
+
+**Verification**: no backend changed (`pytest -q` stayed green throughout,
+145 passing), but this was still checked in a real browser before shipping
+— a throwaway local preview (auth-gated `init()` stubbed with sample rows,
+served via a local static file server, screenshotted via the
+`claude-in-chrome` skill, never committed) confirmed the seal, dots, coin
+icons, and gold accent all render correctly together before deploying.
+
+**Still not started**: `login.html`, `register.html`, `subscribe.html`,
+`profile.html`, `log.html` all still run the old dark "Undermine cartel"
+palette — only `dashboard.html` has been redesigned so far, deliberately
+(human wanted to see one page live before committing to all six). Do not
+touch the other five until the human reacts to the live dashboard.
 
 ### Hosted deployment (Railway)
 

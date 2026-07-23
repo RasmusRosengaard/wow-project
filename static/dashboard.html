@@ -5,122 +5,128 @@
 <title>AH Snipe Dashboard</title>
 <style>
   :root {
-    color-scheme: dark;
-    /* Undermine cartel trading-floor palette: warm industrial black, not
-       neutral -- goblin engineering meets a commodities exchange. */
-    --bg: #14170f;
-    --panel: #1b1f15;
-    --panel-raised: #23281a;
-    --border: #3a4029;
-    --border-bright: #565f38;
-    --text: #eef0e6;
-    --text-dim: #97a084;
-    --toxic: #a6e600;       /* signature accent -- CTAs, active states, ticker */
-    --toxic-dim: #7fb300;
-    --brass: #c9963e;       /* structural accent -- rules, labels, chrome */
-    --ember: #ff7a45;       /* alert / high-value */
-    --gold: #ffd651;
+    color-scheme: light;
+    /* "Assay ledger" palette -- a certified commodities statement on paper,
+       not a hacker terminal. Cooler near-white (not warm cream) and a
+       muted metallic gold/verdigris pairing keep it from reading as the
+       generic "cream + serif + terracotta" AI-dashboard default. */
+    --paper: #f6f7f5;
+    --card: #ffffff;
+    --hairline: #d8dbd4;
+    --hairline-strong: #c3c8bd;
+    --ink: #14161a;
+    --text-dim: #5b6259;
+    --bullion: #a67c2e;       /* signature accent -- literal tie to "gold prices" */
+    --bullion-dim: #8a6624;
+    --verified: #2f7d72;      /* Validation Seal + "fresh/ok" states only */
+    --verified-bg: rgba(47,125,114,0.08);
+    --alert: #b0392f;
+    --alert-bg: rgba(176,57,47,0.08);
+    --coin-gold: #d4af37; --coin-silver: #b7b7b7; --coin-copper: #b87333;
   }
   * { box-sizing: border-box; }
   body {
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-    margin: 0; padding: 1.5rem; max-width: 1400px; margin-inline: auto;
-    background: var(--bg); color: var(--text);
-    background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.04), transparent 60%);
+    margin: 0; background: var(--paper); color: var(--ink);
   }
   code, .mono, .money, .num { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
 
-  /* ---------- Masthead ---------- */
-  .masthead { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-bottom: 0.75rem; }
-  h1 {
-    font-size: 1.5rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
-    text-transform: uppercase; color: var(--text);
+  /* ---------- Top bar ---------- */
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 1rem; padding: 0.9rem 1.5rem; background: var(--card);
+    border-bottom: 1px solid var(--hairline-strong);
   }
-  h1 .accent { color: var(--toxic); }
-  .nav { display: flex; gap: 0.5rem; }
+  .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .brand h1 {
+    font-size: 1.05rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
+    text-transform: uppercase; color: var(--ink);
+  }
+  /* Signature element: a hairline stamp mark, like an assay/bullion
+     certification seal -- encodes the product's actual thesis (validated
+     data, not just cheap listings), not decoration. One per page, not one
+     per row -- a certificate has a single seal. */
+  .seal { color: var(--verified); flex-shrink: 0; }
+  .seal-label {
+    font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--verified); white-space: nowrap;
+  }
+  .nav { display: flex; gap: 0.4rem; align-items: center; }
   .nav a, .nav button {
-    background: var(--panel-raised); border: 1px solid var(--border-bright); color: var(--text);
-    border-radius: 3px; padding: 0.4rem 0.8rem; cursor: pointer; font-size: 0.78rem;
-    text-decoration: none; font-weight: 600; letter-spacing: 0.02em;
+    background: transparent; border: 1px solid transparent; color: var(--text-dim);
+    border-radius: 3px; padding: 0.4rem 0.7rem; cursor: pointer; font-size: 0.8rem;
+    text-decoration: none; font-weight: 600; font-family: inherit;
   }
-  .nav a:hover, .nav button:hover { border-color: var(--brass); color: var(--brass); }
+  .nav a:hover, .nav button:hover { border-color: var(--hairline-strong); color: var(--ink); }
 
-  /* Ticker: the signature element -- a segmented brass-divided status strip,
-     static (not scrolling -- respects reduced motion, and a marquee gimmick
-     wears out fast on a tool you leave open all day). Every segment is real
-     freshness data, not decoration. */
-  .ticker {
-    display: flex; flex-wrap: wrap; gap: 0; margin-bottom: 1rem;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 3px;
-    font-size: 0.72rem; overflow: hidden;
+  /* ---------- Shell: filter rail + content ---------- */
+  .shell { display: flex; align-items: flex-start; gap: 1.25rem; padding: 1.25rem 1.5rem; max-width: 1500px; margin-inline: auto; }
+  .filters {
+    flex: 0 0 15rem; background: var(--card); border: 1px solid var(--hairline);
+    border-radius: 6px; padding: 1rem; display: flex; flex-direction: column; gap: 0.9rem;
   }
-  .ticker .seg {
-    padding: 0.5rem 0.9rem; border-right: 1px solid var(--border);
-    display: flex; align-items: baseline; gap: 0.4rem; white-space: nowrap;
-  }
-  .ticker .seg:last-child { border-right: none; }
-  .ticker .k { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.68rem; }
-  .ticker .v { color: var(--text); font-weight: 600; }
-  .ticker .v.stale { color: var(--ember); }
-  .ticker .v.ok { color: var(--toxic); }
+  .content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.9rem; }
 
-  /* ---------- Control bar ---------- */
-  .bar {
-    display: flex; flex-wrap: wrap; gap: 1rem; align-items: end;
-    margin-bottom: 1rem; padding: 0.85rem 1rem; background: var(--panel);
-    border: 1px solid var(--border); border-radius: 4px;
-  }
-  .bar label {
+  /* Ticker: now a single quiet line (see loadStatus) -- lives at the top of
+     the filter rail since it's status *about* the data the filters query. */
+  .ticker { font-size: 0.72rem; padding-bottom: 0.7rem; border-bottom: 1px solid var(--hairline); }
+  .ticker .seg { display: flex; justify-content: space-between; gap: 0.5rem; }
+  .ticker .k { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.66rem; }
+  .ticker .v { font-weight: 600; }
+  .ticker .v.stale { color: var(--alert); }
+  .ticker .v.ok { color: var(--verified); }
+
+  .filters label {
     display: flex; flex-direction: column; font-size: 0.68rem; color: var(--text-dim);
     gap: 0.3rem; text-transform: uppercase; letter-spacing: 0.05em;
   }
-  .bar input, .bar select {
-    background: var(--bg); border: 1px solid var(--border-bright); color: var(--text);
-    border-radius: 3px; padding: 0.4rem 0.55rem; width: 8.5rem; font-size: 0.85rem;
+  .filters input, .filters select {
+    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.42rem 0.55rem; width: 100%; font-size: 0.85rem;
     font-family: inherit;
   }
-  .bar select { width: 11rem; }
-  .bar input:focus-visible, .bar select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
-  .bar input[type=checkbox] { width: auto; }
-  .bar button#refresh {
-    background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
-    border-radius: 3px; padding: 0.45rem 1rem; cursor: pointer; height: fit-content;
+  .filters input:focus-visible, .filters select:focus-visible,
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
+  .filters input[type=checkbox] { width: auto; }
+  .filters .auto-label { flex-direction: row; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; }
+  #refresh {
+    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
+    border-radius: 3px; padding: 0.55rem 1rem; cursor: pointer; width: 100%;
     font-weight: 700; text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.03em;
+    font-family: inherit;
   }
-  .bar button#refresh:hover { background: var(--toxic-dim); border-color: var(--toxic-dim); }
-  .bar .auto-label { flex-direction: row; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; color: var(--text-dim); }
+  #refresh:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
 
   /* ---------- Ledger table ---------- */
-  /* Wide on seven columns -- scrolls inside its own box on narrow viewports
-     instead of blowing out the page (which would force horizontal body
-     scroll on mobile). */
-  .table-wrap { overflow-x: auto; }
+  .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hairline); border-radius: 6px; }
   table { border-collapse: collapse; width: 100%; font-size: 0.85rem; min-width: 640px; }
-  th, td { padding: 0.5rem 0.7rem; text-align: right; border-bottom: 1px solid var(--border); }
+  th, td { padding: 0.55rem 0.7rem; text-align: right; border-bottom: 1px solid var(--hairline); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
   th {
     cursor: pointer; user-select: none; color: var(--text-dim); font-weight: 700;
-    white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.7rem;
-    border-bottom: 1px solid var(--border-bright);
+    white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem;
+    border-bottom: 1px solid var(--hairline-strong);
   }
-  th.active { color: var(--toxic); }
+  th.active { color: var(--bullion); }
   th .dir { display: inline-block; width: 0.7em; opacity: 0.8; }
-  tbody tr { border-bottom: 1px solid var(--border); }
-  tbody tr:hover { background: var(--panel); }
-  tbody tr.sub-row { background: var(--panel); }
-  tbody tr.sub-row:hover { background: var(--panel-raised); }
-  tbody tr.sub-row td:first-child { position: relative; }
+  tbody tr:hover { background: var(--paper); }
+  tbody tr.sub-row { background: var(--paper); }
   tbody tr.sub-row td { color: var(--text-dim); }
   .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; }
   .item-cell a { display: flex; line-height: 0; }
-  .item-icon { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--border-bright); flex-shrink: 0; }
-  .item-cell a .item-icon:hover { border-color: var(--toxic); cursor: pointer; }
+  .item-icon { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--hairline-strong); flex-shrink: 0; }
+  .item-cell a .item-icon:hover { border-color: var(--bullion); cursor: pointer; }
+  /* Rarity as a swatch, not text color -- Blizzard's in-game quality
+     palette (near-white for Common, saturated green/cyan for others) was
+     designed for dark panels and fails contrast on paper; a dot sidesteps
+     the problem instead of fighting it. */
+  .q-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.15); flex-shrink: 0; }
   .group-toggle {
-    background: var(--panel-raised); border: 1px solid var(--border-bright); color: var(--text-dim);
+    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--text-dim);
     border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.68rem; cursor: pointer;
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin-left: 0.2rem;
   }
-  .group-toggle:hover { border-color: var(--toxic); color: var(--toxic); }
+  .group-toggle:hover { border-color: var(--bullion); color: var(--bullion); }
   .empty { color: var(--text-dim); padding: 1.5rem 0; text-align: center; font-size: 0.85rem; }
 
   /* ---------- Coin display ---------- */
@@ -128,81 +134,99 @@
   .money-part { display: inline-flex; align-items: center; gap: 3px; margin-right: 7px; }
   .coin {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-    box-shadow: inset -1px -1px 1px rgba(0,0,0,0.5), inset 1px 1px 1px rgba(255,255,255,0.35);
+    box-shadow: inset -1px -1px 1px rgba(0,0,0,0.35), inset 1px 1px 1px rgba(255,255,255,0.5);
   }
-  .coin-gold   { background: radial-gradient(circle at 35% 30%, #ffe680, var(--gold) 55%, #b8860b); }
-  .coin-silver { background: radial-gradient(circle at 35% 30%, #f4f4f4, #b7b7b7 55%, #7c7c7c); }
-  .coin-copper { background: radial-gradient(circle at 35% 30%, #e0985a, var(--brass) 55%, #8a4a1f); }
+  .coin-gold   { background: radial-gradient(circle at 35% 30%, #f3d78a, var(--coin-gold) 55%, #a3821f); }
+  .coin-silver { background: radial-gradient(circle at 35% 30%, #f4f4f4, var(--coin-silver) 55%, #7c7c7c); }
+  .coin-copper { background: radial-gradient(circle at 35% 30%, #dba573, var(--coin-copper) 55%, #7a4a20); }
 
-  /* ---------- Tooltip: styled like a cargo manifest tag ---------- */
+  /* ---------- Tooltip: a certificate card, not a cargo tag ---------- */
   #tooltip {
     position: fixed; z-index: 1000; display: none; pointer-events: none;
     min-width: 220px; max-width: 320px;
-    background: var(--panel-raised);
-    border: 1px solid var(--brass); border-radius: 3px;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.55);
+    background: var(--card);
+    border: 1px solid var(--bullion); border-radius: 4px;
+    box-shadow: 0 8px 24px rgba(20,22,26,0.14);
     padding: 0.65rem 0.8rem; font-size: 0.8rem; color: var(--text-dim);
   }
   #tooltip .tt-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem; }
-  #tooltip .tt-icon { width: 36px; height: 36px; border-radius: 3px; border: 1px solid var(--border-bright); }
-  #tooltip .tt-name { font-weight: 700; font-size: 0.95rem; line-height: 1.2; }
+  #tooltip .tt-icon { width: 36px; height: 36px; border-radius: 3px; border: 1px solid var(--hairline-strong); }
+  #tooltip .tt-name { font-weight: 700; font-size: 0.95rem; line-height: 1.2; color: var(--ink); display: flex; align-items: center; gap: 0.4rem; }
   #tooltip .tt-sub { color: var(--text-dim); font-size: 0.7rem; margin-bottom: 0.4rem; }
   #tooltip .tt-row { display: flex; justify-content: space-between; gap: 1rem; margin: 0.2rem 0; }
   #tooltip .tt-row .lbl { color: var(--text-dim); text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.04em; }
-  #tooltip hr { border: none; border-top: 1px solid var(--border); margin: 0.45rem 0; }
+  #tooltip hr { border: none; border-top: 1px solid var(--hairline); margin: 0.45rem 0; }
 
   @media (prefers-reduced-motion: no-preference) {
     tbody tr { transition: background-color 0.1s ease; }
   }
+
+  /* Rail sits above the table on narrow viewports instead of squeezing it. */
+  @media (max-width: 900px) {
+    .shell { flex-direction: column; }
+    .filters { flex-basis: auto; width: 100%; }
+  }
 </style>
 </head>
 <body>
-<div class="masthead">
-  <h1>AH Snipe <span class="accent">Ledger</span></h1>
+<div class="topbar">
+  <div class="brand">
+    <svg class="seal" width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
+      <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
+      <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>AH Snipe Ledger</h1>
+    <span class="seal-label">Validated Data</span>
+  </div>
   <div class="nav">
+    <a href="/log">Log</a>
     <a href="/profile">Profile</a>
     <button id="logout">Log out</button>
   </div>
 </div>
 
-<div class="ticker" id="ticker"></div>
+<div class="shell">
+  <aside class="filters">
+    <div class="ticker" id="ticker"></div>
+    <label>Sell realm <select id="sell"></select></label>
+    <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
+    <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
+    <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
+    <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
+    <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
+    <label>Top <input id="top" type="number" value="50"></label>
+    <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
+    <label class="auto-label">
+      <input id="unique_appearance" type="checkbox"> Unique transmog only
+    </label>
+    <button id="refresh">Refresh</button>
+    <label class="auto-label">
+      <input id="auto" type="checkbox" checked> Auto-refresh (60s)
+    </label>
+  </aside>
 
-<div class="bar">
-  <label>Sell realm <select id="sell"></select></label>
-  <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
-  <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
-  <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
-  <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
-  <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
-  <label>Top <input id="top" type="number" value="50"></label>
-  <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
-  <label class="auto-label">
-    <input id="unique_appearance" type="checkbox"> Unique transmog only
-  </label>
-  <button id="refresh">Refresh</button>
-  <label class="auto-label">
-    <input id="auto" type="checkbox" checked> Auto-refresh (60s)
-  </label>
+  <main class="content">
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="buy_realm">Buy realm <span class="dir"></span></th>
+          <th data-sort="item">Item <span class="dir"></span></th>
+          <th data-sort="variant">Variant <span class="dir"></span></th>
+          <th data-sort="buy">Buy <span class="dir"></span></th>
+          <th data-sort="gold">Sell p25 <span class="dir"></span></th>
+          <th data-sort="sell_now">Sell realm low <span class="dir"></span></th>
+          <th data-sort="per_day">Sales/day <span class="dir"></span></th>
+          <th data-sort="discount">Discount % <span class="dir"></span></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    </div>
+    <div id="empty" class="empty" style="display:none;">No snipes at these thresholds.</div>
+  </main>
 </div>
-
-<div class="table-wrap">
-<table>
-  <thead>
-    <tr>
-      <th data-sort="buy_realm">Buy realm <span class="dir"></span></th>
-      <th data-sort="item">Item <span class="dir"></span></th>
-      <th data-sort="variant">Variant <span class="dir"></span></th>
-      <th data-sort="buy">Buy <span class="dir"></span></th>
-      <th data-sort="gold">Sell p25 <span class="dir"></span></th>
-      <th data-sort="sell_now">Sell realm low <span class="dir"></span></th>
-      <th data-sort="per_day">Sales/day <span class="dir"></span></th>
-      <th data-sort="discount">Discount % <span class="dir"></span></th>
-    </tr>
-  </thead>
-  <tbody id="rows"></tbody>
-</table>
-</div>
-<div id="empty" class="empty" style="display:none;">No snipes at these thresholds.</div>
 
 <div id="tooltip"></div>
 
@@ -323,9 +347,15 @@ function undermineUrl(row) {
   return `https://undermine.exchange/#${currentRegion}-${currentSellSlug}/${row.item_id}`;
 }
 
+// Rarity as a small swatch dot rather than the name's text color -- see the
+// .q-dot CSS comment: Blizzard's quality palette was built for dark panels
+// and most of it fails contrast on this page's paper background.
+function qualityDot(color) {
+  return color ? `<span class="q-dot" style="background:${color}"></span>` : "";
+}
+
 function showTooltip(row, x, y) {
   const tt = $("tooltip");
-  const color = row.quality_color || "#ffffff";
   const icon = row.icon
     ? `<img class="tt-icon" src="${row.icon}" alt="" onerror="this.style.display='none'">`
     : "";
@@ -334,7 +364,7 @@ function showTooltip(row, x, y) {
     <div class="tt-head">
       ${icon}
       <div>
-        <div class="tt-name" style="color:${color}">${row.name ?? ("item " + row.item_id)}</div>
+        <div class="tt-name">${qualityDot(row.quality_color)}${row.name ?? ("item " + row.item_id)}</div>
         <div class="tt-sub">Item ${row.item_id}${row.variant_raw ? " &middot; " + row.variant : ""}</div>
       </div>
     </div>
@@ -390,7 +420,6 @@ async function loadStatus(sell) {
 }
 
 function buildRowHtml(row, idx, group, isSub) {
-  const color = row.quality_color || "inherit";
   const ue = undermineUrl(row);
   let icon = "";
   if (row.icon) {
@@ -405,7 +434,7 @@ function buildRowHtml(row, idx, group, isSub) {
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
-      <td><div class="item-cell" data-row="${idx}">${icon}<span style="color:${color}">${row.name ?? row.item_id}</span>${toggle}</div></td>
+      <td><div class="item-cell" data-row="${idx}">${icon}${qualityDot(row.quality_color)}<span>${row.name ?? row.item_id}</span>${toggle}</div></td>
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>
