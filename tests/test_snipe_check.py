@@ -3,11 +3,14 @@ region-scanner listings. Reuses the synthetic-pipeline pattern from
 test_pipeline.py."""
 import sys
 
+import json
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
 import analyze
+import appearance
 import diff_snapshots
 import snipe_check
 from fetch_snapshot import SCHEMA
@@ -16,6 +19,28 @@ from scan_region import LISTING_SCHEMA
 SELL_CR = 9999
 BUY_CR_A = 1111
 T0, T1 = 1_700_000_000, 1_700_003_600
+
+
+@pytest.fixture(autouse=True)
+def isolate_appearance_cache(tmp_path, monkeypatch):
+    """find_snipes() instantiates a real appearance.AppearanceCache, which
+    reads CACHE_PATH (data/appearances.json) unless redirected -- no test
+    should depend on whatever the real, gitignored local cache contains."""
+    monkeypatch.setattr(appearance, "CACHE_PATH", tmp_path / "appearances_test_cache.json")
+
+
+def write_appearance_cache(path, item_sources: dict[int, int]):
+    """item_sources: item_id -> source_count. Gives each item its own
+    appearance_id (item_id + 1_000_000) so distinct items in a test don't
+    accidentally collide -- only source_count is under test."""
+    data = {
+        "fetched_at": 1_700_000_000,
+        "items": {
+            str(item_id): {"appearance_id": item_id + 1_000_000, "source_count": count}
+            for item_id, count in item_sources.items()
+        },
+    }
+    path.write_text(json.dumps(data))
 
 
 def snap_row(auction_id, ts, item_id=101, buyout=20_000, quantity=1,
@@ -289,6 +314,47 @@ def test_find_snipes_caps_sell_price_at_current_lowest_listing(tmp_path, monkeyp
     r = rows[0]
     assert r["sell_p_g"] == pytest.approx(2.0)      # capped at the live listing, not the 20g troll sale
     assert r["sell_now_g"] == pytest.approx(2.0)
+
+
+def test_find_snipes_reports_appearance_sources_without_filtering(data_dir, monkeypatch):
+    """With no max_appearance_sources set, appearance_sources is attached to
+    every row for display but nothing gets dropped -- including items the
+    cache has no entry for (appearance_sources is None, not excluded)."""
+    run_diff(monkeypatch)
+    write_appearance_cache(appearance.CACHE_PATH, {101: 3})
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1)
+    assert len(rows) == 1
+    assert rows[0]["appearance_sources"] == 3
+
+
+def test_find_snipes_max_appearance_sources_filters_common_looks(data_dir, monkeypatch):
+    """Item 101's appearance is shared by 3 items -- --max-appearance-sources 1
+    ("only looks no other item grants") should drop it; raising the cap to 3
+    lets it back through."""
+    run_diff(monkeypatch)
+    write_appearance_cache(appearance.CACHE_PATH, {101: 3})
+    con = analyze.connect(SELL_CR)
+
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1,
+                                   max_appearance_sources=1) == []
+
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1,
+                                   max_appearance_sources=3)
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == 101
+
+
+def test_find_snipes_max_appearance_sources_excludes_uncached_items(data_dir, monkeypatch):
+    """An item missing from the appearance cache has appearance_sources=None
+    -- when a rarity filter is actively requested, an unknown item can't be
+    proven rare, so it's excluded rather than let through by default."""
+    run_diff(monkeypatch)
+    # cache built, but has no entry for item 101
+    write_appearance_cache(appearance.CACHE_PATH, {999: 1})
+    con = analyze.connect(SELL_CR)
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1,
+                                   max_appearance_sources=5) == []
 
 
 def test_parse_items_combines_flag_and_file(tmp_path):

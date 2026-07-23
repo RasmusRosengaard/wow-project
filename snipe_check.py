@@ -16,6 +16,8 @@ Usage:
   python snipe_check.py --sell 1403 --items-file watchlist.txt --top 50
   python snipe_check.py --sell 1403 -g              # sort by sell price (gold), highest first
   python snipe_check.py --sell 1403 --sort per_day  # sort by liquidity
+  python snipe_check.py --sell 1403 --max-appearance-sources 1   # unique transmog looks only
+                                                     # (needs: python appearance.py --refresh)
 
 Requires: diff_snapshots.py already run for --sell (data/events/{sell}.parquet)
 and scan_region.py already run (data/listings/*.parquet).
@@ -26,6 +28,7 @@ from pathlib import Path
 import duckdb
 
 import analyze
+from appearance import AppearanceCache
 from item_names import NameCache
 
 ROOT = Path(__file__).resolve().parent
@@ -56,7 +59,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
-                min_sales: int = 2,
+                min_sales: int = 2, max_appearance_sources: int | None = None,
                 top: int = 50, sort: str = "discount") -> list[dict]:
     """Sold-price stats come from `sales` (a view over inferred_sale events,
     set up by analyze.connect). Listings come from every scanned realm except
@@ -93,7 +96,19 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     live on the AH). You realistically can't sell above the current cheapest
     competing listing anyway, so this is both a sanity bound on bad inference
     and a more honest estimate of achievable resale price. Only ever pulls
-    sell_price down, never up, if no current listing exists it's a no-op."""
+    sell_price down, never up, if no current listing exists it's a no-op.
+
+    max_appearance_sources (Phase 3, added 2026-07-23) filters to items whose
+    transmog appearance is shared by at most N distinct item ids region-wide
+    (see appearance.py -- backed by wago.tools' ItemModifiedAppearance DB2
+    export, not Blizzard's API). 1 means "only appearances no other item
+    grants." This is a rarity proxy, not a real obtainability check -- it
+    can't tell you if the source is still farmable. Every row also carries
+    `appearance_sources` (None if the item isn't in the cache, e.g. cache
+    never built) regardless of whether this filter is set, so callers can
+    display it either way. Applied in Python after the SQL query rather than
+    joined in SQL, since the cache is a local JSON file, not a DB table --
+    fine because candidate rows per query are always small."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -102,6 +117,12 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         price_filter += f" AND b.buy_unit_price >= {float(min_gold) * 10000}"
     if max_gold is not None:
         price_filter += f" AND b.buy_unit_price <= {float(max_gold) * 10000}"
+    # When appearance-filtering, pull a wider SQL candidate pool since rows
+    # get dropped *after* the query (the appearance cache is a local JSON
+    # file, not something to join in SQL) -- otherwise a top-50 SQL LIMIT
+    # could get filtered down to near-nothing before the appearance check
+    # ever runs.
+    sql_limit = int(top) if max_appearance_sources is None else max(int(top) * 20, 1000)
     con.execute(f"""
         CREATE OR REPLACE VIEW listings AS
         SELECT * FROM read_parquet('{(DATA / "listings" / "*.parquet").as_posix()}')
@@ -164,10 +185,19 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
               >= {float(min_discount)}
               {price_filter}
         ORDER BY {SORT_COLUMNS[sort]}
-        LIMIT {int(top)}
+        LIMIT {sql_limit}
     """)
     cols = [d[0] for d in res.description]
-    return [dict(zip(cols, row)) for row in res.fetchall()]
+    rows = [dict(zip(cols, row)) for row in res.fetchall()]
+
+    appearances = AppearanceCache()
+    for r in rows:
+        r["appearance_sources"] = appearances.source_count(r["item_id"])
+    if max_appearance_sources is not None:
+        rows = [r for r in rows
+                if r["appearance_sources"] is not None
+                and r["appearance_sources"] <= max_appearance_sources]
+    return rows[: int(top)]
 
 
 def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
@@ -176,7 +206,8 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
         return
     names = NameCache() if resolve_names else None
     name_col = "name" if resolve_names else "item_id"
-    hdr = f"{'buy_realm':>9} {name_col:>28} {'variant':>14} {'buy_g':>10} {'sell_p_g':>10} {'per_day':>8} {'disc%':>7}"
+    hdr = (f"{'buy_realm':>9} {name_col:>28} {'variant':>14} {'buy_g':>10} {'sell_p_g':>10} "
+           f"{'per_day':>8} {'disc%':>7} {'appear':>7}")
     print(hdr)
     for r in rows:
         if r["pet_species_id"] is not None:
@@ -184,9 +215,10 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
         else:
             variant = r["bonus_key"] or "-"
         label = names.get(r["item_id"], r["pet_species_id"]) if names else str(r["item_id"])
+        appear = r["appearance_sources"] if r["appearance_sources"] is not None else "-"
         print(f"{r['buy_realm']:>9} {label:>28.28} {variant:>14} "
               f"{r['buy_g']:>10.2f} {r['sell_p_g']:>10.2f} {r['per_day']:>8.2f} "
-              f"{r['discount_pct']:>7.1f}")
+              f"{r['discount_pct']:>7.1f} {appear:>7}")
     if names:
         names.save()
     else:
@@ -214,6 +246,11 @@ def main() -> None:
                     help="minimum number of inferred sales required to trust the sold-price "
                          "percentile (default 2 -- a single sale can be an unverified "
                          "cancel-without-relist false positive, e.g. a troll-priced decoy)")
+    ap.add_argument("--max-appearance-sources", type=int, default=None,
+                    help="only show items whose transmog appearance is granted by at most N "
+                         "distinct items region-wide (1 = unique look); requires "
+                         "data/appearances.json -- see appearance.py --refresh. Items missing "
+                         "from the appearance cache are excluded when this is set")
     ap.add_argument("--top", type=int, default=50)
     ap.add_argument("--sort", choices=sorted(SORT_COLUMNS), default="discount",
                     help="sort order for results (default discount)")
@@ -238,6 +275,7 @@ def main() -> None:
                        min_per_day=args.min_per_day, sell_percentile=args.sell_percentile,
                        min_gold=args.min_gold, max_gold=args.max_gold,
                        min_sales=args.min_sales,
+                       max_appearance_sources=args.max_appearance_sources,
                        top=args.top, sort=sort)
     print_snipes(rows, resolve_names=args.names)
 

@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import analyze
+import appearance
 import auth
 import blizz
 import dashboard
@@ -61,6 +62,15 @@ def isolate_item_names_cache(tmp_path, monkeypatch):
     autouse so no test can accidentally read from or write into the real,
     gitignored project cache."""
     monkeypatch.setattr(item_names, "CACHE_PATH", tmp_path / "item_names_test_cache.json")
+
+
+@pytest.fixture(autouse=True)
+def isolate_appearance_cache(tmp_path, monkeypatch):
+    """find_snipes() instantiates a real appearance.AppearanceCache, which
+    reads CACHE_PATH (data/appearances.json) unless redirected -- same
+    isolation reasoning as isolate_item_names_cache above: no test should
+    depend on whatever the real, gitignored local cache happens to contain."""
+    monkeypatch.setattr(appearance, "CACHE_PATH", tmp_path / "appearances_test_cache.json")
 
 
 def stub_item_details(monkeypatch, name="Stub Item", quality="EPIC", level=600, icon="https://example/icon.jpg"):
