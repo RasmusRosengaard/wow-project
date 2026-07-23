@@ -40,6 +40,13 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(billing, "WEBHOOK_SECRET", WEBHOOK_SECRET)
     monkeypatch.setattr(billing, "PRICE_ID", "price_test_123")
+    # billing.stripe.api_key is read from STRIPE_SECRET_KEY at billing.py's
+    # import time. Locally that's whatever real key happens to be in .env
+    # (masking this), but CI has no .env -- api_key would be None there,
+    # tripping create_checkout_session's own "not configured" 500 guard
+    # before ever reaching the mocked Session.create below. Patch it
+    # explicitly so the test is deterministic regardless of environment.
+    monkeypatch.setattr(billing.stripe, "api_key", "sk_test_fake_key_for_tests")
     dashboard.app.dependency_overrides[get_async_session] = override_get_async_session
     try:
         with TestClient(dashboard.app) as c:
