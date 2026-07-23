@@ -3,13 +3,21 @@
 population** EU connected realm's sale history (not literally all ~100 --
 scoped down 2026-07-23 once low-pop realms turned out to add collection
 overhead without much sniping-relevant liquidity), so any subscriber can
-pick a sell realm from a set that's actually worth trading on. Replaces the
-human's local run_cycle.py + Task Scheduler now that the app runs on Railway
--- dashboard.py's startup event calls collect_all() on an hourly background
-loop instead.
+pick a sell realm from a set that's actually worth trading on. Replaced the
+human's local run_cycle.py + Task Scheduler (both deleted) now that the app
+runs on Railway -- dashboard.py's startup event calls collect_all() on a
+background loop instead.
 
-Reuses fetch_snapshot.fetch_once()/diff_snapshots.main() exactly as
-run_cycle.py already does (same sys.argv-patching pattern for diff_snapshots,
+That loop runs every ~10 minutes, not hourly, deliberately mirroring how the
+old local collector worked (see fetch_snapshot.py): Blizzard republishes AH
+data roughly hourly but at no fixed clock time, so polling only once an hour
+from whenever the container happened to boot could sit out of phase with the
+real publish time by up to an hour. Polling every ~10 min keeps the lag
+after a real update small; fetch_once()'s If-Modified-Since check makes the
+no-op polls cheap (a 304, not a real download).
+
+Reuses fetch_snapshot.fetch_once()/diff_snapshots.main() the same way
+run_cycle.py used to (same sys.argv-patching pattern for diff_snapshots,
 which is only importable as a CLI module today). scan_region.sweep() stays
 **unscoped** -- every EU realm's current listings, not just FULL/HIGH pop
 ones, because the whole cross-realm thesis is cheap listings sitting on
@@ -94,20 +102,31 @@ def collect_all() -> dict:
     """One full pass: poll+diff+prune every FULL/HIGH-pop realm, then one
     unscoped region-wide listings sweep (every EU realm, see module
     docstring). A single realm failing never aborts the rest -- same "don't
-    let one bad realm kill the cycle" principle scan_region.sweep() follows."""
+    let one bad realm kill the cycle" principle scan_region.sweep() follows.
+
+    Only re-diffs a realm when fetch_once() actually wrote a *new* snapshot
+    this cycle -- diff_snapshots recomputes from every snapshot on disk each
+    time (by design, always safe to rebuild), so re-running it on a cycle
+    where nothing changed would just recompute the identical output at real
+    CPU cost. This matters more now that collect_all() runs every ~10
+    minutes (matching Blizzard's own publish cadence, not a fixed hourly
+    clock that could drift out of phase with it) instead of hourly --
+    fetch_once() itself stays cheap on a no-op cycle (one If-Modified-Since
+    request, 304 response), diff_snapshots does not."""
     realm_ids = deep_collect_realm_ids()
     polled = diffed = pruned = 0
     failed: list[int] = []
 
     for cr in realm_ids:
         try:
-            if fetch_snapshot.fetch_once(cr) is not None:
+            got_new_snapshot = fetch_snapshot.fetch_once(cr) is not None
+            if got_new_snapshot:
                 polled += 1
-            n_snaps = len(list((DATA / "snapshots" / str(cr)).glob("*.parquet")))
-            if n_snaps >= 2:
-                _diff(cr)
-                diffed += 1
-                pruned += prune_old_snapshots(cr)
+                n_snaps = len(list((DATA / "snapshots" / str(cr)).glob("*.parquet")))
+                if n_snaps >= 2:
+                    _diff(cr)
+                    diffed += 1
+                    pruned += prune_old_snapshots(cr)
         except Exception:
             log.exception("collect_all: realm %s failed", cr)
             failed.append(cr)

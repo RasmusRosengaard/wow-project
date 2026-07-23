@@ -31,11 +31,16 @@ realm's sold-price percentile, net of the 5% AH cut, is a validated snipe.
   logic and its known limits.
 - **Relational data**: Postgres, via async SQLAlchemy (`db.py`) — users,
   sessions, subscription state only.
-- **Collection**: `collect_all.py` runs hourly *inside* the deployed app
-  (`ENABLE_BACKGROUND_COLLECTION=true` on Railway), deep-collecting
-  FULL/HIGH-population realms and sweeping the whole region. There is no
-  separate collector process or local scheduled task — this used to run via
-  a human's local machine and Windows Task Scheduler; it doesn't anymore.
+- **Collection**: `collect_all.py` polls every ~10 minutes *inside* the
+  deployed app (`ENABLE_BACKGROUND_COLLECTION=true` on Railway) — not
+  hourly, since Blizzard republishes at no fixed clock time and a fixed
+  hourly poll could drift out of phase with the real update by up to an
+  hour; `fetch_once()`'s `If-Modified-Since` check keeps the no-op polls
+  cheap, and `diff_snapshots` only re-runs when a realm actually got new
+  data. Deep-collects FULL/HIGH-population realms, sweeps the whole region.
+  There is no separate collector process or local scheduled task — this
+  used to run via a human's local machine and Windows Task Scheduler; it
+  doesn't anymore.
 - **Hosting**: Railway. `Dockerfile`/`docker-entrypoint.sh` build the image
   and run migrations (`alembic upgrade head`) before serving. Railway's
   GitHub integration auto-deploys `main` on push.

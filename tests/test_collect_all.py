@@ -163,6 +163,33 @@ def test_collect_all_only_deep_collects_high_pop_but_sweeps_everyone(env, monkey
     assert (env / "listings" / f"{LOW_POP_CR}.parquet").exists()
 
 
+def test_collect_all_skips_diff_when_no_new_snapshot_arrived(env, monkeypatch):
+    """A cycle where Blizzard hasn't published a new dump yet (fetch_once
+    returns None, e.g. a 304) must not re-run diff_snapshots even if 2+
+    snapshots already exist on disk from earlier cycles -- diff_snapshots
+    recomputes from scratch every time, so re-running it for no new
+    information would just burn CPU on an identical result. This is what
+    makes polling every ~10 minutes (instead of hourly) cheap."""
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
+
+    snap_dir = env / "snapshots" / str(FULL_POP_CR)
+    snap_dir.mkdir(parents=True)
+    now = int(time.time())
+    for ts in (now - 3600, now):
+        pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
+                       snap_dir / f"{ts}.parquet")
+
+    diff_calls = []
+    monkeypatch.setattr(collect_all, "_diff", lambda cr: diff_calls.append(cr))
+    monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: None)  # no new dump this cycle
+
+    summary = collect_all.collect_all()
+    assert summary["diffed"] == 0
+    assert diff_calls == []
+
+
 def test_collect_all_survives_one_realm_failing(env, monkeypatch):
     ok_cr, bad_cr = FULL_POP_CR, HIGH_POP_CR
     monkeypatch.setattr(blizz, "list_connected_realms", lambda: [ok_cr, bad_cr])

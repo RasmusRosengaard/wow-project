@@ -42,11 +42,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("dashboard")
 
 # Server-side collection (Stage 4) -- off by default so a local `python
-# dashboard.py` run for quick dev/testing doesn't also spin up an hourly
-# all-realm collector competing with whatever's already running locally
-# (Task Scheduler, a manual run_cycle.py). Railway sets this to "true".
+# dashboard.py` run for quick dev/testing doesn't also spin up a background
+# all-realm collector. Railway sets this to "true".
 ENABLE_BACKGROUND_COLLECTION = os.environ.get("ENABLE_BACKGROUND_COLLECTION", "false").lower() == "true"
-COLLECTION_INTERVAL_SECONDS = 60 * 60  # matches Blizzard's hourly dump cadence
+# Blizzard republishes AH data roughly hourly, but at no fixed clock time --
+# polling only once an hour from whenever this container happened to boot
+# could sit out of phase with the real publish moment by up to an hour.
+# Poll every ~10 min instead (matching fetch_snapshot.py's own original
+# local-collector cadence) so the lag after a real update stays small;
+# fetch_once()'s If-Modified-Since check keeps the no-op polls cheap.
+COLLECTION_INTERVAL_SECONDS = 10 * 60
 
 
 async def _collection_loop() -> None:
