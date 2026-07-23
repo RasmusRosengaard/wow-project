@@ -60,6 +60,25 @@ async def create_checkout_session(request: Request, user: User = Depends(current
     return {"url": session.url}
 
 
+@router.post("/portal")
+async def create_portal_session(request: Request, user: User = Depends(current_active_user)) -> dict:
+    """Redirects to Stripe's hosted Customer Portal -- cancel, update payment
+    method, view invoices/receipts. Deliberately not hand-built: Stripe's own
+    guidance is to use the portal for self-service subscription management
+    rather than custom cancel/update endpoints, and it's what actually
+    changes the subscription (our webhook handler picks up the resulting
+    customer.subscription.updated/deleted event same as any other change)."""
+    if not user.stripe_customer_id:
+        raise HTTPException(400, "No Stripe customer on file yet -- subscribe first")
+
+    base_url = str(request.base_url).rstrip("/")
+    session = stripe.billing_portal.Session.create(
+        customer=user.stripe_customer_id,
+        return_url=f"{base_url}/profile",
+    )
+    return {"url": session.url}
+
+
 async def _user_by_id(session: AsyncSession, user_id: str) -> User | None:
     return await session.get(User, user_id)
 

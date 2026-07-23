@@ -122,6 +122,49 @@ def test_checkout_creates_session_and_returns_url(client, monkeypatch):
     assert captured["customer_email"] == EMAIL
 
 
+def test_portal_requires_login(client):
+    r = client.post("/billing/portal")
+    assert r.status_code == 401
+
+
+def test_portal_requires_existing_stripe_customer(client):
+    register(client)
+    login(client)
+    r = client.post("/billing/portal")
+    assert r.status_code == 400
+    assert "subscribe first" in r.json()["detail"].lower()
+
+
+def test_portal_creates_session_and_returns_url(client, monkeypatch):
+    register(client)
+    login(client)
+    user = asyncio.run(_get_user(client.session_factory, EMAIL))
+
+    async def _seed():
+        async with client.session_factory() as session:
+            u = await session.get(User, user.id)
+            u.stripe_customer_id = "cus_test123"
+            await session.commit()
+    asyncio.run(_seed())
+
+    captured = {}
+
+    class FakeSession:
+        url = "https://billing.stripe.com/fake-portal-session"
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return FakeSession()
+
+    monkeypatch.setattr(billing.stripe.billing_portal.Session, "create", fake_create)
+
+    r = client.post("/billing/portal")
+    assert r.status_code == 200
+    assert r.json()["url"] == "https://billing.stripe.com/fake-portal-session"
+    assert captured["customer"] == "cus_test123"
+    assert captured["return_url"].endswith("/profile")
+
+
 def test_webhook_rejects_bad_signature(client):
     payload = webhook_event("checkout.session.completed", {})
     r = client.post("/billing/webhook", content=payload, headers={"stripe-signature": "t=1,v1=bogus"})

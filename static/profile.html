@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Profile — AH Snipe Dashboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0f1115; color: #e6e6e6;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 1rem;
+  }
+  .card {
+    background: #1a1d24; border-radius: 8px; padding: 2rem;
+    width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 1.1rem;
+  }
+  h1 { font-size: 1.2rem; margin: 0; }
+  .row { display: flex; justify-content: space-between; font-size: 0.9rem; gap: 1rem; }
+  .row .lbl { color: #9aa0aa; }
+  .badge {
+    display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600;
+  }
+  .badge.active { background: #163a24; color: #4ade80; }
+  .badge.inactive { background: #3a1616; color: #f87171; }
+  .badge.pending { background: #3a3116; color: #facc15; }
+  button, a.btn {
+    background: #3b7ddd; border: none; color: white; border-radius: 4px;
+    padding: 0.6rem; cursor: pointer; font-size: 0.9rem; text-align: center;
+    text-decoration: none; display: block;
+  }
+  button:hover, a.btn:hover { background: #2f68c0; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  a.secondary { background: #2a2d34; border: 1px solid #444; }
+  a.secondary:hover { background: #333740; }
+  .error { color: #ff8080; font-size: 0.8rem; min-height: 1em; }
+  .nav { font-size: 0.8rem; }
+  .nav a { color: #3b9dff; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Profile</h1>
+  <div class="row"><span class="lbl">Email</span><span id="email">…</span></div>
+  <div class="row"><span class="lbl">Subscription</span><span id="status-badge">…</span></div>
+  <div class="row" id="period-row" style="display:none;">
+    <span class="lbl">Renews / ends</span><span id="period-end"></span>
+  </div>
+  <div id="error" class="error"></div>
+  <div id="actions"></div>
+  <div class="nav"><a href="/">&larr; Back to dashboard</a></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function badge(status) {
+  if (status === "active") return `<span class="badge active">Active</span>`;
+  if (status === "past_due") return `<span class="badge pending">Past due</span>`;
+  if (!status) return `<span class="badge inactive">No subscription</span>`;
+  return `<span class="badge inactive">${status}</span>`;
+}
+
+async function startPortal() {
+  const err = $("error");
+  err.textContent = "";
+  const r = await fetch("/billing/portal", { method: "POST" });
+  if (r.status === 401) { window.location.href = "/login"; return; }
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't open the billing portal -- try again.";
+    return;
+  }
+  const data = await r.json();
+  window.location.href = data.url;
+}
+
+(async function init() {
+  const me = await fetch("/api/me").catch(() => null);
+  if (!me || !me.ok) { window.location.href = "/login"; return; }
+  const data = await me.json();
+
+  $("email").textContent = data.email;
+  $("status-badge").innerHTML = badge(data.subscription_status);
+
+  if (data.subscription_current_period_end) {
+    $("period-row").style.display = "flex";
+    $("period-end").textContent = new Date(data.subscription_current_period_end).toLocaleDateString();
+  }
+
+  const actions = $("actions");
+  if (data.subscription_status === "active" || data.has_stripe_customer) {
+    actions.innerHTML = `<button id="manage">Manage subscription (cancel, payment method, invoices)</button>`;
+    $("manage").addEventListener("click", startPortal);
+  } else {
+    actions.innerHTML = `<a class="btn" href="/subscribe">Subscribe</a>`;
+  }
+})();
+</script>
+</body>
+</html>

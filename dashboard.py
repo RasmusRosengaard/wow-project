@@ -162,7 +162,15 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
 
 @app.get("/api/me")
 async def api_me(user: User = Depends(current_active_user)) -> dict:
-    return {"email": user.email, "subscription_status": user.subscription_status}
+    return {
+        "email": user.email,
+        "subscription_status": user.subscription_status,
+        "subscription_current_period_end": (
+            user.subscription_current_period_end.isoformat()
+            if user.subscription_current_period_end else None
+        ),
+        "has_stripe_customer": user.stripe_customer_id is not None,
+    }
 
 
 @app.get("/api/snipes")
@@ -235,6 +243,11 @@ def register_page() -> FileResponse:
 @app.get("/subscribe")
 def subscribe_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "subscribe.html")
+
+
+@app.get("/profile")
+def profile_page() -> FileResponse:
+    return FileResponse(ROOT / "static" / "profile.html")
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
