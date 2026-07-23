@@ -170,6 +170,7 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
             if user.subscription_current_period_end else None
         ),
         "has_stripe_customer": user.stripe_customer_id is not None,
+        "is_superuser": user.is_superuser,
     }
 
 

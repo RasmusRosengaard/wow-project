@@ -54,7 +54,8 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-function badge(status) {
+function badge(status, isSuperuser) {
+  if (isSuperuser) return `<span class="badge active">Admin access</span>`;
   if (status === "active") return `<span class="badge active">Active</span>`;
   if (status === "past_due") return `<span class="badge pending">Past due</span>`;
   if (!status) return `<span class="badge inactive">No subscription</span>`;
@@ -81,15 +82,17 @@ async function startPortal() {
   const data = await me.json();
 
   $("email").textContent = data.email;
-  $("status-badge").innerHTML = badge(data.subscription_status);
+  $("status-badge").innerHTML = badge(data.subscription_status, data.is_superuser);
 
-  if (data.subscription_current_period_end) {
+  if (data.subscription_current_period_end && !data.is_superuser) {
     $("period-row").style.display = "flex";
     $("period-end").textContent = new Date(data.subscription_current_period_end).toLocaleDateString();
   }
 
   const actions = $("actions");
-  if (data.subscription_status === "active" || data.has_stripe_customer) {
+  if (data.is_superuser) {
+    actions.innerHTML = "";
+  } else if (data.subscription_status === "active" || data.has_stripe_customer) {
     actions.innerHTML = `<button id="manage">Manage subscription (cancel, payment method, invoices)</button>`;
     $("manage").addEventListener("click", startPortal);
   } else {

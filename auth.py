@@ -68,8 +68,11 @@ current_active_user = fastapi_users.current_user(active=True)
 
 def has_active_subscription(user: User) -> bool:
     """Single source of truth for the sniper-page gate (dashboard.py) --
-    billing.py's Stripe webhook is the only writer of subscription_status."""
-    return user.subscription_status == "active"
+    billing.py's Stripe webhook is the only writer of subscription_status.
+    Superusers (is_superuser, FastAPI-Users' existing field -- there's no
+    public API to set it, has to be flipped directly in the DB) always pass,
+    no real subscription needed: founder/admin access, not a Stripe concept."""
+    return user.is_superuser or user.subscription_status == "active"
 
 
 async def current_subscribed_user(user: User = Depends(current_active_user)) -> User:

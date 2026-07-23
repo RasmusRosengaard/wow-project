@@ -135,3 +135,27 @@ def test_dashboard_api_routes_require_active_subscription(client):
 
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
     assert client.get("/api/me").json()["subscription_status"] == "active"
+
+
+async def _make_superuser(session_factory, email: str) -> None:
+    """Founder/admin access -- no public API sets this, has to be flipped
+    directly in the DB (see auth.has_active_subscription)."""
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+        user.is_superuser = True
+        await session.commit()
+
+
+def test_superuser_bypasses_subscription_check(client):
+    """A superuser with subscription_status still None must still pass the
+    gate -- is_superuser is a founder/admin bypass, not a Stripe concept."""
+    UNCOLLECTED_REALM = 424242
+    register(client)
+    login(client)
+    asyncio.run(_make_superuser(client.session_factory, EMAIL))
+
+    me = client.get("/api/me").json()
+    assert me["is_superuser"] is True
+    assert me["subscription_status"] is None  # confirms this isn't just testing an active sub
+
+    assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
