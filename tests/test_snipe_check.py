@@ -196,6 +196,43 @@ def test_find_snipes_sort_gold_orders_by_sell_price(tmp_path, monkeypatch):
     assert [r["item_id"] for r in gold_order] == [105, 101]  # higher sell_p_g first
 
 
+def test_find_snipes_excludes_single_sale_by_default(tmp_path, monkeypatch):
+    """A lone inferred_sale can't be told apart from a cancel-without-relist
+    false positive (e.g. a troll-priced decoy listing that never actually
+    sold) -- min_sales defaults to 2 so one unverified sample doesn't become
+    the entire sold-price percentile. Reproduces a real production case:
+    item 15138 (Onyxia Scale Cloak) had exactly one recorded inferred_sale,
+    at a wildly implausible price, that alone set its sell price."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [
+        snap_row(1, T0, item_id=101, buyout=20_000),  # only one sale ever
+        snap_row(3, T0, item_id=103),   # survives -> no event
+    ]
+    curr = [snap_row(3, T1, item_id=103)]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    buy_rows = [listing_row(BUY_CR_A, item_id=101, buyout=10_000, auction_id=100)]
+    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
+                   listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1) == []
+
+    # Explicitly opting into a lower floor still lets it through.
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1, min_sales=1)
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == 101
+
+
 def test_find_snipes_respects_min_gold(data_dir, monkeypatch):
     """The only listing cheap enough to qualify (10_000 copper = 1g) is
     excluded once min_gold asks for at least 2g."""

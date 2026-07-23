@@ -27,7 +27,7 @@ Last updated: 2026-07-23.
 2. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
 
 ## Next up (short list, do these in roughly this order)
-1. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction).
+1. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction). **Human-only, asked explicitly 2026-07-23**: do not rotate/swap this live credential without the human present, even when otherwise told to keep working autonomously.
 2. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
 3. Phase 2 (commodities feed) and Phase 3 (appearance/scarcity layer) — see "Longer-term roadmap".
 
@@ -155,6 +155,24 @@ plus the two small backend additions they needed:
   on screen instantly" goal this was solving; Refresh/auto-refresh still
   re-fetches the accurate discount-ranked set.
 
+### Real bug caught live: single-sale price artifact (fixed 2026-07-23)
+
+Shortly after the QoL pass shipped, a user-reported price mismatch (item
+15138, Onyxia Scale Cloak, showing a sell price of ~99,624g against a real
+value around 444g) was traced live against production (`analyze.py --cr-id
+1403 trace 15138`, over a `railway ssh` session — see `CLAUDE.md`'s "Remote
+debugging note") to exactly one `inferred_sale` ever recorded for that item:
+a troll-priced decoy listing that almost certainly got cancelled, not
+bought — the known, documented `inferred_sale` cancel-without-relist blind
+spot. With Draenor's collection history still young, `min_per_day` alone
+didn't guard against it (a single sale over a short `days` window can round
+up past the 0.5 threshold easily). Fixed with a new `min_sales` floor
+(default 2) in `snipe_check.find_snipes()` — requires at least N inferred
+sales before trusting the percentile at all, on top of (not instead of)
+`min_per_day`. Not a full fix for the underlying blind spot (Phase 0's gate
+is still skipped, the signal is still unvalidated), just a floor against the
+single-sample case specifically.
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
@@ -186,7 +204,7 @@ instead (Linux binary, never touches that policy).
 
 ## Known gaps / risks
 
-- Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior.
+- Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior. Partial mitigation added 2026-07-23: `snipe_check.find_snipes()`'s `min_sales` floor (default 2) stops a single unverified sample from becoming the whole sold-price percentile, after exactly that happened live (item 15138) — but two bad samples can still both be false positives, so this reduces rather than closes the risk.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.
 - The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, but the underlying meaning is still community-sourced, not official.
 - Stripe is on the full `sk_live_...` secret key, not a restricted key scoped to what `billing.py` actually needs (see "Next up").
@@ -205,7 +223,7 @@ instead (Linux binary, never touches that policy).
 | Billing | `billing.py`, `static/subscribe.html` |
 | Item name/icon/quality cache | `item_names.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
-| Tests | `tests/` — 109 passing (`pytest -q`), no external services needed |
+| Tests | `tests/` — 110 passing (`pytest -q`), no external services needed |
 
 ## Where to look for more
 

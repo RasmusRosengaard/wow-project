@@ -91,7 +91,11 @@
   .bar .auto-label { flex-direction: row; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; color: var(--text-dim); }
 
   /* ---------- Ledger table ---------- */
-  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  /* Wide on seven columns -- scrolls inside its own box on narrow viewports
+     instead of blowing out the page (which would force horizontal body
+     scroll on mobile). */
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; min-width: 640px; }
   th, td { padding: 0.5rem 0.7rem; text-align: right; border-bottom: 1px solid var(--border); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
   th {
@@ -177,6 +181,7 @@
   </label>
 </div>
 
+<div class="table-wrap">
 <table>
   <thead>
     <tr>
@@ -191,6 +196,7 @@
   </thead>
   <tbody id="rows"></tbody>
 </table>
+</div>
 <div id="empty" class="empty" style="display:none;">No snipes at these thresholds.</div>
 
 <div id="tooltip"></div>

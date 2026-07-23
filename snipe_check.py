@@ -56,6 +56,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
+                min_sales: int = 2,
                 top: int = 50, sort: str = "discount") -> list[dict]:
     """Sold-price stats come from `sales` (a view over inferred_sale events,
     set up by analyze.connect). Listings come from every scanned realm except
@@ -65,7 +66,21 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     collapse into one bucket and get compared against whichever pet actually
     sold. The pet fields are NULL for non-pet items, so this is a no-op for
     ordinary gear -- joined with IS NOT DISTINCT FROM since NULL = NULL is
-    false in SQL and a plain USING join would drop every non-pet match."""
+    false in SQL and a plain USING join would drop every non-pet match.
+
+    min_sales is a data-quality floor, distinct from min_per_day: a brand
+    new sell realm with a short collection history can pass min_per_day on
+    the strength of a single inferred_sale (count / a small `days` divisor
+    rounds up fast), and inferred_sale can't tell a real sale apart from a
+    cancel-without-relist (see CLAUDE.md's "known blind spot"). A lone
+    troll/decoy listing -- posted at a joke price, then cancelled -- becomes
+    the *entire* sold-price percentile with nothing to dilute it. Caught live
+    2026-07-23: Onyxia Scale Cloak (item 15138) on Draenor had exactly one
+    recorded inferred_sale, at 99,624g for an item that actually sells around
+    444g, and that single bogus sample became its sell_price with no averaging
+    to smooth it out. min_sales >= 2 doesn't eliminate the risk (two troll
+    listings can still both be bogus) but it stops a single unverified sample
+    from being trusted as a price signal outright."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -88,7 +103,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             FROM sales
             WHERE 1=1 {item_filter}
             GROUP BY item_id, bonus_key, pet_species_id, pet_quality_id
-            HAVING per_day >= {float(min_per_day)}
+            HAVING per_day >= {float(min_per_day)} AND sales >= {int(min_sales)}
         ),
         buy AS (
             SELECT cr_id, item_id, bonus_key, pet_species_id, pet_quality_id, auction_id,
@@ -161,6 +176,10 @@ def main() -> None:
                     help="minimum buy price in gold (budget floor, skips trivial junk)")
     ap.add_argument("--max-gold", type=float, default=None,
                     help="maximum buy price in gold (budget ceiling)")
+    ap.add_argument("--min-sales", type=int, default=2,
+                    help="minimum number of inferred sales required to trust the sold-price "
+                         "percentile (default 2 -- a single sale can be an unverified "
+                         "cancel-without-relist false positive, e.g. a troll-priced decoy)")
     ap.add_argument("--top", type=int, default=50)
     ap.add_argument("--sort", choices=sorted(SORT_COLUMNS), default="discount",
                     help="sort order for results (default discount)")
@@ -184,6 +203,7 @@ def main() -> None:
     rows = find_snipes(con, args.sell, items=items, min_discount=args.min_discount,
                        min_per_day=args.min_per_day, sell_percentile=args.sell_percentile,
                        min_gold=args.min_gold, max_gold=args.max_gold,
+                       min_sales=args.min_sales,
                        top=args.top, sort=sort)
     print_snipes(rows, resolve_names=args.names)
 
