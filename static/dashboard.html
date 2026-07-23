@@ -4,98 +4,163 @@
 <meta charset="utf-8">
 <title>AH Snipe Dashboard</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: dark;
+    /* Undermine cartel trading-floor palette: warm industrial black, not
+       neutral -- goblin engineering meets a commodities exchange. */
+    --bg: #14170f;
+    --panel: #1b1f15;
+    --panel-raised: #23281a;
+    --border: #3a4029;
+    --border-bright: #565f38;
+    --text: #eef0e6;
+    --text-dim: #97a084;
+    --toxic: #a6e600;       /* signature accent -- CTAs, active states, ticker */
+    --toxic-dim: #7fb300;
+    --brass: #c9963e;       /* structural accent -- rules, labels, chrome */
+    --ember: #ff7a45;       /* alert / high-value */
+    --gold: #ffd651;
+  }
+  * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
-    margin: 0; padding: 1.5rem;
-    background: #0f1115; color: #e6e6e6;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 1.5rem; max-width: 1400px; margin-inline: auto;
+    background: var(--bg); color: var(--text);
+    background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.04), transparent 60%);
   }
-  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  code, .mono, .money, .num { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+
+  /* ---------- Masthead ---------- */
+  .masthead { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-bottom: 0.75rem; }
+  h1 {
+    font-size: 1.5rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
+    text-transform: uppercase; color: var(--text);
+  }
+  h1 .accent { color: var(--toxic); }
+  .nav { display: flex; gap: 0.5rem; }
+  .nav a, .nav button {
+    background: var(--panel-raised); border: 1px solid var(--border-bright); color: var(--text);
+    border-radius: 3px; padding: 0.4rem 0.8rem; cursor: pointer; font-size: 0.78rem;
+    text-decoration: none; font-weight: 600; letter-spacing: 0.02em;
+  }
+  .nav a:hover, .nav button:hover { border-color: var(--brass); color: var(--brass); }
+
+  /* Ticker: the signature element -- a segmented brass-divided status strip,
+     static (not scrolling -- respects reduced motion, and a marquee gimmick
+     wears out fast on a tool you leave open all day). Every segment is real
+     freshness data, not decoration. */
+  .ticker {
+    display: flex; flex-wrap: wrap; gap: 0; margin-bottom: 1rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 3px;
+    font-size: 0.72rem; overflow: hidden;
+  }
+  .ticker .seg {
+    padding: 0.5rem 0.9rem; border-right: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 0.4rem; white-space: nowrap;
+  }
+  .ticker .seg:last-child { border-right: none; }
+  .ticker .k { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.68rem; }
+  .ticker .v { color: var(--text); font-weight: 600; }
+  .ticker .v.stale { color: var(--ember); }
+  .ticker .v.ok { color: var(--toxic); }
+
+  /* ---------- Control bar ---------- */
   .bar {
-    display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end;
-    margin-bottom: 1rem; padding: 0.75rem; background: #1a1d24; border-radius: 6px;
+    display: flex; flex-wrap: wrap; gap: 1rem; align-items: end;
+    margin-bottom: 1rem; padding: 0.85rem 1rem; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 4px;
   }
-  .bar label { display: flex; flex-direction: column; font-size: 0.75rem; color: #9aa0aa; gap: 0.25rem; }
-  .bar input { background: #0f1115; border: 1px solid #333; color: #e6e6e6; border-radius: 4px; padding: 0.35rem 0.5rem; width: 9rem; }
+  .bar label {
+    display: flex; flex-direction: column; font-size: 0.68rem; color: var(--text-dim);
+    gap: 0.3rem; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .bar input {
+    background: var(--bg); border: 1px solid var(--border-bright); color: var(--text);
+    border-radius: 3px; padding: 0.4rem 0.55rem; width: 8.5rem; font-size: 0.85rem;
+  }
+  .bar input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
   .bar input[type=checkbox] { width: auto; }
-  .bar button {
-    background: #3b7ddd; border: none; color: white; border-radius: 4px;
-    padding: 0.45rem 0.9rem; cursor: pointer; height: fit-content;
+  .bar button#refresh {
+    background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
+    border-radius: 3px; padding: 0.45rem 1rem; cursor: pointer; height: fit-content;
+    font-weight: 700; text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.03em;
   }
-  .bar button:hover { background: #2f68c0; }
-  .caveat {
-    background: #4a2a12; border: 1px solid #a85d1f; color: #ffd9a8;
-    padding: 0.6rem 0.9rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem;
-  }
-  .status { font-size: 0.8rem; color: #9aa0aa; margin-bottom: 1rem; display: flex; gap: 1.5rem; flex-wrap: wrap; }
-  .status .stale { color: #ff8080; }
+  .bar button#refresh:hover { background: var(--toxic-dim); border-color: var(--toxic-dim); }
+  .bar .auto-label { flex-direction: row; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; color: var(--text-dim); }
+
+  /* ---------- Ledger table ---------- */
   table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
-  th, td { padding: 0.45rem 0.7rem; text-align: right; border-bottom: 1px solid #262a33; }
+  th, td { padding: 0.5rem 0.7rem; text-align: right; border-bottom: 1px solid var(--border); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
-  th { cursor: pointer; user-select: none; color: #9aa0aa; font-weight: 600; white-space: nowrap; }
-  th.active { color: #3b7ddd; }
-  tbody tr:hover { background: #1a1d24; }
+  th {
+    cursor: pointer; user-select: none; color: var(--text-dim); font-weight: 700;
+    white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.7rem;
+    border-bottom: 1px solid var(--border-bright);
+  }
+  th.active { color: var(--toxic); }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--panel); }
   .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; }
   .item-cell a { display: flex; line-height: 0; }
-  .item-icon { width: 24px; height: 24px; border-radius: 3px; border: 1px solid #333; flex-shrink: 0; }
-  .item-cell a .item-icon:hover { border-color: #3b9dff; cursor: pointer; }
-  .empty { color: #9aa0aa; padding: 1rem 0; }
-  code { background: #1a1d24; padding: 0.1rem 0.3rem; border-radius: 3px; }
+  .item-icon { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--border-bright); flex-shrink: 0; }
+  .item-cell a .item-icon:hover { border-color: var(--toxic); cursor: pointer; }
+  .empty { color: var(--text-dim); padding: 1.5rem 0; text-align: center; font-size: 0.85rem; }
 
-  /* WoW-style coin icons */
+  /* ---------- Coin display ---------- */
   .money { white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .money-part { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+  .money-part { display: inline-flex; align-items: center; gap: 3px; margin-right: 7px; }
   .coin {
-    display: inline-block; width: 11px; height: 11px; border-radius: 50%;
-    box-shadow: inset -1px -1px 2px rgba(0,0,0,0.5), inset 1px 1px 1px rgba(255,255,255,0.5);
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    box-shadow: inset -1px -1px 1px rgba(0,0,0,0.5), inset 1px 1px 1px rgba(255,255,255,0.35);
   }
-  .coin-gold   { background: radial-gradient(circle at 35% 30%, #ffe680, #c9960c); }
-  .coin-silver { background: radial-gradient(circle at 35% 30%, #f2f2f2, #9a9a9a); }
-  .coin-copper { background: radial-gradient(circle at 35% 30%, #e0985a, #8a4a1f); }
+  .coin-gold   { background: radial-gradient(circle at 35% 30%, #ffe680, var(--gold) 55%, #b8860b); }
+  .coin-silver { background: radial-gradient(circle at 35% 30%, #f4f4f4, #b7b7b7 55%, #7c7c7c); }
+  .coin-copper { background: radial-gradient(circle at 35% 30%, #e0985a, var(--brass) 55%, #8a4a1f); }
 
-  /* WoW-style item tooltip */
+  /* ---------- Tooltip: styled like a cargo manifest tag ---------- */
   #tooltip {
     position: fixed; z-index: 1000; display: none; pointer-events: none;
     min-width: 220px; max-width: 320px;
-    background: linear-gradient(#0c0c10, #08080b);
-    border: 1px solid #4a4a52; border-radius: 4px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.6);
-    padding: 0.6rem 0.75rem; font-size: 0.8rem; color: #b8b8c0;
+    background: var(--panel-raised);
+    border: 1px solid var(--brass); border-radius: 3px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.55);
+    padding: 0.65rem 0.8rem; font-size: 0.8rem; color: var(--text-dim);
   }
-  #tooltip .tt-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
-  #tooltip .tt-icon { width: 36px; height: 36px; border-radius: 3px; border: 1px solid #555; }
+  #tooltip .tt-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem; }
+  #tooltip .tt-icon { width: 36px; height: 36px; border-radius: 3px; border: 1px solid var(--border-bright); }
   #tooltip .tt-name { font-weight: 700; font-size: 0.95rem; line-height: 1.2; }
-  #tooltip .tt-sub { color: #7d7d88; font-size: 0.72rem; margin-bottom: 0.4rem; }
-  #tooltip .tt-row { display: flex; justify-content: space-between; gap: 1rem; margin: 0.15rem 0; }
-  #tooltip .tt-row .lbl { color: #7d7d88; }
-  #tooltip hr { border: none; border-top: 1px solid #2a2a30; margin: 0.4rem 0; }
+  #tooltip .tt-sub { color: var(--text-dim); font-size: 0.7rem; margin-bottom: 0.4rem; }
+  #tooltip .tt-row { display: flex; justify-content: space-between; gap: 1rem; margin: 0.2rem 0; }
+  #tooltip .tt-row .lbl { color: var(--text-dim); text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.04em; }
+  #tooltip hr { border: none; border-top: 1px solid var(--border); margin: 0.45rem 0; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    tbody tr { transition: background-color 0.1s ease; }
+  }
 </style>
 </head>
 <body>
-<div style="display:flex; justify-content:space-between; align-items:center;">
-  <h1>AH Snipe Dashboard</h1>
-  <div style="display:flex; gap:0.5rem;">
-    <a href="/profile" style="background:#2a2d34; border:1px solid #444; color:#e6e6e6; border-radius:4px; padding:0.4rem 0.8rem; cursor:pointer; font-size:0.8rem; text-decoration:none;">Profile</a>
-    <button id="logout" style="background:#2a2d34; border:1px solid #444; color:#e6e6e6; border-radius:4px; padding:0.4rem 0.8rem; cursor:pointer; font-size:0.8rem;">Log out</button>
+<div class="masthead">
+  <h1>AH Snipe <span class="accent">Ledger</span></h1>
+  <div class="nav">
+    <a href="/profile">Profile</a>
+    <button id="logout">Log out</button>
   </div>
 </div>
 
-<div id="caveat" class="caveat"></div>
+<div class="ticker" id="ticker"></div>
 
 <div class="bar">
   <label>Sell realm <input id="sell" type="number" placeholder="e.g. 1403"></label>
-  <label>Min discount <input id="min_discount" type="number" step="0.05" value="0.3"></label>
+  <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
   <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
   <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
   <label>Top <input id="top" type="number" value="50"></label>
-  <label>Names/icons <input id="names" type="checkbox" checked></label>
   <button id="refresh">Refresh</button>
-  <label style="flex-direction: row; align-items: center; gap: 0.4rem;">
+  <label class="auto-label">
     <input id="auto" type="checkbox" checked> Auto-refresh (60s)
   </label>
 </div>
-
-<div id="status" class="status"></div>
 
 <table>
   <thead>
@@ -126,11 +191,12 @@ let currentSellSlug = null;
 function params() {
   const p = new URLSearchParams();
   p.set("sell", $("sell").value);
-  p.set("min_discount", $("min_discount").value);
+  // UI shows/edits a percentage (e.g. 30); the API takes a 0-1 fraction.
+  p.set("min_discount", (Number($("min_discount_pct").value) / 100).toString());
   p.set("min_per_day", $("min_per_day").value);
   p.set("top", $("top").value);
   p.set("sort", sort);
-  p.set("names", $("names").checked);
+  p.set("names", "true");  // always on -- names/icons aren't worth making optional
   if ($("items").value.trim()) p.set("items", $("items").value.trim());
   return p;
 }
@@ -213,12 +279,12 @@ async function loadStatus(sell) {
     if (!r.ok) return;
     const s = await r.json();
     const now = new Date().toLocaleTimeString();
-    const stale = !s.events_exist ? ' class="stale"' : "";
-    $("status").innerHTML = `
-      <span>Dashboard polled: ${now}</span>
-      <span${stale}>Sell-realm snapshot: ${fmtHttpDate(s.last_modified)}</span>
-      <span>Listings sweep: ${fmtTs(s.listings_updated)}</span>
-      <span>${s.events_exist ? "events built" : "no events yet -- run diff_snapshots.py"}</span>
+    const stale = !s.events_exist;
+    $("ticker").innerHTML = `
+      <div class="seg"><span class="k">Polled</span><span class="v mono">${now}</span></div>
+      <div class="seg"><span class="k">Snapshot</span><span class="v mono ${stale ? "stale" : "ok"}">${fmtHttpDate(s.last_modified)}</span></div>
+      <div class="seg"><span class="k">Listings swept</span><span class="v mono">${fmtTs(s.listings_updated)}</span></div>
+      <div class="seg"><span class="k">Ledger</span><span class="v mono ${stale ? "stale" : "ok"}">${s.events_exist ? "built" : "pending"}</span></div>
     `;
   } catch (e) { /* leave last-known status visible */ }
 }
@@ -238,7 +304,8 @@ async function loadSnipes() {
     return;
   }
   const data = await r.json();
-  $("caveat").textContent = data.caveat;
+  // data.caveat (the warband/BoP note) is intentionally not displayed --
+  // removed from the UI per product decision; still in the API response.
   currentRegion = data.region;
   currentSellSlug = data.sell_realm_slug;
   currentRows = data.rows;
@@ -260,11 +327,11 @@ async function loadSnipes() {
     tr.innerHTML = `
       <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
       <td><div class="item-cell" data-row="${i}">${icon}<span style="color:${color}">${row.name ?? row.item_id}</span></div></td>
-      <td title="${row.variant_raw ?? ""}">${row.variant}</td>
-      <td>${formatMoney(row.buy_copper)}</td>
-      <td>${formatMoney(row.sell_copper)}</td>
-      <td>${row.per_day.toFixed(2)}</td>
-      <td>${row.discount_pct.toFixed(1)}</td>
+      <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
+      <td class="num">${formatMoney(row.buy_copper)}</td>
+      <td class="num">${formatMoney(row.sell_copper)}</td>
+      <td class="num">${row.per_day.toFixed(2)}</td>
+      <td class="num">${row.discount_pct.toFixed(1)}</td>
     `;
     tbody.appendChild(tr);
   });

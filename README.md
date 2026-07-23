@@ -180,7 +180,8 @@ appearance-scarcity layer (ItemModifiedAppearance mappings via wago.tools +
 the static item API) → deal score with buy-realm → sell-realm routing →
 Discord webhook alerts → free companion addon. See `PROGRESS.md` for the
 current staged status and immediate next steps (a sell-realm picker in the
-UI, a real pricing page, and a design pass are ahead of the commodity feed).
+UI and a real pricing page are ahead of the commodity feed; the UI design
+pass is done as of 2026-07-23).
 
 ## Notes
 

@@ -4,39 +4,54 @@
 <meta charset="utf-8">
 <title>Profile — AH Snipe Dashboard</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #14170f; --panel: #1b1f15; --panel-raised: #23281a;
+    --border: #3a4029; --border-bright: #565f38;
+    --text: #eef0e6; --text-dim: #97a084;
+    --toxic: #a6e600; --toxic-dim: #7fb300; --brass: #c9963e; --ember: #ff7a45; --gold: #ffd651;
+  }
+  * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
-    background: #0f1115; color: #e6e6e6;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.05), transparent 60%);
     display: flex; align-items: center; justify-content: center;
     min-height: 100vh; margin: 0; padding: 1rem;
   }
   .card {
-    background: #1a1d24; border-radius: 8px; padding: 2rem;
-    width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 1.1rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 2rem; width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 1.1rem;
   }
-  h1 { font-size: 1.2rem; margin: 0; }
-  .row { display: flex; justify-content: space-between; font-size: 0.9rem; gap: 1rem; }
-  .row .lbl { color: #9aa0aa; }
+  h1 {
+    font-size: 1.15rem; margin: 0; font-weight: 800;
+    text-transform: uppercase; letter-spacing: -0.01em;
+  }
+  .row { display: flex; justify-content: space-between; align-items: center; font-size: 0.88rem; gap: 1rem; }
+  .row .lbl { color: var(--text-dim); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .row span:not(.lbl) { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
   .badge {
-    display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
-    font-size: 0.75rem; font-weight: 600;
+    display: inline-block; padding: 0.2rem 0.6rem; border-radius: 3px;
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  .badge.active { background: #163a24; color: #4ade80; }
-  .badge.inactive { background: #3a1616; color: #f87171; }
-  .badge.pending { background: #3a3116; color: #facc15; }
+  .badge.active { background: rgba(166,230,0,0.15); color: var(--toxic); border: 1px solid var(--toxic-dim); }
+  .badge.inactive { background: rgba(255,122,69,0.12); color: var(--ember); border: 1px solid var(--ember); }
+  .badge.pending { background: rgba(255,214,81,0.12); color: var(--gold); border: 1px solid var(--gold); }
   button, a.btn {
-    background: #3b7ddd; border: none; color: white; border-radius: 4px;
-    padding: 0.6rem; cursor: pointer; font-size: 0.9rem; text-align: center;
-    text-decoration: none; display: block;
+    background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
+    border-radius: 3px; padding: 0.6rem; cursor: pointer; font-size: 0.85rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    text-align: center; text-decoration: none; display: block;
   }
-  button:hover, a.btn:hover { background: #2f68c0; }
+  button:hover, a.btn:hover { background: var(--toxic-dim); border-color: var(--toxic-dim); }
   button:disabled { opacity: 0.6; cursor: default; }
-  a.secondary { background: #2a2d34; border: 1px solid #444; }
-  a.secondary:hover { background: #333740; }
-  .error { color: #ff8080; font-size: 0.8rem; min-height: 1em; }
-  .nav { font-size: 0.8rem; }
-  .nav a { color: #3b9dff; }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
+  a.secondary { background: var(--panel-raised); border: 1px solid var(--border-bright); color: var(--text); }
+  a.secondary:hover { background: var(--border); }
+  .error { color: var(--ember); font-size: 0.8rem; min-height: 1em; }
+  .nav { font-size: 0.8rem; color: var(--text-dim); }
+  .nav a { color: var(--brass); }
 </style>
 </head>
 <body>

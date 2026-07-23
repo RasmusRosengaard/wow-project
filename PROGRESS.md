@@ -16,22 +16,24 @@ Last updated: 2026-07-23.
   realms, no human machine required.
 - Auto-deploy on push to `main`, gated on tests passing (CI → Railway
   "Wait for CI" → build → deploy → DB migration, all automatic).
+- Every page (dashboard, login, register, subscribe, profile) runs one
+  consistent designed look — see "UI design pass" below.
 
 **Not built yet**, in priority order — see "Next up" below for detail:
 1. Sell-realm picker in the dashboard UI (server has multi-realm data, UI still takes a free-typed realm id).
 2. A pricing/explainer page (what you get, what the money funds).
-3. A general UI design pass.
-4. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
+3. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
 
 ## Next up (short list, do these in roughly this order)
 0. **Login Subscribe flow** - Profile page, subscribe, cancel, status, etc.
 1. **Sell-realm picker** — `/api/realms` endpoint + dropdown in the dashboard, replacing the free-typed realm id box. Backend already has the multi-realm data.
 2. **Pricing/explainer page** — what the €4.99/mo gets you, and that it funds scaling data collection to more realms. Currently `/subscribe` has a bare feature list, no real pitch.
-3. **UI design pass** — run the dashboard through the `frontend-design` skill; current styling was written directly, not designed.
-4. **QoL fixes**: min-discount filter should read/display as an actual percentage (not a raw 0–1 fraction); the names/icons toggle shouldn't be turn-offable (should probably just always be on).
-5. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction).
-6. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
-7. Phase 2 (commodities feed) and Phase 3 (appearance/scarcity layer) — see "Longer-term roadmap".
+2.1. **Min/max gold filter** For ah sniper
+2.2  **Multiple snipes on same item** Make a dropdown, show biggest snipe at top and so on down.
+
+3. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction).
+4. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
+5. Phase 2 (commodities feed) and Phase 3 (appearance/scarcity layer) — see "Longer-term roadmap".
 
 **Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (Stripe Dashboard → Developers → Webhooks) needs updating to match by hand — it won't happen automatically.
 
@@ -98,6 +100,30 @@ dev Postgres stopped, not removed, for local Stage-3+-adjacent dev only.
 
 Still missing: the `/api/realms` + dropdown UI piece (see "Next up" #1).
 
+### UI design pass (done 2026-07-23)
+
+Ran every page through the `frontend-design` skill — an "Undermine cartel
+trading-floor" identity: dark olive/moss panels (`--bg #14170f`, `--panel
+#1b1f15`), a toxic-green accent (`--toxic #a6e600`) for primary actions, brass
+and ember as secondary accents, system font stacks throughout (no external
+fonts — keeps the "no build step, offline-capable" convention), `ui-monospace`
+for all numeric/data columns. The dashboard's signature element is a static
+segmented status ticker (`.masthead`/`.ticker`) replacing the old plain status
+div — deliberately not animated, respects `prefers-reduced-motion`. Applied
+consistently to `dashboard.html`, `login.html`, `register.html`,
+`subscribe.html`, `profile.html`; each page's existing JS/functional logic
+was preserved exactly, only markup/CSS changed.
+
+Also removed per explicit human instruction: the repeated "NOTE: an AH
+listing is guaranteed unsoulbound..." caveat banner is gone from the UI
+entirely (was CSS + HTML + a JS line populating it from `data.caveat`) — the
+API still returns `caveat` in its response, it's just not rendered anymore.
+
+Folded in the two QoL fixes from the old "Next up" #4 at the same time:
+min-discount filter is now a real percentage input (0–100, was a raw 0–1
+fraction) and the names/icons toggle is gone — resolving item_id → name/icon
+is always on now, there was no real reason to ever turn it off.
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
@@ -148,7 +174,7 @@ instead (Linux binary, never touches that policy).
 | Billing | `billing.py`, `static/subscribe.html` |
 | Item name/icon/quality cache | `item_names.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
-| Tests | `tests/` — 99 passing (`pytest -q`), no external services needed |
+| Tests | `tests/` — 104 passing (`pytest -q`), no external services needed |
 
 ## Where to look for more
 

@@ -4,32 +4,49 @@
 <meta charset="utf-8">
 <title>Log in — AH Snipe Dashboard</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #14170f; --panel: #1b1f15; --panel-raised: #23281a;
+    --border: #3a4029; --border-bright: #565f38;
+    --text: #eef0e6; --text-dim: #97a084;
+    --toxic: #a6e600; --toxic-dim: #7fb300; --brass: #c9963e; --ember: #ff7a45;
+  }
+  * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
-    background: #0f1115; color: #e6e6e6;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.05), transparent 60%);
     display: flex; align-items: center; justify-content: center;
     min-height: 100vh; margin: 0; padding: 1rem;
   }
   form {
-    background: #1a1d24; border-radius: 8px; padding: 2rem;
-    width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 0.9rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 2rem; width: 100%; max-width: 320px;
+    display: flex; flex-direction: column; gap: 1rem;
   }
-  h1 { font-size: 1.1rem; margin: 0 0 0.5rem; }
-  label { font-size: 0.8rem; color: #9aa0aa; display: flex; flex-direction: column; gap: 0.3rem; }
+  h1 {
+    font-size: 1.15rem; margin: 0 0 0.3rem; font-weight: 800;
+    text-transform: uppercase; letter-spacing: -0.01em;
+  }
+  label {
+    font-size: 0.72rem; color: var(--text-dim); display: flex; flex-direction: column;
+    gap: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em;
+  }
   input {
-    background: #0f1115; border: 1px solid #333; color: #e6e6e6;
-    border-radius: 4px; padding: 0.5rem 0.6rem; font-size: 0.9rem;
+    background: var(--bg); border: 1px solid var(--border-bright); color: var(--text);
+    border-radius: 3px; padding: 0.55rem 0.65rem; font-size: 0.9rem; font-family: inherit;
   }
+  input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
   button {
-    background: #3b7ddd; border: none; color: white; border-radius: 4px;
-    padding: 0.6rem; cursor: pointer; font-size: 0.9rem; margin-top: 0.3rem;
+    background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
+    border-radius: 3px; padding: 0.6rem; cursor: pointer; font-size: 0.85rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 0.2rem;
   }
-  button:hover { background: #2f68c0; }
+  button:hover { background: var(--toxic-dim); border-color: var(--toxic-dim); }
   button:disabled { opacity: 0.6; cursor: default; }
-  .error { color: #ff8080; font-size: 0.8rem; min-height: 1em; }
-  .switch { font-size: 0.8rem; color: #9aa0aa; text-align: center; }
-  .switch a { color: #3b9dff; }
+  .error { color: var(--ember); font-size: 0.8rem; min-height: 1em; }
+  .switch { font-size: 0.8rem; color: var(--text-dim); text-align: center; }
+  .switch a { color: var(--brass); }
 </style>
 </head>
 <body>
