@@ -193,6 +193,7 @@
       <th data-sort="variant">Variant <span class="dir"></span></th>
       <th data-sort="buy">Buy <span class="dir"></span></th>
       <th data-sort="gold">Sell p25 <span class="dir"></span></th>
+      <th data-sort="sell_now">Sell realm low <span class="dir"></span></th>
       <th data-sort="per_day">Sales/day <span class="dir"></span></th>
       <th data-sort="discount">Discount % <span class="dir"></span></th>
     </tr>
@@ -222,13 +223,14 @@ let openGroups = new Set();  // group keys the user has expanded to see every li
 let currentRegion = null;
 let currentSellSlug = null;
 
-const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "per_day", "discount"]);
+const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "sell_now", "per_day", "discount"]);
 const SORT_VALUE = {
   buy_realm: r => (r.buy_realm_name || "").toLowerCase(),
   item: r => (r.name || String(r.item_id)).toLowerCase(),
   variant: r => (r.variant || "").toLowerCase(),
   buy: r => r.buy_copper,
   gold: r => r.sell_copper,
+  sell_now: r => r.sell_now_copper,
   per_day: r => r.per_day,
   discount: r => r.discount_pct,
 };
@@ -236,6 +238,12 @@ const SORT_VALUE = {
 function compareRows(a, b) {
   const val = SORT_VALUE[sort];
   const va = val(a), vb = val(b);
+  // Nulls (e.g. sell_now_copper when nothing's currently listed on the sell
+  // realm) always sort last, regardless of asc/desc -- "unknown" isn't a
+  // high or low value, it's just missing.
+  if (va == null && vb == null) return 0;
+  if (va == null) return 1;
+  if (vb == null) return -1;
   const cmp = (typeof va === "number" && typeof vb === "number")
     ? va - vb
     : String(va).localeCompare(String(vb));
@@ -333,6 +341,9 @@ function showTooltip(row, x, y) {
     <div class="tt-row"><span class="lbl">Buy realm</span><span>${row.buy_realm_name}</span></div>
     <div class="tt-row"><span class="lbl">Buy price</span>${formatMoney(row.buy_copper)}</div>
     <div class="tt-row"><span class="lbl">Sell p25</span>${formatMoney(row.sell_copper)}</div>
+    ${row.sell_now_copper != null
+      ? `<div class="tt-row"><span class="lbl">Sell realm low</span>${formatMoney(row.sell_now_copper)}</div>`
+      : ""}
     <div class="tt-row"><span class="lbl">Sales/day</span><span>${row.per_day.toFixed(2)}</span></div>
     <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
     ${row.appearance_sources != null
@@ -396,6 +407,7 @@ function buildRowHtml(row, idx, group, isSub) {
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>
+      <td class="num">${row.sell_now_copper != null ? formatMoney(row.sell_now_copper) : "&mdash;"}</td>
       <td class="num">${row.per_day.toFixed(2)}</td>
       <td class="num">${row.discount_pct.toFixed(1)}</td>
     </tr>`;

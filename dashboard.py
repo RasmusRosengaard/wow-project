@@ -149,6 +149,7 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         "buy_g": r["buy_g"],
         "sell_p_g": r["sell_p_g"],
         "sell_now_g": r["sell_now_g"],
+        "sell_now_copper": r["sell_now_copper"],
         "appearance_sources": r["appearance_sources"],
         "buy_copper": r["buy_copper"],
         "sell_copper": r["sell_copper"],

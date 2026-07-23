@@ -314,6 +314,7 @@ def test_find_snipes_caps_sell_price_at_current_lowest_listing(tmp_path, monkeyp
     r = rows[0]
     assert r["sell_p_g"] == pytest.approx(2.0)      # capped at the live listing, not the 20g troll sale
     assert r["sell_now_g"] == pytest.approx(2.0)
+    assert r["sell_now_copper"] == 20_000
 
 
 def test_find_snipes_reports_appearance_sources_without_filtering(data_dir, monkeypatch):

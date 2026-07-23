@@ -172,6 +172,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                round(b.buy_unit_price)::BIGINT                     AS buy_copper,
                round(s.sell_price)::BIGINT                         AS sell_copper,
                round(s.cheapest_now / 10000, 2)                    AS sell_now_g,
+               round(s.cheapest_now)::BIGINT                       AS sell_now_copper,
                s.per_day,
                round(100.0 * (s.sell_price * 0.95 - b.buy_unit_price)
                      / (s.sell_price * 0.95), 1)                   AS discount_pct
