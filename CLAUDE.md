@@ -176,27 +176,25 @@ policy at all. Useful if Railway CLI access is needed again later.
 
 ### Scheduled automation
 
-Two collection paths now exist and currently both run:
-
-- **Local**: `run_cycle.py --sell 1403` hourly via Windows Task Scheduler,
-  task name **AHSnipePipeline** (created 2026-07-20), through the
-  `run_cycle_task.ps1` wrapper. Output/errors append to
-  `data/logs/run_cycle_task.log` (separate from `collector.log`/`scanner.log`,
-  which only get the internal logging module's messages, not print() output
-  or tracebacks from the run itself). Still deep-collects only realm 1403.
-- **Hosted**: `collect_all.py` runs hourly in-process inside the Railway
-  deployment (see above), deep-collecting every FULL/HIGH-population EU
-  realm (scope decided 2026-07-23 — not literally all ~100, see Phase 1
-  entry above) plus an unscoped region-wide listings sweep.
+**Local collection is disabled (human decision, 2026-07-23)** now that the
+hosted path is live — `collect_all.py` running hourly in-process inside the
+Railway deployment (see above) is the sole collection path going forward.
+The **AHSnipePipeline** Windows Task Scheduler task (created 2026-07-20,
+would run `run_cycle.py --sell 1403` hourly through `run_cycle_task.ps1`,
+logging to `data/logs/run_cycle_task.log`) still exists but is **Disabled**,
+not removed — re-enabling it is a one-line PowerShell command below if
+local collection is ever needed again (e.g. the hosted deployment goes
+down). The local dev Postgres container (`wow-project-pg`) was stopped, not
+removed, for the same reason — its data is still there if local Stage 3/4
+development needs it again.
 
 The original reasoning for rejecting a **cloud** scheduled agent (a fresh,
 stateless Claude routine checkout with no access to local `.env` or
 accumulated `data/` history) still holds for *that specific approach* — but
 it doesn't apply to the Railway deployment, which has its own persistent
 Volume and its own `.env`-equivalent (Railway env vars) and therefore *can*
-accumulate history across restarts. The human hasn't yet decided whether to
-turn off local collection now that the hosted path exists — don't assume
-either way; check `PROGRESS.md` for the current call.
+accumulate history across restarts. That's the loophole that made moving
+collection off the human's machine viable at all.
 
 Manage the local scheduled task from an elevated or normal PowerShell:
 ```
