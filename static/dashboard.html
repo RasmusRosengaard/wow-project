@@ -316,7 +316,7 @@ $("logout").addEventListener("click", async () => {
     return;
   }
   const meData = await me.json();
-  if (meData.subscription_status !== "active") {
+  if (!meData.is_superuser && meData.subscription_status !== "active") {
     window.location.href = "/subscribe";
     return;
   }

@@ -303,6 +303,16 @@ def test_index_serves_html():
     assert b"AH Snipe Dashboard" in r.content
 
 
+def test_index_html_redirect_check_respects_superuser():
+    """Regression test: the frontend's own client-side redirect-to-/subscribe
+    logic must check is_superuser, not just subscription_status -- the
+    backend gate (auth.current_subscribed_user) already bypasses for
+    superusers, but a superuser was still bounced to /subscribe because this
+    check was missed when is_superuser was added (caught live, 2026-07-23)."""
+    r = client.get("/")
+    assert b"meData.is_superuser" in r.content
+
+
 def test_api_config_reports_default_sell():
     dashboard.app.state.default_sell = 1403
     r = client.get("/api/config")
