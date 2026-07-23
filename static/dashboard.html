@@ -298,11 +298,6 @@ function params() {
   return p;
 }
 
-function fmtTs(unixSeconds) {
-  if (!unixSeconds) return "never";
-  return new Date(unixSeconds * 1000).toLocaleString();
-}
-
 function fmtHttpDate(s) {
   if (!s) return "never";
   const d = new Date(s);
@@ -382,16 +377,14 @@ async function loadStatus(sell) {
     if (!r.ok) return;
     const s = await r.json();
     const stale = !s.events_exist;
-    // "Polled" (browser wall-clock time) used to sit here and got re-stamped
-    // on every 60s auto-refresh regardless of whether Blizzard had actually
-    // published anything new -- misleading "freshness" theater. Snapshot/
-    // Listings swept below are the real last-new-data timestamps; dropped
-    // rather than replaced since nothing else the client knows means
-    // "we just polled" in a way that isn't already covered by those two.
+    // One number, one meaning: when Blizzard's AH data (s.last_modified,
+    // the real Last-Modified header from the sell-realm collector) was last
+    // actually new -- not "Polled" (removed earlier, was just the browser's
+    // render-time wall clock) and not split across three overlapping
+    // signals (Snapshot/Listings swept/Ledger build status) that all
+    // gestured at "is the data fresh" without a single clear answer.
     $("ticker").innerHTML = `
-      <div class="seg"><span class="k">Snapshot</span><span class="v mono ${stale ? "stale" : "ok"}">${fmtHttpDate(s.last_modified)}</span></div>
-      <div class="seg"><span class="k">Listings swept</span><span class="v mono">${fmtTs(s.listings_updated)}</span></div>
-      <div class="seg"><span class="k">Ledger</span><span class="v mono ${stale ? "stale" : "ok"}">${s.events_exist ? "built" : "pending"}</span></div>
+      <div class="seg"><span class="k">Last auction data</span><span class="v mono ${stale ? "stale" : "ok"}">${fmtHttpDate(s.last_modified)}</span></div>
     `;
   } catch (e) { /* leave last-known status visible */ }
 }
