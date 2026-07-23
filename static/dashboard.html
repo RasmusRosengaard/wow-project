@@ -175,6 +175,9 @@
   <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
   <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
   <label>Top <input id="top" type="number" value="50"></label>
+  <label class="auto-label">
+    <input id="unique_appearance" type="checkbox"> Unique transmog only
+  </label>
   <button id="refresh">Refresh</button>
   <label class="auto-label">
     <input id="auto" type="checkbox" checked> Auto-refresh (60s)
@@ -275,6 +278,10 @@ function params() {
   if ($("items").value.trim()) p.set("items", $("items").value.trim());
   if ($("min_gold").value.trim()) p.set("min_gold", $("min_gold").value.trim());
   if ($("max_gold").value.trim()) p.set("max_gold", $("max_gold").value.trim());
+  // "Unique" means no other item in the game grants the same transmog look
+  // (appearance_sources == 1) -- see appearance.py. Items the appearance
+  // cache doesn't know about are excluded when this is on, same as the API.
+  if ($("unique_appearance").checked) p.set("max_appearance_sources", "1");
   return p;
 }
 
@@ -328,6 +335,9 @@ function showTooltip(row, x, y) {
     <div class="tt-row"><span class="lbl">Sell p25</span>${formatMoney(row.sell_copper)}</div>
     <div class="tt-row"><span class="lbl">Sales/day</span><span>${row.per_day.toFixed(2)}</span></div>
     <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
+    ${row.appearance_sources != null
+      ? `<div class="tt-row"><span class="lbl">Appearance</span><span>${row.appearance_sources === 1 ? "unique look" : `shared by ${row.appearance_sources} items`}</span></div>`
+      : ""}
     ${ue ? `<hr><div class="tt-sub">Click the icon for Undermine Exchange &rarr;</div>` : ""}
   `;
   tt.style.display = "block";
