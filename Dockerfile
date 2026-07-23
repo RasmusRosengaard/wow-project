@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY *.py .
+COPY static ./static
+EXPOSE 8000
+ENTRYPOINT ["python", "dashboard.py"]
+CMD ["--sell", "1403", "--host", "0.0.0.0", "--port", "8000"]

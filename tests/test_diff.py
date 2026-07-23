@@ -14,12 +14,13 @@ TS = 1_700_003_600
 
 
 def auction(auction_id, item_id=1000, bonus_key="", buyout=10_000, quantity=1,
-            time_left="VERY_LONG", pet_species_id=None):
+            time_left="VERY_LONG", pet_species_id=None, pet_quality_id=None):
     return {
         "auction_id": auction_id,
         "item_id": item_id,
         "bonus_key": bonus_key,
         "pet_species_id": pet_species_id,
+        "pet_quality_id": pet_quality_id,
         "buyout": buyout,
         "quantity": quantity,
         "time_left": time_left,
@@ -133,6 +134,22 @@ def test_relist_requires_exact_variant_match():
     got = {e["auction_id"]: e["classification"]
            for e in classify_pair(prev, curr, gap=GAP, ts=TS)}
     assert got == {1: "inferred_sale", 2: "inferred_sale"}
+
+
+def test_relist_requires_matching_pet_identity():
+    """Two different caged pets (82800) with the same buyout/quantity must NOT
+    be treated as relists of each other -- pet identity lives in
+    pet_species_id/pet_quality_id, not bonus_key (empty for cages)."""
+    prev = snap(
+        auction(1, item_id=82800, buyout=10_000, pet_species_id=1, pet_quality_id=1),
+        auction(2, item_id=82800, buyout=10_000, pet_species_id=2, pet_quality_id=4),
+    )
+    curr = snap(
+        auction(3, item_id=82800, buyout=10_000, pet_species_id=1, pet_quality_id=1),
+    )
+    got = {e["auction_id"]: e["classification"]
+           for e in classify_pair(prev, curr, gap=GAP, ts=TS)}
+    assert got == {1: "likely_relisted", 2: "inferred_sale"}
 
 
 def test_missing_time_left_defaults_to_medium():

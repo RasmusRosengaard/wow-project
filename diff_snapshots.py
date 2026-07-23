@@ -38,6 +38,7 @@ EVENT_SCHEMA = pa.schema([
     ("item_id", pa.int64()),
     ("bonus_key", pa.string()),
     ("pet_species_id", pa.int64()),
+    ("pet_quality_id", pa.int64()),
     ("unit_price", pa.float64()),     # buyout / quantity, in copper
     ("quantity", pa.int64()),
     ("time_left", pa.string()),       # bucket at last sighting
@@ -51,7 +52,11 @@ def load_snapshot(path: Path) -> dict[int, dict]:
 
 
 def relist_key(r: dict) -> tuple:
-    return (r["item_id"], r["bonus_key"], r["buyout"], r["quantity"])
+    # Pet identity lives in pet_species_id/pet_quality_id, not bonus_key (which
+    # is empty for caged pets) -- without it, two different pets with the same
+    # buyout+quantity would falsely match as a relist of one another.
+    return (r["item_id"], r["bonus_key"], r["pet_species_id"], r["pet_quality_id"],
+            r["buyout"], r["quantity"])
 
 
 def classify_pair(prev: dict[int, dict], curr: dict[int, dict],
@@ -84,6 +89,7 @@ def classify_pair(prev: dict[int, dict], curr: dict[int, dict],
             "item_id": r["item_id"],
             "bonus_key": r["bonus_key"],
             "pet_species_id": r["pet_species_id"],
+            "pet_quality_id": r["pet_quality_id"],
             "unit_price": (r["buyout"] / q) if r["buyout"] is not None else None,
             "quantity": q,
             "time_left": tl,

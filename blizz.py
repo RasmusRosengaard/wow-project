@@ -3,6 +3,7 @@
 Free developer client: https://develop.battle.net -> Create Client (see README).
 """
 import os
+import re
 import time
 from pathlib import Path
 
@@ -73,3 +74,33 @@ def find_connected_realm(slug: str) -> list[tuple[int, list[str]]]:
         realms = [rl.get("slug", "?") for rl in d.get("realms", [])]
         out.append((d.get("id"), realms))
     return out
+
+
+def connected_realm_slugs(cr_id: int) -> list[str]:
+    """Member realm slugs for one connected realm (usually one slug; a few
+    connected realms merge several named realms under one auction house)."""
+    r = api_get(f"/data/wow/connected-realm/{cr_id}", "dynamic")
+    r.raise_for_status()
+    return [rl.get("slug") for rl in r.json().get("realms", []) if rl.get("slug")]
+
+
+def connected_realm_realms(cr_id: int) -> list[dict]:
+    """Member realm {"name", "slug"} pairs for one connected realm -- same
+    endpoint as connected_realm_slugs, but keeps the display name alongside
+    the slug so callers needing both don't make two requests."""
+    r = api_get(f"/data/wow/connected-realm/{cr_id}", "dynamic")
+    r.raise_for_status()
+    return [{"name": rl.get("name"), "slug": rl.get("slug")}
+            for rl in r.json().get("realms", []) if rl.get("slug")]
+
+
+def list_connected_realms() -> list[int]:
+    """Every connected-realm id in the region, for the buy-side region scanner."""
+    r = api_get("/data/wow/connected-realm/index", "dynamic")
+    r.raise_for_status()
+    ids = []
+    for entry in r.json().get("connected_realms", []):
+        m = re.search(r"/connected-realm/(\d+)", entry.get("href", ""))
+        if m:
+            ids.append(int(m.group(1)))
+    return ids

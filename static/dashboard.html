@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AH Snipe Dashboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0; padding: 1.5rem;
+    background: #0f1115; color: #e6e6e6;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end;
+    margin-bottom: 1rem; padding: 0.75rem; background: #1a1d24; border-radius: 6px;
+  }
+  .bar label { display: flex; flex-direction: column; font-size: 0.75rem; color: #9aa0aa; gap: 0.25rem; }
+  .bar input { background: #0f1115; border: 1px solid #333; color: #e6e6e6; border-radius: 4px; padding: 0.35rem 0.5rem; width: 9rem; }
+  .bar input[type=checkbox] { width: auto; }
+  .bar button {
+    background: #3b7ddd; border: none; color: white; border-radius: 4px;
+    padding: 0.45rem 0.9rem; cursor: pointer; height: fit-content;
+  }
+  .bar button:hover { background: #2f68c0; }
+  .caveat {
+    background: #4a2a12; border: 1px solid #a85d1f; color: #ffd9a8;
+    padding: 0.6rem 0.9rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem;
+  }
+  .status { font-size: 0.8rem; color: #9aa0aa; margin-bottom: 1rem; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .status .stale { color: #ff8080; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th, td { padding: 0.45rem 0.7rem; text-align: right; border-bottom: 1px solid #262a33; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
+  th { cursor: pointer; user-select: none; color: #9aa0aa; font-weight: 600; white-space: nowrap; }
+  th.active { color: #3b7ddd; }
+  tbody tr:hover { background: #1a1d24; }
+  .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; }
+  .item-cell a { display: flex; line-height: 0; }
+  .item-icon { width: 24px; height: 24px; border-radius: 3px; border: 1px solid #333; flex-shrink: 0; }
+  .item-cell a .item-icon:hover { border-color: #3b9dff; cursor: pointer; }
+  .empty { color: #9aa0aa; padding: 1rem 0; }
+  code { background: #1a1d24; padding: 0.1rem 0.3rem; border-radius: 3px; }
+
+  /* WoW-style coin icons */
+  .money { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .money-part { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+  .coin {
+    display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+    box-shadow: inset -1px -1px 2px rgba(0,0,0,0.5), inset 1px 1px 1px rgba(255,255,255,0.5);
+  }
+  .coin-gold   { background: radial-gradient(circle at 35% 30%, #ffe680, #c9960c); }
+  .coin-silver { background: radial-gradient(circle at 35% 30%, #f2f2f2, #9a9a9a); }
+  .coin-copper { background: radial-gradient(circle at 35% 30%, #e0985a, #8a4a1f); }
+
+  /* WoW-style item tooltip */
+  #tooltip {
+    position: fixed; z-index: 1000; display: none; pointer-events: none;
+    min-width: 220px; max-width: 320px;
+    background: linear-gradient(#0c0c10, #08080b);
+    border: 1px solid #4a4a52; border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    padding: 0.6rem 0.75rem; font-size: 0.8rem; color: #b8b8c0;
+  }
+  #tooltip .tt-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+  #tooltip .tt-icon { width: 36px; height: 36px; border-radius: 3px; border: 1px solid #555; }
+  #tooltip .tt-name { font-weight: 700; font-size: 0.95rem; line-height: 1.2; }
+  #tooltip .tt-sub { color: #7d7d88; font-size: 0.72rem; margin-bottom: 0.4rem; }
+  #tooltip .tt-row { display: flex; justify-content: space-between; gap: 1rem; margin: 0.15rem 0; }
+  #tooltip .tt-row .lbl { color: #7d7d88; }
+  #tooltip hr { border: none; border-top: 1px solid #2a2a30; margin: 0.4rem 0; }
+</style>
+</head>
+<body>
+<h1>AH Snipe Dashboard</h1>
+
+<div id="caveat" class="caveat"></div>
+
+<div class="bar">
+  <label>Sell realm <input id="sell" type="number" placeholder="e.g. 1403"></label>
+  <label>Min discount <input id="min_discount" type="number" step="0.05" value="0.3"></label>
+  <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
+  <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
+  <label>Top <input id="top" type="number" value="50"></label>
+  <label>Names/icons <input id="names" type="checkbox" checked></label>
+  <button id="refresh">Refresh</button>
+  <label style="flex-direction: row; align-items: center; gap: 0.4rem;">
+    <input id="auto" type="checkbox" checked> Auto-refresh (60s)
+  </label>
+</div>
+
+<div id="status" class="status"></div>
+
+<table>
+  <thead>
+    <tr>
+      <th data-sort="none">Buy realm</th>
+      <th data-sort="none">Item</th>
+      <th data-sort="none">Variant</th>
+      <th data-sort="none">Buy</th>
+      <th data-sort="gold">Sell p25</th>
+      <th data-sort="per_day">Sales/day</th>
+      <th data-sort="discount">Discount %</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty" style="display:none;">No snipes at these thresholds.</div>
+
+<div id="tooltip"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let sort = "discount";
+let timer = null;
+let currentRows = [];
+let currentRegion = null;
+let currentSellSlug = null;
+
+function params() {
+  const p = new URLSearchParams();
+  p.set("sell", $("sell").value);
+  p.set("min_discount", $("min_discount").value);
+  p.set("min_per_day", $("min_per_day").value);
+  p.set("top", $("top").value);
+  p.set("sort", sort);
+  p.set("names", $("names").checked);
+  if ($("items").value.trim()) p.set("items", $("items").value.trim());
+  return p;
+}
+
+function fmtTs(unixSeconds) {
+  if (!unixSeconds) return "never";
+  return new Date(unixSeconds * 1000).toLocaleString();
+}
+
+function fmtHttpDate(s) {
+  if (!s) return "never";
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleString();
+}
+
+// WoW-style gold/silver/copper coin display, formatted only here at the
+// display boundary -- the API sends raw copper end to end.
+function formatMoney(copper) {
+  copper = Math.round(copper);
+  const gold = Math.floor(copper / 10000);
+  const silver = Math.floor((copper % 10000) / 100);
+  const bronze = copper % 100;
+  const parts = [];
+  if (gold > 0) parts.push(`<span class="money-part">${gold}<span class="coin coin-gold"></span></span>`);
+  if (gold > 0 || silver > 0) parts.push(`<span class="money-part">${silver}<span class="coin coin-silver"></span></span>`);
+  parts.push(`<span class="money-part">${bronze}<span class="coin coin-copper"></span></span>`);
+  return `<span class="money">${parts.join("")}</span>`;
+}
+
+function undermineUrl(row) {
+  if (!currentRegion || !currentSellSlug) return null;
+  return `https://undermine.exchange/#${currentRegion}-${currentSellSlug}/${row.item_id}`;
+}
+
+function showTooltip(row, x, y) {
+  const tt = $("tooltip");
+  const color = row.quality_color || "#ffffff";
+  const icon = row.icon
+    ? `<img class="tt-icon" src="${row.icon}" alt="" onerror="this.style.display='none'">`
+    : "";
+  const ue = undermineUrl(row);
+  tt.innerHTML = `
+    <div class="tt-head">
+      ${icon}
+      <div>
+        <div class="tt-name" style="color:${color}">${row.name ?? ("item " + row.item_id)}</div>
+        <div class="tt-sub">Item ${row.item_id}${row.variant_raw ? " &middot; " + row.variant : ""}</div>
+      </div>
+    </div>
+    <div class="tt-row"><span class="lbl">Buy realm</span><span>${row.buy_realm_name}</span></div>
+    <div class="tt-row"><span class="lbl">Buy price</span>${formatMoney(row.buy_copper)}</div>
+    <div class="tt-row"><span class="lbl">Sell p25</span>${formatMoney(row.sell_copper)}</div>
+    <div class="tt-row"><span class="lbl">Sales/day</span><span>${row.per_day.toFixed(2)}</span></div>
+    <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
+    ${ue ? `<hr><div class="tt-sub">Click the icon for Undermine Exchange &rarr;</div>` : ""}
+  `;
+  tt.style.display = "block";
+  positionTooltip(x, y);
+}
+
+function positionTooltip(x, y) {
+  const tt = $("tooltip");
+  const pad = 14;
+  let left = x + pad, top = y + pad;
+  const rect = tt.getBoundingClientRect();
+  if (left + rect.width > window.innerWidth) left = x - rect.width - pad;
+  if (top + rect.height > window.innerHeight) top = y - rect.height - pad;
+  tt.style.left = `${Math.max(0, left)}px`;
+  tt.style.top = `${Math.max(0, top)}px`;
+}
+
+function hideTooltip() {
+  $("tooltip").style.display = "none";
+}
+
+async function loadStatus(sell) {
+  if (!sell) return;
+  try {
+    const r = await fetch(`/api/status?sell=${encodeURIComponent(sell)}`);
+    if (!r.ok) return;
+    const s = await r.json();
+    const now = new Date().toLocaleTimeString();
+    const stale = !s.events_exist ? ' class="stale"' : "";
+    $("status").innerHTML = `
+      <span>Dashboard polled: ${now}</span>
+      <span${stale}>Sell-realm snapshot: ${fmtHttpDate(s.last_modified)}</span>
+      <span>Listings sweep: ${fmtTs(s.listings_updated)}</span>
+      <span>${s.events_exist ? "events built" : "no events yet -- run diff_snapshots.py"}</span>
+    `;
+  } catch (e) { /* leave last-known status visible */ }
+}
+
+async function loadSnipes() {
+  const sell = $("sell").value;
+  if (!sell) return;
+  const r = await fetch(`/api/snipes?${params().toString()}`);
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: r.statusText}));
+    $("rows").innerHTML = "";
+    $("empty").style.display = "block";
+    $("empty").textContent = err.detail || "error loading snipes";
+    hideTooltip();
+    return;
+  }
+  const data = await r.json();
+  $("caveat").textContent = data.caveat;
+  currentRegion = data.region;
+  currentSellSlug = data.sell_realm_slug;
+  currentRows = data.rows;
+  const tbody = $("rows");
+  tbody.innerHTML = "";
+  $("empty").style.display = data.rows.length ? "none" : "block";
+  $("empty").textContent = "No snipes at these thresholds.";
+  data.rows.forEach((row, i) => {
+    const tr = document.createElement("tr");
+    const color = row.quality_color || "inherit";
+    const ue = undermineUrl(row);
+    let icon = "";
+    if (row.icon) {
+      const img = `<img class="item-icon" src="${row.icon}" alt="" onerror="this.style.display='none'">`;
+      icon = ue
+        ? `<a href="${ue}" target="_blank" rel="noopener" title="View ${row.name ?? row.item_id} on Undermine Exchange">${img}</a>`
+        : img;
+    }
+    tr.innerHTML = `
+      <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
+      <td><div class="item-cell" data-row="${i}">${icon}<span style="color:${color}">${row.name ?? row.item_id}</span></div></td>
+      <td title="${row.variant_raw ?? ""}">${row.variant}</td>
+      <td>${formatMoney(row.buy_copper)}</td>
+      <td>${formatMoney(row.sell_copper)}</td>
+      <td>${row.per_day.toFixed(2)}</td>
+      <td>${row.discount_pct.toFixed(1)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.classList.toggle("active", th.dataset.sort === sort);
+  });
+  await loadStatus(sell);
+}
+
+document.getElementById("rows").addEventListener("mouseover", (e) => {
+  const cell = e.target.closest(".item-cell");
+  if (!cell) return;
+  const row = currentRows[Number(cell.dataset.row)];
+  if (row) showTooltip(row, e.clientX, e.clientY);
+});
+document.getElementById("rows").addEventListener("mousemove", (e) => {
+  const cell = e.target.closest(".item-cell");
+  if (cell && $("tooltip").style.display === "block") positionTooltip(e.clientX, e.clientY);
+});
+document.getElementById("rows").addEventListener("mouseout", (e) => {
+  if (e.target.closest(".item-cell") && !e.relatedTarget?.closest(".item-cell")) hideTooltip();
+});
+
+document.querySelectorAll("th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    if (th.dataset.sort === "none") return;
+    sort = th.dataset.sort;
+    loadSnipes();
+  });
+});
+
+$("refresh").addEventListener("click", loadSnipes);
+
+function scheduleAuto() {
+  if (timer) clearInterval(timer);
+  if ($("auto").checked) timer = setInterval(loadSnipes, 60000);
+}
+$("auto").addEventListener("change", scheduleAuto);
+
+(async function init() {
+  try {
+    const r = await fetch("/api/config");
+    const cfg = await r.json();
+    if (cfg.default_sell) $("sell").value = cfg.default_sell;
+  } catch (e) { /* no default, user fills it in */ }
+  if ($("sell").value) await loadSnipes();
+  scheduleAuto();
+})();
+</script>
+</body>
+</html>
