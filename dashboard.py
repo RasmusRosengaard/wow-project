@@ -34,6 +34,11 @@ from item_names import NameCache
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
+# Root-logger console handler -- without this, log.info() calls here and in
+# collect_all.py (population summary, per-cycle stats) are silently dropped
+# (Python's root logger defaults to WARNING), and Railway's `railway logs`
+# only captures stdout/stderr, so nothing else would ever surface them.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("dashboard")
 
 # Server-side collection (Stage 4) -- off by default so a local `python
