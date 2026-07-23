@@ -9,12 +9,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      # auth.py hard-fails at import time if SECRET is unset (fail-fast is
-      # correct for production, but the test suite needs *something* here --
-      # it's never used to sign anything real, tests override the DB with
-      # SQLite and never talk to production Stripe/Blizzard/Postgres).
-      SECRET: ci-test-secret-not-used-for-anything-real
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
