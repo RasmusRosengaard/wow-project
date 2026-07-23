@@ -252,6 +252,45 @@ def test_find_snipes_respects_max_gold(data_dir, monkeypatch):
     assert rows[0]["item_id"] == 101
 
 
+def test_find_snipes_caps_sell_price_at_current_lowest_listing(tmp_path, monkeypatch):
+    """Reproduces a real production case (item 206477, Warsword of Caer
+    Darrow, on Draenor 2026-07-23): the sold-price percentile was blown up by
+    a troll-priced decoy inferred_sale, but the sell realm had a real, live
+    listing sitting at a sane price the whole time. The effective sell_price
+    must be capped at that current cheapest listing, not the poisoned
+    percentile -- it's real-time verifiable data, not inference."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [
+        snap_row(1, T0, item_id=101, buyout=200_000),  # troll listing -> inferred_sale at 20g
+        snap_row(3, T0, item_id=103),                  # survives -> no event
+    ]
+    curr = [
+        snap_row(3, T1, item_id=103),                  # survives -> no event
+        snap_row(5, T1, item_id=101, buyout=20_000),    # real live listing, still up: 2g
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    buy_rows = [listing_row(BUY_CR_A, item_id=101, buyout=5_000, auction_id=100)]  # 0.5g
+    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
+                   listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1, min_sales=1)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["sell_p_g"] == pytest.approx(2.0)      # capped at the live listing, not the 20g troll sale
+    assert r["sell_now_g"] == pytest.approx(2.0)
+
+
 def test_parse_items_combines_flag_and_file(tmp_path):
     f = tmp_path / "watchlist.txt"
     f.write_text("1\n2 3\n")

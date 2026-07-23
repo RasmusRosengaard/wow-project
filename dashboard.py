@@ -148,6 +148,7 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         "variant_raw": r["bonus_key"] or None,
         "buy_g": r["buy_g"],
         "sell_p_g": r["sell_p_g"],
+        "sell_now_g": r["sell_now_g"],
         "buy_copper": r["buy_copper"],
         "sell_copper": r["sell_copper"],
         "per_day": r["per_day"],

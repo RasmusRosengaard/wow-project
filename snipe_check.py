@@ -80,7 +80,20 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     444g, and that single bogus sample became its sell_price with no averaging
     to smooth it out. min_sales >= 2 doesn't eliminate the risk (two troll
     listings can still both be bogus) but it stops a single unverified sample
-    from being trusted as a price signal outright."""
+    from being trusted as a price signal outright.
+
+    Second guard, added 2026-07-23 after min_sales still wasn't enough: item
+    206477 (Warsword of Caer Darrow) had 4 inferred_sale events -- 666g, 768g,
+    and the SAME 149,379g troll listing twice -- which dragged the median to
+    75,074g and the 25th percentile above what the item ever legitimately
+    trades for. The sold-price percentile alone can't be trusted even at
+    min_sales=2 if the outlier repeats. The fix: the effective sell_price is
+    capped at whatever's actually listed cheapest on the sell realm *right
+    now* (from the latest snapshot, no inference involved -- it's just what's
+    live on the AH). You realistically can't sell above the current cheapest
+    competing listing anyway, so this is both a sanity bound on bad inference
+    and a more honest estimate of achievable resale price. Only ever pulls
+    sell_price down, never up, if no current listing exists it's a no-op."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -95,7 +108,15 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         WHERE cr_id != {int(sell_cr)} AND buyout IS NOT NULL
     """)
     res = con.execute(f"""
-        WITH sell_stats AS (
+        WITH sell_now AS (
+            SELECT item_id, bonus_key, pet_species_id, pet_quality_id,
+                   min(buyout * 1.0 / quantity) AS cheapest_now
+            FROM snaps
+            WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
+              AND buyout IS NOT NULL
+            GROUP BY item_id, bonus_key, pet_species_id, pet_quality_id
+        ),
+        sell_stats AS (
             SELECT item_id, bonus_key, pet_species_id, pet_quality_id,
                    count(*)                                            AS sales,
                    round(count(*) / (SELECT days FROM span), 2)        AS per_day,
@@ -104,6 +125,18 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             WHERE 1=1 {item_filter}
             GROUP BY item_id, bonus_key, pet_species_id, pet_quality_id
             HAVING per_day >= {float(min_per_day)} AND sales >= {int(min_sales)}
+        ),
+        sell_eff AS (
+            SELECT s.item_id, s.bonus_key, s.pet_species_id, s.pet_quality_id,
+                   s.sales, s.per_day,
+                   LEAST(s.sell_price, COALESCE(n.cheapest_now, s.sell_price)) AS sell_price,
+                   n.cheapest_now
+            FROM sell_stats s
+            LEFT JOIN sell_now n
+              ON s.item_id = n.item_id
+             AND s.bonus_key IS NOT DISTINCT FROM n.bonus_key
+             AND s.pet_species_id IS NOT DISTINCT FROM n.pet_species_id
+             AND s.pet_quality_id IS NOT DISTINCT FROM n.pet_quality_id
         ),
         buy AS (
             SELECT cr_id, item_id, bonus_key, pet_species_id, pet_quality_id, auction_id,
@@ -117,11 +150,12 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                round(s.sell_price / 10000, 2)                      AS sell_p_g,
                round(b.buy_unit_price)::BIGINT                     AS buy_copper,
                round(s.sell_price)::BIGINT                         AS sell_copper,
+               round(s.cheapest_now / 10000, 2)                    AS sell_now_g,
                s.per_day,
                round(100.0 * (s.sell_price * 0.95 - b.buy_unit_price)
                      / (s.sell_price * 0.95), 1)                   AS discount_pct
         FROM buy b
-        JOIN sell_stats s
+        JOIN sell_eff s
           ON b.item_id = s.item_id
          AND b.bonus_key IS NOT DISTINCT FROM s.bonus_key
          AND b.pet_species_id IS NOT DISTINCT FROM s.pet_species_id
