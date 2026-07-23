@@ -80,14 +80,15 @@ Buy-side scans don't need snapshot history — latest listings per realm suffice
 | `analyze.py` | DuckDB CLI: liquidity summary + per-item sold-price distribution / percentile check / per-auction trace |
 | `item_names.py` | `NameCache`: display-only, never-raises lookups backed by the static item/pet API, cached at `data/item_names.json`. `.get()` name, `.icon()` render-CDN icon URL (`/media/item\|pet/{id}`), `.quality_color()` hex color from the item's `quality.type` (or a positional guess for pet rarity, since Blizzard doesn't document `pet_quality_id`'s exact enum), `.base_level()` the item's own catalog level (used by `dashboard.py` to sanity-check the modifier-28 ilvl claim) — all fail soft to a neutral fallback, never break a snipe_check/dashboard run. Internally, `_ensure_item_details()` fetches name+quality+level in one API call and backfills whichever of the three cache dicts a pre-existing entry is missing, so an old cache file (name-only) self-heals instead of silently returning `None` forever for the newer fields |
 | `db.py` | **Hosted SaaS pivot, Stage 2.** Async SQLAlchemy setup for the *relational* data only (users/sessions/subscription state) — deliberately separate from the parquet+DuckDB AH data layer, which is unchanged. `User` model (FastAPI-Users base fields + `stripe_customer_id`/`stripe_subscription_id`/`subscription_status`/`subscription_current_period_end`, written only by Stage 3's webhook handler). `DATABASE_URL`-driven; tests override the session dependency with SQLite (`aiosqlite`), so the suite needs no real Postgres |
-| `auth.py` | FastAPI-Users wiring: email/password register+login, **cookie-based** sessions (not bearer/JWT-in-header — matches the static-HTML-no-SPA frontend). `current_active_user` gates `dashboard.py`'s API routes. `COOKIE_SECURE` env toggle — `CookieTransport` defaults `cookie_secure=True`, which silently drops the cookie over local `http://`; `false` in dev `.env`, left unset (secure) in production since Railway serves HTTPS |
+| `auth.py` | FastAPI-Users wiring: email/password register+login, **cookie-based** sessions (not bearer/JWT-in-header — matches the static-HTML-no-SPA frontend). `current_active_user` gates login-only routes; `current_subscribed_user` (builds on it) additionally requires `subscription_status == "active"`, raising **402** (not 401/403) so the frontend can tell "not logged in" apart from "logged in but not subscribed" and redirect to `/login` vs `/subscribe` correctly. `COOKIE_SECURE` env toggle — `CookieTransport` defaults `cookie_secure=True`, which silently drops the cookie over local `http://`; `false` in dev `.env`, left unset (secure) in production since Railway serves HTTPS |
+| `billing.py` | **Stage 3, done 2026-07-23 — deployed straight to Stripe live mode** (human decision, no test-mode verification pass first). `POST /billing/checkout` creates a Checkout Session for the single €4.99/mo price, `client_reference_id` ties it to the logged-in user, redirects to Stripe. `POST /billing/webhook` verifies the Stripe signature (never trust an unverified body) and handles exactly `checkout.session.completed`/`customer.subscription.updated`/`customer.subscription.deleted`, writing `subscription_status`/`stripe_customer_id`/`stripe_subscription_id`/`subscription_current_period_end` onto `db.User` — the only writer of those fields. **Real bug the test suite caught before shipping**: `event["data"]["object"]` from `stripe.Webhook.construct_event()` is a `StripeObject`, not a plain dict — supports `obj["key"]` but not `obj.get("key")`, which every handler used; would have thrown on the very first real webhook delivery. Fixed via `.to_dict()` (needed on the retrieved `Subscription` object too, same issue) |
 | `alembic/`, `alembic.ini` | DB migrations (async template). One migration so far: creates the `user` table. `alembic/env.py` reads `DATABASE_URL` from the environment (same source of truth `db.py` uses) rather than a hardcoded `alembic.ini` URL |
 | `docker-entrypoint.sh` | Container startup: `alembic upgrade head` then `exec python dashboard.py` — migrations run automatically on every deploy, so "database" is part of the same auto-deploy as "backend"/"web" (Stage 5's CD goal). Reads `PORT` (Railway-injected) and `DEFAULT_SELL` (UI prefill only) from env |
-| `static/login.html`, `static/register.html` | Plain HTML/JS forms hitting FastAPI-Users' `/auth/login` (form-urlencoded) and `/auth/register` (JSON) routes, same no-build-step convention as `dashboard.html` |
+| `static/login.html`, `static/register.html`, `static/subscribe.html` | Plain HTML/JS forms/pages hitting FastAPI-Users' `/auth/login` (form-urlencoded), `/auth/register` (JSON), and `billing.py`'s `/billing/checkout` routes — same no-build-step convention as `dashboard.html`. `subscribe.html` still has a bare feature list, not a real pricing/explainer pitch (see `PROGRESS.md` next steps) |
 | `requirements.txt` | `requests`, `pyarrow`, `duckdb`, `fastapi`, `uvicorn`, `httpx`, `fastapi-users[sqlalchemy]`, `sqlalchemy[asyncio]`, `asyncpg`, `aiosqlite` (tests only), `alembic`, `stripe`, `pytest-asyncio` (Python 3.10+) |
 | `.env.example` | `BLIZZ_CLIENT_ID`, `BLIZZ_CLIENT_SECRET`, `BLIZZ_REGION=eu`, `STRIPE_PUBLISHABLE_KEY`/`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`/`STRIPE_PRICE_ID`/`STRIPE_PRODUCT_ID`, `SECRET`, `COOKIE_SECURE`, `DATABASE_URL` |
 
-Verified: `pytest -q` green (82 tests as of Stage 2 auth, 2026-07-23; `test_auth.py` + updated `test_dashboard.py`, all against SQLite — no external DB needed in CI). Live API confirmed working end to end:
+Verified: `pytest -q` green (99 tests as of Stage 3 billing, 2026-07-23; all against SQLite/mocked externals — no real Postgres or Stripe account needed in CI). Live API confirmed working end to end:
 `fetch_snapshot.py --find draenor` resolved cr-id 1403, `scan_region.py`
 completed a full 91-realm sweep, `run_cycle.py` ran a real cycle against both.
 One real Draenor snapshot exists as of 2026-07-20; the deep collector is not
@@ -128,11 +129,16 @@ remove any transferability guarantees.
 
 **Third process deviation (human decision, 2026-07-23, same day): hosted
 multi-tenant pivot.** What was "deployable, not deployed" a few hours earlier
-in this same document became actually deployed the same day — email
-auth (Stage 2) and a live Railway deployment (Stage 5) both shipped ahead of
-Stripe billing (Stage 3) and all-realm collection (Stage 4). See "Hosted
-deployment (Railway)" below for the live URL and infrastructure details. No
-auth or payment code was added in this pass.
+in this same document became actually deployed the same day — and by the
+end of that day, all 5 stages of the hosted pivot shipped: auth (Stage 2),
+Stripe billing deployed straight to **live mode** rather than test mode
+first (Stage 3), server-side collection scoped to FULL/HIGH-pop realms
+rather than literally all ~100 (Stage 4), and CD with Railway's "Wait for
+CI" verified actually gating deploys (Stage 5). See "Hosted deployment
+(Railway)" below and `PROGRESS.md` for the live URL and full details. This
+is a much faster, higher-risk-tolerance path than the roadmap originally
+implied (e.g. going straight to live payments without a test-mode
+verification pass) — deliberate, human-directed, not silent drift.
 
 ### Hosted deployment (Railway)
 
@@ -154,15 +160,26 @@ auth or payment code was added in this pass.
 `docker-entrypoint.sh` runs `alembic upgrade head` before starting `uvicorn`,
 so every deploy migrates the database automatically (Stage 5's CD goal:
 backend/database/web all update together on one push to `main`). Railway's
-native GitHub integration auto-deploys `main` on push; `.github/workflows/ci.yml`
-+ branch protection (see Stage 1) is what keeps broken code from ever
-reaching `main` in the first place — there's no separate GitHub Actions
-deploy job.
+**"Wait for CI"** setting (Service → Settings → Deploy, CLI doesn't expose
+it — flipped on directly in the dashboard by the human, 2026-07-23) is
+enabled and **confirmed working end to end**: a push now sits in `WAITING`
+until `.github/workflows/ci.yml`'s check passes, then proceeds `BUILDING` →
+`DEPLOYING` → `SUCCESS` automatically — a red CI run genuinely blocks the
+deploy now, it doesn't just run in parallel with it.
 
 **`ENABLE_BACKGROUND_COLLECTION=true`** is set on Railway only (default false
 everywhere else) — this is what makes `wow-project` run `collect_all.py` on
-an hourly in-process loop, replacing what local Task Scheduler used to be
-the only source of. See "Scheduled automation" below for how the two relate.
+its ~10-minute in-process loop, replacing what local Task Scheduler used to
+be the only source of. See "Scheduled automation" below for how the two
+relate.
+
+**Stripe is wired in live mode** (`STRIPE_SECRET_KEY`/`STRIPE_PUBLISHABLE_KEY`/
+`STRIPE_PRICE_ID`/`STRIPE_PRODUCT_ID`/`STRIPE_WEBHOOK_SECRET` all set on
+Railway to live-mode values, human decision — see the Stripe process
+deviation note above). Webhook endpoint registered in Stripe's live-mode
+dashboard, destination id `we_1TwOESE53HGCO43pWiDY48Gn`, listening to
+exactly `checkout.session.completed`/`customer.subscription.updated`/
+`customer.subscription.deleted` at `/billing/webhook`.
 
 **CLI tooling note**: the Railway CLI's Windows binary is blocked by this
 machine's Smart App Control (a real Windows 11 feature — Microsoft states it
@@ -376,11 +393,11 @@ realms + watchlist). Payments require the human's explicit ToS sign-off first.
 
 ### Phase 5 — free companion addon + web dashboard
 Addon overlays Deal Score on tooltips/sniper results (free, per Blizzard
-policy); dashboard is the premium surface. **The dashboard's local, read-only
-form (`dashboard.py`) was pulled forward to 2026-07-23** — see the second
-process deviation note above. What's still Phase 5, not done: the free addon,
-and turning the dashboard into an actual multi-tenant premium surface (auth,
-subscriptions, hosting) rather than a local single-user tool.
+policy); dashboard is the premium surface. **The *entire* dashboard half of
+this phase was pulled forward and is done as of 2026-07-23** — see the
+second and third process deviation notes above: hosted, multi-tenant, auth,
+live Stripe subscriptions, all shipped. What's still Phase 5, not done: only
+the free in-game addon itself remains.
 
 ## Definition of done for the current milestone
 

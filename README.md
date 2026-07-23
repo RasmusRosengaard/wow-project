@@ -31,6 +31,10 @@ realm's sold-price percentile, net of the 5% AH cut, is a validated snipe.
   logic and its known limits.
 - **Relational data**: Postgres, via async SQLAlchemy (`db.py`) — users,
   sessions, subscription state only.
+- **Billing**: Stripe (`billing.py`), **live mode** — Checkout Session per
+  subscription, webhook-driven access gating (`auth.current_subscribed_user`).
+  Deployed straight to live rather than verified against test mode first
+  (human decision); see `CLAUDE.md`/`PROGRESS.md` for what that traded off.
 - **Collection**: `collect_all.py` polls every ~10 minutes *inside* the
   deployed app (`ENABLE_BACKGROUND_COLLECTION=true` on Railway) — not
   hourly, since Blizzard republishes at no fixed clock time and a fixed
@@ -139,9 +143,12 @@ wand once showed "ilvl 1112" against a real level of ~35). This smarter
 display is dashboard-only — `snipe_check.py`'s terminal output (still usable
 for local debugging) keeps printing the raw variant string.
 
-Access requires an account (register/login — see `auth.py`); a subscription
-gate (Stripe) is planned but not built yet, see `CLAUDE.md`/`PROGRESS.md`
-for current status.
+Access requires an account (register/login) **and** an active €4.99/mo
+Stripe subscription (`/subscribe` — `billing.py`) — logged-in-but-unsubscribed
+gets redirected there automatically, distinct from logged-out going to
+`/login`. See `CLAUDE.md`/`PROGRESS.md` for current status; the pricing page
+itself is still a bare feature list, not a real pitch, and there's no
+sell-realm picker yet (free-typed realm id for now).
 
 ## Verification protocol (algorithm validation, not a setup step)
 
@@ -166,13 +173,14 @@ Same order of magnitude = signal is real. This was never actually run
 
 ## Roadmap
 
-Cross-realm snipe engine (done, this is it) → region commodity feed
-(`/data/wow/auctions/commodities`) → appearance-scarcity layer
-(ItemModifiedAppearance mappings via wago.tools + the static item API) →
-deal score with buy-realm → sell-realm routing → Discord webhook alerts →
-Stripe subscription gating the dashboard (in progress) → free companion
-addon. See `PROGRESS.md` for the current staged status of the hosted-SaaS
-pivot specifically.
+Cross-realm snipe engine (done) → hosted multi-tenant product with email
+auth and a live Stripe subscription gating the dashboard (**done**,
+2026-07-23) → region commodity feed (`/data/wow/auctions/commodities`) →
+appearance-scarcity layer (ItemModifiedAppearance mappings via wago.tools +
+the static item API) → deal score with buy-realm → sell-realm routing →
+Discord webhook alerts → free companion addon. See `PROGRESS.md` for the
+current staged status and immediate next steps (a sell-realm picker in the
+UI, a real pricing page, and a design pass are ahead of the commodity feed).
 
 ## Notes
 

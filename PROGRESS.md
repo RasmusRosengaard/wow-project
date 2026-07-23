@@ -3,76 +3,152 @@
 Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
-Replaces the old one-off `HANDOFF.md` snapshot (removed 2026-07-23).
 
 Last updated: 2026-07-23.
 
-## Hosted SaaS pivot (active initiative)
+## Status at a glance
 
-Turning the local single-user tool into a hosted product: email
-login/register, €5/month Stripe subscription gating the sniper page, and
-deep collection expanded to all ~100 EU realms so subscribers pick their own
-sell realm. Full design in `~/.claude/plans/unified-nibbling-simon.md`
-(Railway host, FastAPI-Users auth, GitHub Actions CI + Railway native CD).
-Staged deliberately — each stage ships and gets verified before the next.
+**Live and working right now**, at `https://wow-project-production.up.railway.app`:
+- Register / log in / log out.
+- Subscribe via Stripe (**live mode, real payments** — human decision
+  2026-07-23) → dashboard access unlocks automatically via webhook.
+- Server-side data collection running every ~10 minutes for FULL/HIGH-pop EU
+  realms, no human machine required.
+- Auto-deploy on push to `main`, gated on tests passing (CI → Railway
+  "Wait for CI" → build → deploy → DB migration, all automatic).
 
-| Stage | Status | Notes |
+**Not built yet**, in priority order — see "Next up" below for detail:
+1. Sell-realm picker in the dashboard UI (server has multi-realm data, UI still takes a free-typed realm id).
+2. A pricing/explainer page (what you get, what the money funds).
+3. A general UI design pass.
+4. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
+
+## Next up (short list, do these in roughly this order)
+0. **Login Subscribe flow** - Profile page, subscribe, cancel, status, etc.
+1. **Sell-realm picker** — `/api/realms` endpoint + dropdown in the dashboard, replacing the free-typed realm id box. Backend already has the multi-realm data.
+2. **Pricing/explainer page** — what the €4.99/mo gets you, and that it funds scaling data collection to more realms. Currently `/subscribe` has a bare feature list, no real pitch.
+3. **UI design pass** — run the dashboard through the `frontend-design` skill; current styling was written directly, not designed.
+4. **QoL fixes**: min-discount filter should read/display as an actual percentage (not a raw 0–1 fraction); the names/icons toggle shouldn't be turn-offable (should probably just always be on).
+5. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction).
+6. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
+7. Phase 2 (commodities feed) and Phase 3 (appearance/scarcity layer) — see "Longer-term roadmap".
+
+**Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (Stripe Dashboard → Developers → Webhooks) needs updating to match by hand — it won't happen automatically.
+
+## Hosted SaaS pivot — stage by stage
+
+Turning the local single-user tool into a hosted product. Full design in
+`~/.claude/plans/unified-nibbling-simon.md`. All 5 stages are now **done**:
+
+| Stage | What it is | Status |
 |---|---|---|
-| 1 — GitHub repo, CI, branch protection | **Done** | Repo: `github.com/RasmusRosengaard/wow-project` (private). `.github/workflows/ci.yml` runs `pytest -q` on every push/PR to `main`; branch protection requires the `test` check to pass before merge. |
-| 2 — Auth (FastAPI-Users, Postgres) | **Done** | `db.py` (async SQLAlchemy, `User` model), `auth.py` (cookie-session backend), `static/login.html`/`register.html`, `dashboard.py`'s API routes gated behind `current_active_user`. Alembic migrations (`alembic/`) — one so far, creates the `user` table. Test-safe `SECRET`/`COOKIE_SECURE` defaults live in root `conftest.py` (not just the CI workflow), so any environment without a `.env` — CI, a fresh clone — works out of the box. Found and fixed two real bugs: `CookieTransport` defaults `cookie_secure=True`, which silently drops the session cookie over plain `http://`; and `auth.py`'s hard `SystemExit` on missing `SECRET` crashed pytest collection entirely in CI (no `.env` there). |
-| 3 — Stripe subscription | Not started | Test-mode Stripe keys + the €4.99/mo Price (`price_1TwN5SCz0OKW695K4KryA1wA`) already in `.env` and set on Railway. **Live-mode keys also captured 2026-07-23** (stored commented-out in local `.env` only, not wired into Railway) — deliberately not activated until `billing.py` exists and is verified end to end against test mode; test cards don't work against live keys, so switching now would block testing, not enable it. Live mode also needs its own Price/Product (test-mode ids don't carry over). Still needed: `billing.py` itself, `STRIPE_WEBHOOK_SECRET` (now that a real URL exists — see webhook setup notes), and per Stripe's current guidance, a **restricted key** (`rk_`) scoped to Checkout/Customers/Subscriptions/Webhooks instead of the full secret key, for whichever mode goes into Railway. ToS re-read already confirmed by the human 2026-07-23 — payments are clear to build. |
-| 4 — Server-side collection + sell-realm picker | **Done (backend, live); picker UI not started** | Scope revised 2026-07-23: deep-collects **FULL/HIGH population realms only**, not literally all ~100 EU realms (human's call — less overhead, more sniping-relevant liquidity; region-wide listings sweep stays unscoped since cheap-listing sources can be any realm). `collect_all.py`, cached population lookup via new `blizz.connected_realm_population()`. Runs as an in-process background loop in `dashboard.py` every ~10 minutes (not hourly — matches Blizzard's own publish cadence more closely than a fixed hourly clock could, since the container's boot time and Blizzard's actual publish moment aren't in phase; `diff_snapshots` only re-runs when a realm actually got a new snapshot that cycle, not on every no-op poll), confirmed actually starting in Railway's logs after fixing a real bug (no logging was configured, so `log.info()` calls — including this one — were silently dropped). **`run_cycle.py`, `run_cycle_task.ps1`, and the local Windows Task Scheduler job (`AHSnipePipeline`) are all fully removed** (human decision 2026-07-23: this product is never meant to be run locally as a going concern) — Railway is the sole collection path. Local dev Postgres stopped (not removed) for local Stage 3+ development only. Still missing: a sell-realm dropdown in the dashboard UI (`/api/realms` endpoint) — the server has data now, but the frontend still takes a free-typed realm id. |
-| 5 — CD (Railway auto-deploy + migrations-on-deploy) | **Done** | **Live at `https://wow-project-production.up.railway.app`.** Project `valiant-peace` on Railway: `wow-project` service (built from our `Dockerfile`, not an auto-detected builder) + a `Postgres` service, `DATABASE_URL` wired via Railway's private internal networking (`postgres.railway.internal`) with the `postgresql+asyncpg://` scheme. `docker-entrypoint.sh` runs `alembic upgrade head` before serving, confirmed working against the real database. Verified end to end: register → login → authenticated `/api/me` all succeed against the live URL. Railway's native GitHub integration auto-deploys `main` on push. A persistent Volume is attached to the web service at `/app/data` (was missing initially — the AH data lives there, entirely separate from Postgres's own 5GB volume, which only holds the tiny `user` table; the two aren't related limits). **Note on tooling**: the Railway CLI's Windows binary is blocked by this machine's Smart App Control (a real, semi-irreversible-to-disable Windows 11 feature) — worked around by running the CLI inside a Docker container instead (Linux binary, never touches that policy), rather than disabling a system security feature for one tool. |
+| 1 | GitHub repo, CI, branch protection | **Done** — private repo, `pytest -q` on every push, branch protection requires it. |
+| 2 | Email auth (FastAPI-Users + Postgres) | **Done** — register/login/logout, cookie sessions, API routes gated. |
+| 3 | Stripe subscription | **Done, live mode** — see detail below. |
+| 4 | Server-side collection + realm picker | **Done (backend); UI picker still pending** — see detail below. |
+| 5 | CD (Railway auto-deploy + DB migrations) | **Done** — live URL, Wait-for-CI verified working end to end. |
 
-## Phase status
+### Stage 3 detail — Stripe (done 2026-07-23, deployed straight to live mode)
 
-| Phase | Status | Notes |
+Human decision: skip test-mode verification, go live immediately. `billing.py`:
+`POST /billing/checkout` creates a Checkout Session for the single €4.99/mo
+price and redirects; `POST /billing/webhook` verifies the Stripe signature
+and handles `checkout.session.completed` / `customer.subscription.updated` /
+`customer.subscription.deleted`, writing `subscription_status` (and
+customer/subscription ids, period end) onto the user — the only writer of
+those fields. `auth.current_subscribed_user` gates `/api/snipes` and
+`/api/status` (402 if unsubscribed, distinct from 401 if not logged in at
+all, so the frontend can send you to `/subscribe` vs `/login` correctly).
+
+Verified live end to end: unauthenticated → 401, logged-in-but-unsubscribed →
+402, and a real `cs_live_...` Checkout Session URL generated successfully.
+
+**Real bug the test suite caught before it shipped**: `event["data"]["object"]`
+from `stripe.Webhook.construct_event()` is a `StripeObject`, not a plain
+dict — it supports `obj["key"]` but *not* `obj.get("key")`, which every
+handler used. Would have thrown on the very first real webhook delivery;
+fixed by calling `.to_dict()` once up front (needed on the retrieved
+`Subscription` object too, same issue).
+
+Still open: a restricted (`rk_live_...`) key instead of the full secret key
+(see "Next up"); a real pricing/explainer page instead of `/subscribe`'s
+bare feature list.
+
+### Stage 4 detail — server-side collection (backend done 2026-07-23)
+
+Scope deliberately narrowed same-day: deep-collects **FULL/HIGH population
+realms only**, not literally all ~100 EU realms (human's call — less
+overhead, more sniping-relevant liquidity). The region-wide listings sweep
+stays unscoped (every EU realm), since the cross-realm thesis specifically
+needs cheap listings from low-pop realms too.
+
+`collect_all.py` runs in-process inside `dashboard.py`, polling every ~10
+minutes rather than hourly — Blizzard republishes at no fixed clock time, so
+a fixed hourly poll from container-boot could drift out of phase with the
+real update by up to an hour; `fetch_once()`'s `If-Modified-Since` check
+keeps no-op polls cheap, and `diff_snapshots` only re-runs when a realm
+actually got a new snapshot that cycle (not every tick — it recomputes from
+scratch each time, so re-running it for no new information would waste
+real CPU at this polling frequency).
+
+`run_cycle.py`, `run_cycle_task.ps1`, and the local Windows Task Scheduler
+job are **fully deleted** (human decision: this product is never run
+locally as a going concern) — Railway is the sole collection path. Local
+dev Postgres stopped, not removed, for local Stage-3+-adjacent dev only.
+
+Still missing: the `/api/realms` + dropdown UI piece (see "Next up" #1).
+
+### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
+
+Live at `https://wow-project-production.up.railway.app`. Project
+`valiant-peace` on Railway: `wow-project` service (built from our
+`Dockerfile`) + a `Postgres` service (only holds the `user` table — the AH
+data lives on a separate Volume attached to `wow-project` at `/app/data`,
+unrelated to Postgres's own 5GB limit). `docker-entrypoint.sh` runs
+`alembic upgrade head` before serving. Railway's "Wait for CI" is enabled
+and confirmed working: a push now sits in `WAITING` until the GitHub
+Actions check passes, then proceeds `BUILDING` → `DEPLOYING` → `SUCCESS`
+automatically — a red CI run actually blocks the deploy now, not just runs
+in parallel with it.
+
+**Tooling note**: the Railway CLI's Windows binary is blocked by this
+machine's Smart App Control (real, semi-irreversible-to-disable Windows 11
+feature) — worked around by running the CLI inside a Docker container
+instead (Linux binary, never touches that policy).
+
+## Longer-term roadmap (beyond the hosted pivot)
+
+| Phase | What it is | Status |
 |---|---|---|
-| 0 — Validate the sale-inference signal | **Gated, skipped** | Human decision 2026-07-20: build ahead without waiting for the 48h validation gate. Signal remains unvalidated against real seller behavior; no `VALIDATION.md` written. |
-| 1 — Cross-realm engine + hardening | **Mostly done** | Region scanner, snipe-check CLI, and full-cycle orchestration all built and running hourly. Remaining: sell/scan realm config split, snapshot retention, `--since` incremental diff. |
-| 2 — Commodities feed | Not started | Region-wide collector + quantity-delta inference, separate schema from gear. |
-| 3 — Appearance layer | Not started | Scope note 2026-07-23: the originally planned "warband transferability flag" was based on a wrong assumption (BoP items can't be AH-listed at all) — re-decide at Phase 3 start whether a per-item flag is still needed. |
-| 4 — Deal score + Discord alerts (first paid feature) | Not started | Blocked on Phase 3 appearance scarcity data; payments blocked on human's ToS re-read. |
-| 5 — Free addon + web dashboard | **Partially done** | The dashboard's local, read-only form (`dashboard.py`) was pulled forward to 2026-07-23 — see below. Free in-game addon and turning the dashboard into an actual hosted multi-tenant product (auth, subscriptions) are still not started. |
-
-## What's built
-
-| Component | File(s) | Status |
-|---|---|---|
-| Sale-inference engine | `diff_snapshots.py` | Done — classifies vanished auctions into `inferred_sale`/`likely_relisted`/`ambiguous`/`likely_expired`/`bid_only_gone`. Unvalidated against real seller behavior (Phase 0 gate skipped). |
-| Realm collector | `fetch_snapshot.py` | Done — hourly snapshots per realm, `If-Modified-Since` aware, backoff on 429/5xx. Called by `collect_all.py`, not run standalone in production anymore. |
-| Region scanner | `scan_region.py` | Done — sweeps all EU connected realms' current listings, unscoped by population tier. |
-| Snipe-check CLI | `snipe_check.py` | Done — flags discounted listings vs sell-realm sold-price percentiles. Still runnable standalone for local debugging. |
-| Server-side collection | `collect_all.py` | Done, live — replaces the deleted `run_cycle.py` + Windows Task Scheduler. Deep-collects FULL/HIGH-pop EU realms only (scope decided 2026-07-23), runs in-process inside the deployed app every ~10 minutes. |
-| Live web dashboard | `dashboard.py`, `static/dashboard.html` | **Done, hosted.** WoW-styled UI: quality-colored names, gold/silver/copper coin pricing, hover tooltip, clickable icon → Undermine Exchange link, realm names instead of raw ids, ilvl-plausibility-checked variant display. Gated behind login (Stage 2); Stripe subscription gate not built yet (Stage 3). |
-| Email auth | `auth.py`, `db.py`, `static/login.html`/`register.html` | Done — FastAPI-Users, cookie sessions, Postgres-backed. |
-| Item name/icon/quality/level cache | `item_names.py` | Done — `NameCache`, backed by Blizzard's static API, self-healing on schema growth. |
-| Docker + hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` | **Done, live** — deployed on Railway, verified end to end (register/login/collection/migrations all confirmed working against the real deployment). |
-| Test suite | `tests/` | 90 tests passing (`pytest -q`), no external services needed (SQLite for DB-touching tests). |
+| 0 — Validate the sale-inference signal | 48h manual verification protocol | **Gated, skipped** (human decision 2026-07-20) — signal still unvalidated against real seller behavior. |
+| 1 — Cross-realm engine + hardening | Region scanner, snipe-check, orchestration | **Mostly done.** Remaining: sell/scan realm config file, `--since` incremental diff. |
+| 2 — Commodities feed | Region-wide, quantity-delta inference | Not started — separate schema from gear, don't merge. |
+| 3 — Appearance layer | ItemModifiedAppearance scarcity mapping | Not started. The originally planned "warband transferability flag" was based on a wrong assumption (BoP items can't be AH-listed at all, corrected 2026-07-23) — re-decide at Phase 3 start whether any per-item flag is still needed. |
+| 4 — Deal score + Discord alerts | Second paid feature | Not started — blocked on Phase 3 data. |
+| 5 — Free companion addon | In-game tooltip overlay | Not started. The *web dashboard* half of this phase already shipped as part of the hosted pivot above; only the addon itself remains. |
 
 ## Known gaps / risks
 
-- Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior — no test auctions posted/cancelled/bought to confirm the false-positive rate.
+- Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.
-- The AH auction `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard now sanity-checks it against the item's catalog level, but the underlying meaning is still inferred from community usage + one human-confirmed example, not official docs.
-- ~~Railway doesn't currently wait for CI to pass before deploying~~ — **fixed and verified 2026-07-23**: the human enabled Railway's "Wait for CI" toggle (Service → Settings → Deploy) directly, since the CLI doesn't expose it. Confirmed working end to end on a real push: deployment sat in `WAITING` until the GitHub Actions check passed, then proceeded `BUILDING` → `DEPLOYING` → `SUCCESS` automatically.
+- The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, but the underlying meaning is still community-sourced, not official.
+- Stripe is on the full `sk_live_...` secret key, not a restricted key scoped to what `billing.py` actually needs (see "Next up").
 
-## Next steps (rough order)
+## What's built (file-level)
 
-1. Verify Railway's "Wait for CI" setting actually gates deploys (observe whether a push now shows a WAITING state before BUILDING, instead of building immediately) — enabled 2026-07-23, not yet confirmed working end to end.
-2. `billing.py` (Stage 3): Stripe Checkout + webhook. **Now unblocked** — a real deployed URL exists (`https://wow-project-production.up.railway.app`) to register the webhook endpoint against, which was the blocker before. Gate the dashboard on `subscription_status == "active"`. **Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (and anywhere else the URL is hardcoded/documented) needs updating to match — it won't happen automatically. Pricing page, that explains price, what you get etc, what im using the money for = scaling the data that validates (hosting prices)
-3. UI design pass on the dashboard — using the `frontend-design` skill/plugin for a more intentional visual pass (current styling was written directly, not run through it).
-4. `/api/realms` + a sell-realm dropdown in the dashboard UI (Stage 4's remaining piece — the server has multi-realm data now, the frontend doesn't expose it yet).
-5. Decide whether Phase 3 still needs a per-item transferability flag, or whether the existing CLI/dashboard NOTE text already covers the real risk (see Phase 3 row above).
-6. Phase 2: commodities feed (region-wide, separate schema — do not merge with gear).
-7. Phase 3: appearance layer (`ItemModifiedAppearance` mapping via wago.tools DB2 exports + static API fallback).
-8. Optional: revisit the Phase 0 validation protocol (`VALIDATION.md`) if the sale-inference signal's accuracy becomes a live concern.
-9. Quality of Life: min discount to  be  in actual % names/icon should not be untogglable.
-
-**Immediate blocker on the pivot's own next step (Stage 2)**: none — Stage 2
-(auth) can be built and tested against a local/Dockerized Postgres without
-needing the Railway project to exist yet. Railway/Stripe account creation
-can happen in parallel, whenever the human gets to it.
+| Component | File(s) |
+|---|---|
+| Sale-inference engine (core IP) | `diff_snapshots.py` |
+| Realm collector | `fetch_snapshot.py` (called by `collect_all.py`, not run standalone anymore) |
+| Region scanner | `scan_region.py` |
+| Snipe-check logic | `snipe_check.py` |
+| Server-side collection | `collect_all.py` |
+| Web dashboard | `dashboard.py`, `static/dashboard.html` |
+| Auth | `auth.py`, `db.py`, `static/login.html`/`register.html` |
+| Billing | `billing.py`, `static/subscribe.html` |
+| Item name/icon/quality cache | `item_names.py` |
+| Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
+| Tests | `tests/` — 99 passing (`pytest -q`), no external services needed |
 
 ## Where to look for more
 
