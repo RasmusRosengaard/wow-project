@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Subscribe — AH Snipe Dashboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0f1115; color: #e6e6e6;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 1rem;
+  }
+  .card {
+    background: #1a1d24; border-radius: 8px; padding: 2rem;
+    width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 1rem;
+  }
+  h1 { font-size: 1.2rem; margin: 0; }
+  .price { font-size: 2rem; font-weight: 700; }
+  .price span { font-size: 0.9rem; color: #9aa0aa; font-weight: 400; }
+  ul { margin: 0; padding-left: 1.1rem; color: #c8c8ce; font-size: 0.9rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  button {
+    background: #3b7ddd; border: none; color: white; border-radius: 4px;
+    padding: 0.7rem; cursor: pointer; font-size: 0.95rem; margin-top: 0.5rem;
+  }
+  button:hover { background: #2f68c0; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .error { color: #ff8080; font-size: 0.8rem; min-height: 1em; }
+  .note { color: #7d7d88; font-size: 0.75rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Subscribe</h1>
+  <div class="price">€4.99 <span>/ month</span></div>
+  <ul>
+    <li>Live, auto-refreshing snipe dashboard across every collected realm</li>
+    <li>Sold-price percentiles validated against real inferred sales, not fictional listing prices</li>
+    <li>Your subscription funds expanding data collection to more realms</li>
+  </ul>
+  <div id="error" class="error"></div>
+  <button id="subscribe">Subscribe with Stripe</button>
+  <div class="note">Redirects to Stripe's secure checkout. Cancel anytime from your Stripe receipt email.</div>
+</div>
+<script>
+document.getElementById("subscribe").addEventListener("click", async () => {
+  const btn = document.getElementById("subscribe");
+  const err = document.getElementById("error");
+  err.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Redirecting...";
+  try {
+    const r = await fetch("/billing/checkout", { method: "POST" });
+    if (r.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    if (!r.ok) {
+      err.textContent = "Couldn't start checkout -- try again.";
+      btn.disabled = false;
+      btn.textContent = "Subscribe with Stripe";
+      return;
+    }
+    const data = await r.json();
+    window.location.href = data.url;
+  } catch (e) {
+    err.textContent = "Network error -- try again.";
+    btn.disabled = false;
+    btn.textContent = "Subscribe with Stripe";
+  }
+});
+</script>
+</body>
+</html>

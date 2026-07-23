@@ -7,10 +7,11 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import dashboard
-from db import Base, get_async_session
+from db import Base, User, get_async_session
 
 EMAIL = "test@example.com"
 PASSWORD = "testpassword123"
@@ -19,6 +20,15 @@ PASSWORD = "testpassword123"
 async def _create_tables(engine):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def _activate_subscription(session_factory, email: str) -> None:
+    """No billing flow exists in this test DB -- flip subscription_status
+    directly, the same field billing.py's webhook handler would write."""
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+        user.subscription_status = "active"
+        await session.commit()
 
 
 @pytest.fixture
@@ -35,6 +45,7 @@ def client(tmp_path):
     dashboard.app.dependency_overrides[get_async_session] = override_get_async_session
     try:
         with TestClient(dashboard.app) as c:
+            c.session_factory = session_factory  # tests can reach into the DB directly
             yield c
     finally:
         dashboard.app.dependency_overrides.pop(get_async_session, None)
@@ -108,6 +119,19 @@ def test_dashboard_api_routes_require_auth(client):
 
     register(client)
     login(client)
-    # 400 (no data collected for this realm), not 401 -- proves auth passed
-    # and we reached the actual business logic, not just skipped the gate.
+    # Logged in but not subscribed -- 402, not 401 (proves auth passed) and
+    # not 400 (proves it didn't skip straight to business logic either).
+    assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 402
+    assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 402
+
+
+def test_dashboard_api_routes_require_active_subscription(client):
+    """Logged in AND subscribed reaches the actual business logic (400 for
+    an uncollected realm), not just past the login gate."""
+    UNCOLLECTED_REALM = 424242
+    register(client)
+    login(client)
+    asyncio.run(_activate_subscription(client.session_factory, EMAIL))
+
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
+    assert client.get("/api/me").json()["subscription_status"] == "active"

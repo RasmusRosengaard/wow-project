@@ -27,18 +27,22 @@ T0, T1 = 1_700_000_000, 1_700_003_600
 client = TestClient(dashboard.app)
 
 FAKE_USER = User(email="test@example.com", hashed_password="x",
-                 is_active=True, is_superuser=False, is_verified=True)
+                 is_active=True, is_superuser=False, is_verified=True,
+                 subscription_status="active")
 
 
 @pytest.fixture(autouse=True)
 def bypass_auth():
     """These tests exercise snipe_check/dashboard business logic, not auth
-    itself (see test_auth.py for that) -- override FastAPI's dependency
-    injection to skip real login, the standard FastAPI testing pattern,
-    rather than requiring every test here to register+log in a real user."""
+    or billing (see test_auth.py/test_billing.py for those) -- override
+    FastAPI's dependency injection to skip real login, the standard FastAPI
+    testing pattern, rather than requiring every test here to register+log
+    in a real, actually-subscribed user."""
     dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
+    dashboard.app.dependency_overrides[auth.current_subscribed_user] = lambda: FAKE_USER
     yield
     dashboard.app.dependency_overrides.pop(auth.current_active_user, None)
+    dashboard.app.dependency_overrides.pop(auth.current_subscribed_user, None)
 
 
 @pytest.fixture(autouse=True)

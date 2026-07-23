@@ -224,6 +224,8 @@ async function loadSnipes() {
   const sell = $("sell").value;
   if (!sell) return;
   const r = await fetch(`/api/snipes?${params().toString()}`);
+  if (r.status === 401) { window.location.href = "/login"; return; }
+  if (r.status === 402) { window.location.href = "/subscribe"; return; }
   if (!r.ok) {
     const err = await r.json().catch(() => ({detail: r.statusText}));
     $("rows").innerHTML = "";
@@ -308,6 +310,11 @@ $("logout").addEventListener("click", async () => {
   const me = await fetch("/api/me").catch(() => null);
   if (!me || !me.ok) {
     window.location.href = "/login";
+    return;
+  }
+  const meData = await me.json();
+  if (meData.subscription_status !== "active") {
+    window.location.href = "/subscribe";
     return;
   }
   try {

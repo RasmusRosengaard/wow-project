@@ -6,7 +6,7 @@ is the simpler fit, matching the no-build-step convention in static/).
 import os
 import uuid
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 
@@ -70,3 +70,13 @@ def has_active_subscription(user: User) -> bool:
     """Single source of truth for the sniper-page gate (dashboard.py) --
     billing.py's Stripe webhook is the only writer of subscription_status."""
     return user.subscription_status == "active"
+
+
+async def current_subscribed_user(user: User = Depends(current_active_user)) -> User:
+    """Stricter than current_active_user -- requires login AND an active
+    Stripe subscription. 402 (not 401/403) so the frontend can tell "you're
+    not logged in" apart from "you're logged in but not subscribed" and
+    redirect to /login vs /subscribe accordingly."""
+    if not has_active_subscription(user):
+        raise HTTPException(402, "Active subscription required")
+    return user

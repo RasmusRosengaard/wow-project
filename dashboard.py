@@ -25,9 +25,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import analyze
+import billing
 import blizz
 import snipe_check
-from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users
+from auth import UserCreate, UserRead, auth_backend, current_active_user, current_subscribed_user, fastapi_users
 from db import User
 from item_names import NameCache
 
@@ -79,6 +80,7 @@ app = FastAPI(title="AH Snipe Dashboard", lifespan=lifespan)
 
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
+app.include_router(billing.router)
 
 # Realm name/slug never changes -- cache in-process for the life of the
 # server rather than a file cache, to keep this dashboard-only concern out of
@@ -167,7 +169,7 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
 def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 top: int = 50, sort: str = Query("discount"), names: bool = False,
-                user: User = Depends(current_active_user)) -> dict:
+                user: User = Depends(current_subscribed_user)) -> dict:
     events_path = DATA / "events" / f"{sell}.parquet"
     if not events_path.exists():
         raise HTTPException(400, f"{events_path} not found -- run diff_snapshots.py --cr-id {sell} first")
@@ -192,7 +194,7 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
 
 
 @app.get("/api/status")
-def api_status(sell: int, user: User = Depends(current_active_user)) -> dict:
+def api_status(sell: int, user: User = Depends(current_subscribed_user)) -> dict:
     state_path = DATA / "state" / f"{sell}.json"
     last_modified = None
     if state_path.exists():
@@ -228,6 +230,11 @@ def login_page() -> FileResponse:
 @app.get("/register")
 def register_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "register.html")
+
+
+@app.get("/subscribe")
+def subscribe_page() -> FileResponse:
+    return FileResponse(ROOT / "static" / "subscribe.html")
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
