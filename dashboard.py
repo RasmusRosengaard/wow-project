@@ -13,7 +13,11 @@ Usage:
 sell realm you've collected.
 """
 import argparse
+import asyncio
 import json
+import logging
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -30,7 +34,38 @@ from item_names import NameCache
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
-app = FastAPI(title="AH Snipe Dashboard")
+log = logging.getLogger("dashboard")
+
+# Server-side collection (Stage 4) -- off by default so a local `python
+# dashboard.py` run for quick dev/testing doesn't also spin up an hourly
+# all-realm collector competing with whatever's already running locally
+# (Task Scheduler, a manual run_cycle.py). Railway sets this to "true".
+ENABLE_BACKGROUND_COLLECTION = os.environ.get("ENABLE_BACKGROUND_COLLECTION", "false").lower() == "true"
+COLLECTION_INTERVAL_SECONDS = 60 * 60  # matches Blizzard's hourly dump cadence
+
+
+async def _collection_loop() -> None:
+    import collect_all as collect_all_module
+    while True:
+        try:
+            await asyncio.to_thread(collect_all_module.collect_all)
+        except Exception:
+            log.exception("background collection cycle failed")
+        await asyncio.sleep(COLLECTION_INTERVAL_SECONDS)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = None
+    if ENABLE_BACKGROUND_COLLECTION:
+        log.info("starting background collection loop (every %ss)", COLLECTION_INTERVAL_SECONDS)
+        task = asyncio.create_task(_collection_loop())
+    yield
+    if task is not None:
+        task.cancel()
+
+
+app = FastAPI(title="AH Snipe Dashboard", lifespan=lifespan)
 
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])

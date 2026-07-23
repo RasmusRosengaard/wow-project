@@ -84,6 +84,16 @@ def connected_realm_slugs(cr_id: int) -> list[str]:
     return [rl.get("slug") for rl in r.json().get("realms", []) if rl.get("slug")]
 
 
+def connected_realm_population(cr_id: int) -> str | None:
+    """Population tier ("FULL"/"HIGH"/"MEDIUM"/"LOW") for one connected
+    realm, straight from the same connected-realm detail endpoint -- used to
+    scope server-side collection to realms actually worth deep-collecting
+    (collect_all.py), not the raw region-wide realm list."""
+    r = api_get(f"/data/wow/connected-realm/{cr_id}", "dynamic")
+    r.raise_for_status()
+    return (r.json().get("population") or {}).get("type")
+
+
 def connected_realm_realms(cr_id: int) -> list[dict]:
     """Member realm {"name", "slug"} pairs for one connected realm -- same
     endpoint as connected_realm_slugs, but keeps the display name alongside
