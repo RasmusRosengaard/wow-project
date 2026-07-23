@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-23.
+Last updated: 2026-07-23 (evening session).
 
 ## Status at a glance
 
@@ -21,15 +21,31 @@ Last updated: 2026-07-23.
 - Sell-realm dropdown (`/api/realms`), min/max gold budget filter, grouped
   duplicate-item snipes (best deal on top, expandable), and instant
   client-side table sorting — see "Dashboard QoL pass" below.
+- **New this session (2026-07-23 evening)**: sold-price estimates are now
+  capped at the sell realm's current cheapest live listing; a Phase 3
+  transmog-rarity filter (`appearance.py`, "Unique transmog only" checkbox);
+  a "Sell realm low" price column; crafted items no longer fragment into
+  dozens of 1-2-sale buckets (`market_key()` pools Blizzard's undocumented
+  per-craft modifiers out of matching); `--max-per-item` caps duplicate
+  listings of one item; the status ticker is one honest timestamp instead of
+  three overlapping/misleading ones; a **public, no-login** `/log` page shows
+  every time new AH data was actually retrieved. See "Evening session" below
+  for full detail on each.
 
 **Not built yet**, in priority order — see "Next up" below for detail:
 1. Restricted Stripe key (still the full `sk_live_...` secret).
-2. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
+2. A camped-relist false-positive still slips through occasionally (separate,
+   older bug from the crafted-item fragmentation fix — see "Known gaps" below).
+3. The proposed full visual redesign ("professional enterprise," see below) —
+   planned, **not yet confirmed or built**.
+4. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
 
 ## Next up (short list, do these in roughly this order)
 1. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction). **Human-only, asked explicitly 2026-07-23**: do not rotate/swap this live credential without the human present, even when otherwise told to keep working autonomously.
-2. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
-3. Phase 2 (commodities feed) and Phase 3 (appearance/scarcity layer) — see "Longer-term roadmap".
+2. Get the human's sign-off on the proposed visual redesign (palette/type/Validation Seal — see `CLAUDE.md`'s "Full visual rethink" note) before building any of it.
+3. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
+4. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
+5. Phase 2 (commodities feed) — see "Longer-term roadmap".
 
 **Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (Stripe Dashboard → Developers → Webhooks) needs updating to match by hand — it won't happen automatically.
 
@@ -173,6 +189,81 @@ sales before trusting the percentile at all, on top of (not instead of)
 is still skipped, the signal is still unvalidated), just a floor against the
 single-sample case specifically.
 
+### Evening session (2026-07-23): more price-quality bugs, Phase 3 groundwork, /log
+
+Continuation of the same day, picking up after the single-sale artifact fix.
+Six commits, `62d2106..ec491e9`, each deployed and verified live before
+moving to the next:
+
+1. **Sell-price cap** (`83a236c`) — even `min_sales >= 2` wasn't enough: item
+   206477 (Warsword of Caer Darrow) had 4 inferred sales, but 2 were the
+   *same* 149,379g troll listing, dragging the estimate to 75,074g against a
+   real ~700g item. Fix: `sell_price` is now `LEAST(sold_percentile,
+   current_cheapest_live_listing_on_sell_realm)` — you can't realistically
+   sell above what's already listed cheaper on your own realm anyway, and
+   it's real-time data, not inference. New `sell_now_g`/`sell_now_copper`
+   fields; a "Sell realm low" dashboard column (`8933af0`).
+2. **Phase 3 groundwork** (`fe75e0a`, `76b87f5`) — new `appearance.py`
+   caches itemId → transmog-appearance rarity (126k items / 48k appearances)
+   from wago.tools' `ItemModifiedAppearance` DB2 export (not a Blizzard API
+   — none exists for this). `snipe_check.py --max-appearance-sources N` /
+   dashboard "Unique transmog only" checkbox. **Known accuracy gap**: on at
+   least one item (14042, Cindercloth Vest), this said `source_count=1`
+   (verified correct against Blizzard's own two DB2 tables) while Wowhead's
+   page claims "same model as 5 others" — likely a finer-grained
+   mesh/texture comparison Wowhead does that isn't captured in the DB2
+   export we use. No Wowhead API exists to cross-check against (confirmed
+   — their page data is client-JS-rendered, not statically embedded).
+   Flagged as an approximation, not fixed.
+3. **Crafted-item market fragmentation** (`1874bc4`) — a bigger, structural
+   version of the same problem: item 238014 (Sun-Blessed Sickle, crafted)
+   had 25+ distinct exact `bonus_key`s on Draenor, most clustered around
+   1000-1300g, but exact-`bonus_key` matching meant any one listing's
+   percentile came from whichever 1-2-sale bucket its exact crafted roll
+   fell into. Root cause: Blizzard's undocumented modifier types 42 (a
+   continuous per-craft stat roll) and 44 (a per-instance serial number,
+   confirmed sequential in live data: 245822, 245823, 245824...) make
+   `bonus_key` itself near-unique per crafted item. Fix: new `market_key()`
+   (`fetch_snapshot.py`) strips just those two modifier types for
+   matching/grouping only — relist detection (`diff_snapshots.py`) and
+   sold-price/current-lowest/buy-sell matching (`snipe_check.py`) all use
+   it now; the raw `bonus_key` is still stored and displayed everywhere.
+   Verified fixed live via `railway ssh`. **One sub-case remains open**: if
+   a specific crafted variant's *entire* sales history is a camped relist
+   that keeps slipping through the relist-matching window (an older,
+   separate bug), pooling can't rescue it — there's nothing legitimate to
+   pool against. Not fixed this session; human was told explicitly and it's
+   parked, not forgotten.
+4. **`--max-per-item`** (`1874bc4`, same commit) — caps how many listings
+   of one item/variant can fill the results (by `market_key`, keeping the
+   best-discount ones via a SQL `ROW_NUMBER()` window), so one popular item
+   can't crowd out variety. `--top 500 --max-per-item 1` = up to 500
+   distinct items. New dashboard "Max per item" input.
+5. **Status ticker simplified twice** (`1874bc4`, `d2d3da3`) — first
+   dropped "Polled" (was just the browser's render-time wall clock, not
+   real data), then — per direct feedback that the remaining 3 segments
+   still didn't answer "when was new data actually retrieved" clearly —
+   collapsed to one segment, "Last auction data" (the real Blizzard
+   `Last-Modified` timestamp).
+6. **Public `/log` page** (`ec491e9`) — human's explicit ask: a page any
+   visitor can view (no login) showing every timestamp new AH data was
+   retrieved per realm. New `GET /api/log/realms` / `GET /api/log?sell={cr}`
+   are the only unauthenticated `/api/*` routes in the app by design (realm
+   names and raw retrieval timestamps aren't the paid product). Reads
+   `data/snapshots/{cr}/*.parquet` filenames directly — `fetch_snapshot.py`'s
+   `If-Modified-Since` check means a file only exists when Blizzard actually
+   published something new, so the file list already *is* a complete,
+   honest log with zero new logging infrastructure.
+
+A **full visual redesign** was also discussed at length (all 6 pages now,
+including `/log`) — see `CLAUDE.md`'s "Full visual rethink" note for the
+proposed palette/type/signature-element plan. **Not yet confirmed by the
+human or built** — conversation was mid-flow when this session ended.
+
+Test suite: 110 → **145 passing** over the course of the session (new:
+`tests/test_appearance.py`, `tests/test_market_key.py`, plus additions to
+`test_snipe_check.py`/`test_dashboard.py`/`test_diff.py`).
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
@@ -198,7 +289,7 @@ instead (Linux binary, never touches that policy).
 | 0 — Validate the sale-inference signal | 48h manual verification protocol | **Gated, skipped** (human decision 2026-07-20) — signal still unvalidated against real seller behavior. |
 | 1 — Cross-realm engine + hardening | Region scanner, snipe-check, orchestration | **Mostly done.** Remaining: sell/scan realm config file, `--since` incremental diff. |
 | 2 — Commodities feed | Region-wide, quantity-delta inference | Not started — separate schema from gear, don't merge. |
-| 3 — Appearance layer | ItemModifiedAppearance scarcity mapping | Not started. The originally planned "warband transferability flag" was based on a wrong assumption (BoP items can't be AH-listed at all, corrected 2026-07-23) — re-decide at Phase 3 start whether any per-item flag is still needed. |
+| 3 — Appearance layer | ItemModifiedAppearance scarcity mapping | **Groundwork started 2026-07-23**, ahead of Phase 1's remaining hardening (deliberate skip-ahead, see `CLAUDE.md`'s process-deviation notes). Done: itemId→appearance-rarity mapping (`appearance.py`), wired into `snipe_check.py`/dashboard as a "unique transmog" filter. Not done: static-API fallback, real obtainability flags (source_count is a rarity proxy, not a farmability check — known to diverge from Wowhead's own "same model as" data on at least one item), region-wide AH scarcity *of currently listed* appearances. The originally planned "warband transferability flag" was based on a wrong assumption (BoP items can't be AH-listed at all, corrected 2026-07-23) — still open whether any per-item flag is needed. |
 | 4 — Deal score + Discord alerts | Second paid feature | Not started — blocked on Phase 3 data. |
 | 5 — Free companion addon | In-game tooltip overlay | Not started. The *web dashboard* half of this phase already shipped as part of the hosted pivot above; only the addon itself remains. |
 
@@ -206,7 +297,9 @@ instead (Linux binary, never touches that policy).
 
 - Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior. Partial mitigation added 2026-07-23: `snipe_check.find_snipes()`'s `min_sales` floor (default 2) stops a single unverified sample from becoming the whole sold-price percentile, after exactly that happened live (item 15138) — but two bad samples can still both be false positives, so this reduces rather than closes the risk.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.
-- The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, but the underlying meaning is still community-sourced, not official.
+- The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, but the underlying meaning is still community-sourced, not official. Same caveat now applies to modifier types 42/44 (`market_key()`'s ignore-list) — inference from real data, not documented facts.
+- A camped-relist can still occasionally slip through the relist-matching window and get misclassified as `inferred_sale` (seen live on item 238014's `29=77` sub-variant, 2026-07-23 evening) — separate from, and not fixed by, the same-day crafted-item pooling fix. No mitigation yet beyond the existing `min_sales` floor.
+- `appearance.py`'s rarity signal (`source_count`) is known to diverge from Wowhead's own "same model as" data on at least one item (14042) — see "Evening session" above. No Wowhead API exists to reconcile against.
 - Stripe is on the full `sk_live_...` secret key, not a restricted key scoped to what `billing.py` actually needs (see "Next up").
 
 ## What's built (file-level)
@@ -222,8 +315,10 @@ instead (Linux binary, never touches that policy).
 | Auth | `auth.py`, `db.py`, `static/login.html`/`register.html` |
 | Billing | `billing.py`, `static/subscribe.html` |
 | Item name/icon/quality cache | `item_names.py` |
+| Appearance-rarity cache (Phase 3 groundwork) | `appearance.py` |
+| Public retrieval-time log | `static/log.html`, `GET /api/log`/`GET /api/log/realms` in `dashboard.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
-| Tests | `tests/` — 110 passing (`pytest -q`), no external services needed |
+| Tests | `tests/` — 145 passing (`pytest -q`), no external services needed |
 
 ## Where to look for more
 

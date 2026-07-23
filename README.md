@@ -114,6 +114,13 @@ deployed app is.
   reappearing under a new auction id in the same interval → `likely_relisted`,
   excluded from sales.
 - **Bid-only auctions** can't be insta-bought → excluded.
+- **Crafted items pool by market, not exact roll:** Blizzard attaches two
+  undocumented per-craft modifiers to crafted gear — a continuous stat roll
+  and a per-instance serial number — that otherwise make almost every craft
+  its own "variant." `market_key()` strips just those two so near-identical
+  crafted items compare against one pooled market instead of fragmenting
+  into dozens of 1-2-sale buckets (added 2026-07-23 after this hit
+  production — see `CLAUDE.md`).
 - **Known blind spot:** a cancel *without* a relist is indistinguishable from a
   sale. Every AH data service shares some version of this problem. Sellers
   who cancel mostly relist (that's why they cancelled), so the hypothesis is
@@ -177,12 +184,19 @@ Cross-realm snipe engine (done) → hosted multi-tenant product with email
 auth and a live Stripe subscription gating the dashboard (**done**,
 2026-07-23) → region commodity feed (`/data/wow/auctions/commodities`) →
 appearance-scarcity layer (ItemModifiedAppearance mappings via wago.tools +
-the static item API) → deal score with buy-realm → sell-realm routing →
-Discord webhook alerts → free companion addon. See `PROGRESS.md` for the
-current staged status and immediate next steps (a restricted Stripe key is
-the main thing ahead of the commodity feed; the UI design pass and dashboard
-QoL pass -- sell-realm picker, budget filter, grouped duplicates, instant
-client-side sorting -- are both done as of 2026-07-23).
+the static item API, **groundwork started** 2026-07-23 — `appearance.py`,
+a "unique transmog" filter) → deal score with buy-realm → sell-realm
+routing → Discord webhook alerts → free companion addon. See `PROGRESS.md`
+for the current staged status and immediate next steps (a restricted
+Stripe key is the main thing ahead of the commodity feed; the UI design
+pass and dashboard QoL pass -- sell-realm picker, budget filter, grouped
+duplicates, instant client-side sorting -- are both done as of 2026-07-23,
+with a further full visual redesign proposed but not yet confirmed/built).
+
+A public, no-login `/log` page (added 2026-07-23) shows every timestamp new
+auction-house data was actually retrieved per realm, for anyone to verify
+independently -- `GET /api/log`/`GET /api/log/realms` are the only
+unauthenticated `/api/*` routes in the app, by design.
 
 ## Notes
 
