@@ -73,6 +73,52 @@ def bonus_key(item: dict) -> str:
     return "|".join(parts)
 
 
+# Undocumented by Blizzard (same caveat as modifier 28's ilvl use in
+# dashboard.py) -- this is inference from real production data, not a
+# documented fact. Found 2026-07-23 investigating item 238014 (Sun-Blessed
+# Sickle, a crafted item) reporting wildly wrong prices: type 44 values
+# increment sequentially per craft (245822, 245823, 245824...) -- a
+# per-instance serial number, never meaningful for price comparison; type 42
+# varies continuously within an otherwise-identical bonus_lists+modifiers
+# group -- the crafted stat roll, granular enough that near-identical items
+# almost never share an exact bonus_key. Together they fragmented one liquid
+# ~1000-1300g market into 25+ near-unique variants, each with 1-2 sales --
+# thin enough that a single misclassified camped relist (a known separate
+# bug, see diff_snapshots.py's blind-spot note) could dominate a variant's
+# entire percentile.
+MARKET_IGNORE_MODIFIER_TYPES = {42, 44}
+
+
+def market_key(bk: str) -> str:
+    """Coarser version of bonus_key for MATCHING/GROUPING only -- sold-price
+    percentiles, the current-lowest-listing cap, relist detection, and the
+    buy/sell join in snipe_check.py -- so near-identical crafted items pool
+    into one market instead of fragmenting into dozens of 1-2-sale buckets
+    (see MARKET_IGNORE_MODIFIER_TYPES above for why). The raw bonus_key is
+    still stored and displayed as-is everywhere; only matching uses this.
+
+    Mirrored as a SQL macro in analyze.connect() for DuckDB-side grouping
+    (sold-price/current-lowest queries) rather than shared as a single
+    Python UDF -- this duckdb version's Python UDF support requires numpy,
+    which isn't otherwise a project dependency (see CLAUDE.md's "minimal
+    deps" convention) and is disproportionate weight for one string
+    transform. The two implementations are kept honest by
+    tests/test_market_key.py, which runs the same vectors through both and
+    asserts identical results."""
+    if not bk:
+        return bk
+    parts = []
+    for part in bk.split("|"):
+        if not part.startswith("m:"):
+            parts.append(part)
+            continue
+        mods = [pair for pair in part[2:].split(",")
+                if int(pair.split("=", 1)[0]) not in MARKET_IGNORE_MODIFIER_TYPES]
+        if mods:
+            parts.append("m:" + ",".join(mods))
+    return "|".join(parts)
+
+
 def rows(payload: dict, ts: int) -> list[dict]:
     out = []
     for a in payload.get("auctions") or []:

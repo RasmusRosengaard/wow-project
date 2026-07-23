@@ -25,6 +25,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from fetch_snapshot import market_key
+
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
@@ -55,7 +57,11 @@ def relist_key(r: dict) -> tuple:
     # Pet identity lives in pet_species_id/pet_quality_id, not bonus_key (which
     # is empty for caged pets) -- without it, two different pets with the same
     # buyout+quantity would falsely match as a relist of one another.
-    return (r["item_id"], r["bonus_key"], r["pet_species_id"], r["pet_quality_id"],
+    # market_key() (not the raw bonus_key) so relisting a crafted item still
+    # matches even if Blizzard's undocumented per-craft modifiers (the stat
+    # roll, a per-instance serial) render slightly differently on repost --
+    # see fetch_snapshot.py's MARKET_IGNORE_MODIFIER_TYPES for why.
+    return (r["item_id"], market_key(r["bonus_key"]), r["pet_species_id"], r["pet_quality_id"],
             r["buyout"], r["quantity"])
 
 

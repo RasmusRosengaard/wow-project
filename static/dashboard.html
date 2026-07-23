@@ -175,6 +175,7 @@
   <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
   <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
   <label>Top <input id="top" type="number" value="50"></label>
+  <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
   <label class="auto-label">
     <input id="unique_appearance" type="checkbox"> Unique transmog only
   </label>
@@ -286,6 +287,10 @@ function params() {
   if ($("items").value.trim()) p.set("items", $("items").value.trim());
   if ($("min_gold").value.trim()) p.set("min_gold", $("min_gold").value.trim());
   if ($("max_gold").value.trim()) p.set("max_gold", $("max_gold").value.trim());
+  // Caps how many listings of the same item/variant can fill the "top"
+  // budget -- without this, one popular item with dozens of live auctions
+  // could crowd out variety before client-side grouping ever sees the rest.
+  if ($("max_per_item").value.trim()) p.set("max_per_item", $("max_per_item").value.trim());
   // "Unique" means no other item in the game grants the same transmog look
   // (appearance_sources == 1) -- see appearance.py. Items the appearance
   // cache doesn't know about are excluded when this is on, same as the API.
@@ -376,10 +381,14 @@ async function loadStatus(sell) {
     const r = await fetch(`/api/status?sell=${encodeURIComponent(sell)}`);
     if (!r.ok) return;
     const s = await r.json();
-    const now = new Date().toLocaleTimeString();
     const stale = !s.events_exist;
+    // "Polled" (browser wall-clock time) used to sit here and got re-stamped
+    // on every 60s auto-refresh regardless of whether Blizzard had actually
+    // published anything new -- misleading "freshness" theater. Snapshot/
+    // Listings swept below are the real last-new-data timestamps; dropped
+    // rather than replaced since nothing else the client knows means
+    // "we just polled" in a way that isn't already covered by those two.
     $("ticker").innerHTML = `
-      <div class="seg"><span class="k">Polled</span><span class="v mono">${now}</span></div>
       <div class="seg"><span class="k">Snapshot</span><span class="v mono ${stale ? "stale" : "ok"}">${fmtHttpDate(s.last_modified)}</span></div>
       <div class="seg"><span class="k">Listings swept</span><span class="v mono">${fmtTs(s.listings_updated)}</span></div>
       <div class="seg"><span class="k">Ledger</span><span class="v mono ${stale ? "stale" : "ok"}">${s.events_exist ? "built" : "pending"}</span></div>

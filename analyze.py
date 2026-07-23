@@ -24,6 +24,26 @@ import duckdb
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
+# SQL mirror of fetch_snapshot.market_key() -- see that function's docstring
+# for why this is a duplicated implementation rather than a shared Python
+# UDF (numpy dependency), and tests/test_market_key.py for the parity check
+# (run against this exact constant, not a copy) that keeps the two in sync.
+# Strips MARKET_IGNORE_MODIFIER_TYPES = {42, 44} from the "m:..." segment of
+# a bonus_key, in 4 ordered passes: (1) any occurrence with a leading comma,
+# (2) a leading occurrence followed by more modifiers, (3) a lone occurrence
+# that's the entire "m:" segment, (4) a bonus_key that's nothing but that
+# lone occurrence (no "b:" part at all).
+MARKET_KEY_MACRO_SQL = r"""
+    CREATE OR REPLACE MACRO market_key(bk) AS
+      regexp_replace(
+        regexp_replace(
+          regexp_replace(
+            regexp_replace(bk, ',(42|44)=[0-9]+', '', 'g'),
+          'm:(42|44)=[0-9]+,', 'm:', 'g'),
+        '\|m:(42|44)=[0-9]+$', '', 'g'),
+      '^m:(42|44)=[0-9]+$', '', 'g')
+"""
+
 
 def connect(cr: int) -> duckdb.DuckDBPyConnection:
     snaps = str(DATA / "snapshots" / str(cr) / "*.parquet")
@@ -36,6 +56,7 @@ def connect(cr: int) -> duckdb.DuckDBPyConnection:
                    SELECT (max(snapshot_ts) - min(snapshot_ts)) / 86400.0 AS days,
                           count(DISTINCT snapshot_ts) AS n_snaps
                    FROM snaps""")
+    con.execute(MARKET_KEY_MACRO_SQL)
     return con
 
 

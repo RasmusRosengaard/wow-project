@@ -182,6 +182,7 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
                 min_sales: int = 2, max_appearance_sources: int | None = None,
+                max_per_item: int | None = None,
                 top: int = 50, sort: str = Query("discount"), names: bool = False,
                 user: User = Depends(current_subscribed_user)) -> dict:
     events_path = DATA / "events" / f"{sell}.parquet"
@@ -198,6 +199,7 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                                    min_per_day=min_per_day, sell_percentile=sell_percentile,
                                    min_gold=min_gold, max_gold=max_gold, min_sales=min_sales,
                                    max_appearance_sources=max_appearance_sources,
+                                   max_per_item=max_per_item,
                                    top=top, sort=sort)
     name_cache = NameCache() if names else None
     out_rows = [_row_to_json(r, name_cache) for r in rows]

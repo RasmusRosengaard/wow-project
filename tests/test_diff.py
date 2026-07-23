@@ -136,6 +136,24 @@ def test_relist_requires_exact_variant_match():
     assert got == {1: "inferred_sale", 2: "inferred_sale"}
 
 
+def test_relist_matches_across_different_crafted_stat_rolls():
+    """A crafted item relisted with a *different* per-craft stat roll
+    (modifier type 42) and serial (type 44) -- Blizzard's undocumented
+    per-craft modifiers, see fetch_snapshot.MARKET_IGNORE_MODIFIER_TYPES --
+    should still match as a relist via market_key(), not get miscounted as
+    an inferred_sale just because the exact roll changed on repost."""
+    prev = snap(
+        auction(1, item_id=400, buyout=5_000,
+                bonus_key="b:12251,12253,12502|m:28=3615,42=487,44=245822"),
+    )
+    curr = snap(
+        auction(2, item_id=400, buyout=5_000,
+                bonus_key="b:12251,12253,12502|m:28=3615,42=999,44=999999"),
+    )
+    [e] = classify_pair(prev, curr, gap=GAP, ts=TS)
+    assert e["classification"] == "likely_relisted"
+
+
 def test_relist_requires_matching_pet_identity():
     """Two different caged pets (82800) with the same buyout/quantity must NOT
     be treated as relists of each other -- pet identity lives in

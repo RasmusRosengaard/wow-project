@@ -258,6 +258,99 @@ def test_find_snipes_excludes_single_sale_by_default(tmp_path, monkeypatch):
     assert rows[0]["item_id"] == 101
 
 
+def test_find_snipes_max_per_item_caps_and_keeps_best_discounts(tmp_path, monkeypatch):
+    """One item with three qualifying listings at different discounts --
+    max_per_item=2 should keep only the two highest-discount ones (cheapest
+    buy price), dropping the weakest, not an arbitrary two."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [
+        snap_row(1, T0, item_id=101, buyout=20_000),
+        snap_row(4, T0, item_id=101, buyout=22_000),
+        snap_row(3, T0, item_id=103),   # survives -> no event
+    ]
+    curr = [snap_row(3, T1, item_id=103)]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    buy_rows = [
+        listing_row(BUY_CR_A, item_id=101, buyout=5_000, auction_id=100),   # best discount
+        listing_row(BUY_CR_A, item_id=101, buyout=8_000, auction_id=101),   # 2nd best
+        listing_row(BUY_CR_A, item_id=101, buyout=12_000, auction_id=102),  # weakest -- should be dropped
+    ]
+    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
+                   listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+
+    all_rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1)
+    assert len(all_rows) == 3
+
+    capped = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1, max_per_item=2)
+    assert len(capped) == 2
+    assert {r["auction_id"] for r in capped} == {100, 101}
+
+
+def test_find_snipes_pools_near_identical_crafted_rolls(tmp_path, monkeypatch):
+    """Reproduces the real production case (item 238014, Sun-Blessed Sickle,
+    2026-07-23): a crafted item's per-craft stat roll/serial (modifier types
+    42/44) fragmented what should be one liquid market into dozens of
+    1-sale buckets on exact bonus_key. Three DIFFERENT exact bonus_keys here
+    share the same market_key (same b: bonus_lists, differ only in m:42) --
+    two inferred sales (one each, neither alone meeting min_sales=2), a
+    current live listing at yet another distinct roll, and a buy listing at
+    a fourth distinct roll that never appears in the sell realm's history at
+    all. All of it should still pool as one market and match."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    roll_a = "b:1,2,3|m:42=100"
+    roll_b = "b:1,2,3|m:42=200"
+    roll_d = "b:1,2,3|m:42=300"  # currently listed on the sell realm
+    roll_c = "b:1,2,3|m:42=400"  # the buy-side listing's roll -- never sold, never listed on sell realm
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [
+        snap_row(1, T0, item_id=500, bonus_key=roll_a, buyout=20_000),
+        snap_row(2, T0, item_id=500, bonus_key=roll_b, buyout=22_000),
+        snap_row(3, T0, item_id=103),   # survives -> no event
+    ]
+    curr = [
+        snap_row(3, T1, item_id=103),
+        snap_row(4, T1, item_id=500, bonus_key=roll_d, buyout=21_000),  # live now, different roll
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    buy_rows = [listing_row(BUY_CR_A, item_id=500, buyout=5_000, auction_id=100, bonus_key=roll_c)]
+    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
+                   listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+
+    # Neither exact roll alone has 2 sales -- pooling by market_key is what
+    # lets this pass the default min_sales=2 floor at all.
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["item_id"] == 500
+    assert r["bonus_key"] == roll_c          # exact listing roll still shown for display
+    assert r["sell_p_g"] == pytest.approx(2.05)   # p25 of pooled [20_000, 22_000] = 20_500 copper
+    assert r["sell_now_g"] == pytest.approx(2.1)  # pooled current listing (roll_d) caps it
+
+
 def test_find_snipes_respects_min_gold(data_dir, monkeypatch):
     """The only listing cheap enough to qualify (10_000 copper = 1g) is
     excluded once min_gold asks for at least 2g."""

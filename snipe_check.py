@@ -60,16 +60,26 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
                 min_sales: int = 2, max_appearance_sources: int | None = None,
+                max_per_item: int | None = None,
                 top: int = 50, sort: str = "discount") -> list[dict]:
     """Sold-price stats come from `sales` (a view over inferred_sale events,
     set up by analyze.connect). Listings come from every scanned realm except
-    the sell realm itself. Match key is (item_id, bonus_key, pet_species_id,
-    pet_quality_id) -- bonus_key alone is empty for every caged pet (82800),
-    so without the pet identity fields every pet species/quality would
-    collapse into one bucket and get compared against whichever pet actually
-    sold. The pet fields are NULL for non-pet items, so this is a no-op for
-    ordinary gear -- joined with IS NOT DISTINCT FROM since NULL = NULL is
-    false in SQL and a plain USING join would drop every non-pet match.
+    the sell realm itself. Match key is (item_id, market_key(bonus_key),
+    pet_species_id, pet_quality_id) -- market_key() (added 2026-07-23, see
+    fetch_snapshot.py) is a coarser version of bonus_key that pools
+    near-identical crafted-item rolls into one market instead of matching
+    the exact roll, since Blizzard's undocumented per-craft modifiers
+    otherwise fragment what's really one liquid market into dozens of
+    1-2-sale buckets (caught live: item 238014, Sun-Blessed Sickle, had 25+
+    distinct exact bonus_keys on Draenor alone). The raw bonus_key is still
+    carried through on the buy-side row for display -- only the join/group
+    keys use market_key. bonus_key/market_key are both empty for every caged
+    pet (82800), so without the pet identity fields every pet species/
+    quality would collapse into one bucket and get compared against
+    whichever pet actually sold. The pet fields are NULL for non-pet items,
+    so this is a no-op for ordinary gear -- joined with IS NOT DISTINCT FROM
+    since NULL = NULL is false in SQL and a plain USING join would drop
+    every non-pet match.
 
     min_sales is a data-quality floor, distinct from min_per_day: a brand
     new sell realm with a short collection history can pass min_per_day on
@@ -108,7 +118,16 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     never built) regardless of whether this filter is set, so callers can
     display it either way. Applied in Python after the SQL query rather than
     joined in SQL, since the cache is a local JSON file, not a DB table --
-    fine because candidate rows per query are always small."""
+    fine because candidate rows per query are always small.
+
+    max_per_item (added 2026-07-23) caps how many listings of the *same*
+    item/variant can appear in the results, keeping the best (highest
+    discount%) N of them via a ROW_NUMBER() window before the outer
+    ORDER BY/LIMIT -- without this, a single popular item with dozens of live
+    auctions across scan realms could fill the entire `top` budget by itself,
+    crowding out variety. `top` still caps the total row count; max_per_item
+    caps rows per item on top of that -- e.g. top=500, max_per_item=1 means
+    up to 500 *distinct* items."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -130,61 +149,79 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     """)
     res = con.execute(f"""
         WITH sell_now AS (
-            SELECT item_id, bonus_key, pet_species_id, pet_quality_id,
+            SELECT item_id, market_key(bonus_key) AS market_key, pet_species_id, pet_quality_id,
                    min(buyout * 1.0 / quantity) AS cheapest_now
             FROM snaps
             WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
               AND buyout IS NOT NULL
-            GROUP BY item_id, bonus_key, pet_species_id, pet_quality_id
+            GROUP BY item_id, market_key(bonus_key), pet_species_id, pet_quality_id
         ),
         sell_stats AS (
-            SELECT item_id, bonus_key, pet_species_id, pet_quality_id,
+            SELECT item_id, market_key(bonus_key) AS market_key, pet_species_id, pet_quality_id,
                    count(*)                                            AS sales,
                    round(count(*) / (SELECT days FROM span), 2)        AS per_day,
                    quantile_cont(unit_price, {float(sell_percentile)}) AS sell_price
             FROM sales
             WHERE 1=1 {item_filter}
-            GROUP BY item_id, bonus_key, pet_species_id, pet_quality_id
+            GROUP BY item_id, market_key(bonus_key), pet_species_id, pet_quality_id
             HAVING per_day >= {float(min_per_day)} AND sales >= {int(min_sales)}
         ),
         sell_eff AS (
-            SELECT s.item_id, s.bonus_key, s.pet_species_id, s.pet_quality_id,
+            SELECT s.item_id, s.market_key, s.pet_species_id, s.pet_quality_id,
                    s.sales, s.per_day,
                    LEAST(s.sell_price, COALESCE(n.cheapest_now, s.sell_price)) AS sell_price,
                    n.cheapest_now
             FROM sell_stats s
             LEFT JOIN sell_now n
               ON s.item_id = n.item_id
-             AND s.bonus_key IS NOT DISTINCT FROM n.bonus_key
+             AND s.market_key IS NOT DISTINCT FROM n.market_key
              AND s.pet_species_id IS NOT DISTINCT FROM n.pet_species_id
              AND s.pet_quality_id IS NOT DISTINCT FROM n.pet_quality_id
         ),
         buy AS (
-            SELECT cr_id, item_id, bonus_key, pet_species_id, pet_quality_id, auction_id,
+            SELECT cr_id, item_id, bonus_key, market_key(bonus_key) AS market_key,
+                   pet_species_id, pet_quality_id, auction_id,
                    buyout * 1.0 / quantity AS buy_unit_price
             FROM listings
             WHERE 1=1 {item_filter}
+        ),
+        matches AS (
+            SELECT b.cr_id                                            AS buy_realm,
+                   b.item_id, b.bonus_key, b.market_key, b.pet_species_id, b.pet_quality_id, b.auction_id,
+                   round(b.buy_unit_price / 10000, 2)                  AS buy_g,
+                   round(s.sell_price / 10000, 2)                      AS sell_p_g,
+                   round(b.buy_unit_price)::BIGINT                     AS buy_copper,
+                   round(s.sell_price)::BIGINT                         AS sell_copper,
+                   round(s.cheapest_now / 10000, 2)                    AS sell_now_g,
+                   round(s.cheapest_now)::BIGINT                       AS sell_now_copper,
+                   s.per_day,
+                   round(100.0 * (s.sell_price * 0.95 - b.buy_unit_price)
+                         / (s.sell_price * 0.95), 1)                   AS discount_pct
+            FROM buy b
+            JOIN sell_eff s
+              ON b.item_id = s.item_id
+             AND b.market_key IS NOT DISTINCT FROM s.market_key
+             AND b.pet_species_id IS NOT DISTINCT FROM s.pet_species_id
+             AND b.pet_quality_id IS NOT DISTINCT FROM s.pet_quality_id
+            WHERE (s.sell_price * 0.95 - b.buy_unit_price) / (s.sell_price * 0.95)
+                  >= {float(min_discount)}
+                  {price_filter}
+        ),
+        capped AS (
+            SELECT *, ROW_NUMBER() OVER (
+                -- market_key, not the raw bonus_key -- caps per pooled
+                -- market (see market_key() above), so e.g. max_per_item=1
+                -- on a crafted item keeps its single best-discount listing
+                -- across all its near-identical crafted rolls, not one per
+                -- exact roll.
+                PARTITION BY item_id, market_key, pet_species_id, pet_quality_id
+                ORDER BY discount_pct DESC
+            ) AS item_rank
+            FROM matches
         )
-        SELECT b.cr_id                                            AS buy_realm,
-               b.item_id, b.bonus_key, b.pet_species_id, b.pet_quality_id, b.auction_id,
-               round(b.buy_unit_price / 10000, 2)                  AS buy_g,
-               round(s.sell_price / 10000, 2)                      AS sell_p_g,
-               round(b.buy_unit_price)::BIGINT                     AS buy_copper,
-               round(s.sell_price)::BIGINT                         AS sell_copper,
-               round(s.cheapest_now / 10000, 2)                    AS sell_now_g,
-               round(s.cheapest_now)::BIGINT                       AS sell_now_copper,
-               s.per_day,
-               round(100.0 * (s.sell_price * 0.95 - b.buy_unit_price)
-                     / (s.sell_price * 0.95), 1)                   AS discount_pct
-        FROM buy b
-        JOIN sell_eff s
-          ON b.item_id = s.item_id
-         AND b.bonus_key IS NOT DISTINCT FROM s.bonus_key
-         AND b.pet_species_id IS NOT DISTINCT FROM s.pet_species_id
-         AND b.pet_quality_id IS NOT DISTINCT FROM s.pet_quality_id
-        WHERE (s.sell_price * 0.95 - b.buy_unit_price) / (s.sell_price * 0.95)
-              >= {float(min_discount)}
-              {price_filter}
+        SELECT * EXCLUDE (item_rank, market_key)
+        FROM capped
+        {f"WHERE item_rank <= {int(max_per_item)}" if max_per_item is not None else ""}
         ORDER BY {SORT_COLUMNS[sort]}
         LIMIT {sql_limit}
     """)
@@ -252,6 +289,10 @@ def main() -> None:
                          "distinct items region-wide (1 = unique look); requires "
                          "data/appearances.json -- see appearance.py --refresh. Items missing "
                          "from the appearance cache are excluded when this is set")
+    ap.add_argument("--max-per-item", type=int, default=None,
+                    help="cap how many listings of the same item/variant can appear in the "
+                         "results (keeps the highest-discount ones); combine with --top for "
+                         "e.g. --top 500 --max-per-item 1 = up to 500 distinct items")
     ap.add_argument("--top", type=int, default=50)
     ap.add_argument("--sort", choices=sorted(SORT_COLUMNS), default="discount",
                     help="sort order for results (default discount)")
@@ -277,6 +318,7 @@ def main() -> None:
                        min_gold=args.min_gold, max_gold=args.max_gold,
                        min_sales=args.min_sales,
                        max_appearance_sources=args.max_appearance_sources,
+                       max_per_item=args.max_per_item,
                        top=args.top, sort=sort)
     print_snipes(rows, resolve_names=args.names)
 
