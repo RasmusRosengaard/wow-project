@@ -63,14 +63,13 @@ production system by hand.
 4. The container's entrypoint runs pending Alembic migrations before
    starting the server, so schema changes ship in the same step.
 
-**Known gap, worth closing**: Railway's own deploy trigger doesn't currently
-wait on the GitHub Actions check — it deploys on push regardless of CI
-status. Railway has a **"Wait for CI"** toggle for exactly this
-(Service → Settings → Deploy), not yet enabled here (CLI doesn't expose it,
-has to be flipped in the dashboard). Until then, the actual safety net is
-discipline: don't push code you haven't run `pytest -q` against locally, and
-prefer PRs over direct pushes to `main` so the required check has a chance
-to matter.
+Railway's **"Wait for CI"** setting (Service → Settings → Deploy) is enabled,
+so deploys wait on the GitHub Actions check passing rather than firing on
+every push regardless of CI status (fixed 2026-07-23 — CLI doesn't expose
+this toggle, had to be flipped in the dashboard directly). Still worth the
+habit of running `pytest -q` locally before pushing and preferring PRs over
+direct pushes to `main`, so branch protection's required check has a chance
+to matter too, not just Railway's gate.
 
 ## Local development
 

@@ -55,11 +55,11 @@ Staged deliberately — each stage ships and gets verified before the next.
 - Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior — no test auctions posted/cancelled/bought to confirm the false-positive rate.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.
 - The AH auction `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard now sanity-checks it against the item's catalog level, but the underlying meaning is still inferred from community usage + one human-confirmed example, not official docs.
-- **Railway doesn't currently wait for CI to pass before deploying** — it deploys on every push to `main` regardless of the GitHub Actions check status. Railway has a "Wait for CI" toggle for this (Service → Settings → Deploy) that hasn't been enabled yet — CLI doesn't expose it, needs a dashboard visit. Until then, branch protection + discipline (run `pytest -q` before pushing, prefer PRs) is the actual safety net, not full automation.
+- ~~Railway doesn't currently wait for CI to pass before deploying~~ — **fixed 2026-07-23**: the human enabled Railway's "Wait for CI" toggle (Service → Settings → Deploy) directly, since the CLI doesn't expose it. Verification of the actual gating behavior is pending (see Next steps).
 
 ## Next steps (rough order)
 
-1. Enable Railway's "Wait for CI" setting so the deploy pipeline actually gates on tests passing, not just runs them in parallel.
+1. Verify Railway's "Wait for CI" setting actually gates deploys (observe whether a push now shows a WAITING state before BUILDING, instead of building immediately) — enabled 2026-07-23, not yet confirmed working end to end.
 2. `billing.py` (Stage 3): Stripe Checkout + webhook. **Now unblocked** — a real deployed URL exists (`https://wow-project-production.up.railway.app`) to register the webhook endpoint against, which was the blocker before. Gate the dashboard on `subscription_status == "active"`. **Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (and anywhere else the URL is hardcoded/documented) needs updating to match — it won't happen automatically.
 3. UI design pass on the dashboard — using the `frontend-design` skill/plugin for a more intentional visual pass (current styling was written directly, not run through it).
 4. `/api/realms` + a sell-realm dropdown in the dashboard UI (Stage 4's remaining piece — the server has multi-realm data now, the frontend doesn't expose it yet).
