@@ -2,80 +2,128 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Subscribe — AH Snipe Dashboard</title>
+<title>Subscribe — AH Snipe Ledger</title>
+<script>
+  (function () {
+    var saved = localStorage.getItem("theme");
+    var theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
 <style>
   :root {
+    color-scheme: light;
+    --paper: #f6f7f5;
+    --card: #ffffff;
+    --hairline: #d8dbd4;
+    --hairline-strong: #c3c8bd;
+    --ink: #14161a;
+    --text-dim: #5b6259;
+    --bullion: #a67c2e;
+    --bullion-dim: #8a6624;
+    --verified: #2f7d72;
+    --alert: #b0392f;
+  }
+  :root[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #14170f; --panel: #1b1f15; --panel-raised: #23281a;
-    --border: #3a4029; --border-bright: #565f38;
-    --text: #eef0e6; --text-dim: #97a084;
-    --toxic: #a6e600; --toxic-dim: #7fb300; --brass: #c9963e; --ember: #ff7a45; --gold: #ffd651;
+    --paper: #14161a;
+    --card: #1b1e24;
+    --hairline: #333844;
+    --hairline-strong: #454b59;
+    --ink: #e8eaed;
+    --text-dim: #8b93a3;
+    --bullion: #d4af61;
+    --bullion-dim: #b8934f;
+    --verified: #3fa9a0;
+    --alert: #e0645a;
   }
   * { box-sizing: border-box; }
   body {
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg); color: var(--text);
-    background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.05), transparent 60%);
-    display: flex; align-items: center; justify-content: center;
-    min-height: 100vh; margin: 0; padding: 1.5rem;
+    background: var(--paper); color: var(--ink);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 1.5rem 1.5rem 2.5rem; gap: 0;
   }
+  #theme-toggle {
+    position: fixed; top: 1rem; right: 1rem;
+    background: var(--card); border: 1px solid var(--hairline-strong); color: var(--text-dim);
+    border-radius: 3px; padding: 0.4rem 0.55rem; cursor: pointer; font-size: 1rem; line-height: 1;
+    font-family: inherit;
+  }
+  #theme-toggle:hover { color: var(--ink); border-color: var(--bullion); }
+  .brand { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.5rem; }
+  .brand h1 {
+    font-size: 1rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
+    text-transform: uppercase; color: var(--ink);
+  }
+  .seal { color: var(--verified); flex-shrink: 0; }
   .wrap { width: 100%; max-width: 460px; display: flex; flex-direction: column; gap: 1.25rem; }
 
   .pitch { text-align: center; }
-  .pitch h1 {
+  .pitch h2 {
     font-size: 1.5rem; margin: 0 0 0.5rem; font-weight: 800; letter-spacing: -0.01em;
     line-height: 1.25;
   }
-  .pitch h1 .accent { color: var(--toxic); }
+  .pitch h2 .accent { color: var(--bullion); }
   .pitch p { margin: 0; color: var(--text-dim); font-size: 0.88rem; line-height: 1.5; }
 
   .steps {
     display: flex; flex-direction: column; gap: 0.7rem;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 1.1rem 1.2rem;
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px; padding: 1.1rem 1.2rem;
   }
   .step { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.82rem; }
   .step .n {
     font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-    color: var(--toxic); font-weight: 700; flex-shrink: 0; width: 1.1rem;
+    color: var(--bullion); font-weight: 700; flex-shrink: 0; width: 1.1rem;
   }
-  .step .t { color: var(--text); }
-  .step .t b { color: var(--text); font-weight: 700; }
+  .step .t { color: var(--ink); }
+  .step .t b { color: var(--ink); font-weight: 700; }
 
   .card {
-    background: var(--panel); border: 1px solid var(--border-bright); border-radius: 6px;
+    background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 6px;
     padding: 1.6rem; display: flex; flex-direction: column; gap: 1.1rem;
   }
   .price {
     font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-    font-size: 2.1rem; font-weight: 700; color: var(--gold);
+    font-size: 2.1rem; font-weight: 700; color: var(--bullion);
   }
   .price span { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 0.85rem; color: var(--text-dim); font-weight: 400; }
   ul {
-    margin: 0; padding-left: 1.1rem; color: var(--text); font-size: 0.86rem;
+    margin: 0; padding-left: 1.1rem; color: var(--ink); font-size: 0.86rem;
     display: flex; flex-direction: column; gap: 0.5rem;
   }
-  li::marker { color: var(--toxic); }
+  li::marker { color: var(--bullion); }
   button {
-    background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
+    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
     border-radius: 3px; padding: 0.65rem; cursor: pointer; font-size: 0.88rem;
     font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 0.2rem;
+    font-family: inherit;
   }
-  button:hover { background: var(--toxic-dim); border-color: var(--toxic-dim); }
+  button:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
   button:disabled { opacity: 0.6; cursor: default; }
-  button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
-  .error { color: var(--ember); font-size: 0.8rem; min-height: 1em; }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
+  .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
   .note { color: var(--text-dim); font-size: 0.75rem; }
   .fund { color: var(--text-dim); font-size: 0.8rem; text-align: center; line-height: 1.5; }
-  .fund b { color: var(--brass); }
+  .fund b { color: var(--bullion); }
   .nav { text-align: center; font-size: 0.8rem; }
   .nav a { color: var(--text-dim); }
-  .nav a:hover { color: var(--brass); }
+  .nav a:hover { color: var(--bullion); }
 </style>
 </head>
 <body>
+<button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
+<div class="brand">
+  <svg class="seal" width="22" height="22" viewBox="0 0 30 30" aria-hidden="true">
+    <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
+    <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <h1>AH Snipe Ledger</h1>
+</div>
 <div class="wrap">
   <div class="pitch">
-    <h1>Listing prices lie.<br>We show what things <span class="accent">actually sold for.</span></h1>
+    <h2>Listing prices lie.<br>We show what things <span class="accent">actually sold for.</span></h2>
     <p>Every other sniper flags items cheap against fictional asking prices. We infer real sold prices from Blizzard's own auction snapshots, then route the discount across every EU realm to your warband bank.</p>
   </div>
 
@@ -129,6 +177,22 @@ document.getElementById("subscribe").addEventListener("click", async () => {
     btn.textContent = "Subscribe with Stripe";
   }
 });
+
+function applyThemeButtonState() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  const btn = document.getElementById("theme-toggle");
+  btn.textContent = dark ? "☀" : "☽";
+  const label = dark ? "Switch to light mode" : "Switch to dark mode";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  applyThemeButtonState();
+});
+applyThemeButtonState();
 </script>
 </body>
 </html>

@@ -2,69 +2,133 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Profile — AH Snipe Dashboard</title>
+<title>Profile — AH Snipe Ledger</title>
+<script>
+  (function () {
+    var saved = localStorage.getItem("theme");
+    var theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
 <style>
   :root {
+    color-scheme: light;
+    --paper: #f6f7f5;
+    --card: #ffffff;
+    --hairline: #d8dbd4;
+    --hairline-strong: #c3c8bd;
+    --ink: #14161a;
+    --text-dim: #5b6259;
+    --bullion: #a67c2e;
+    --bullion-dim: #8a6624;
+    --verified: #2f7d72;
+    --verified-bg: rgba(47,125,114,0.08);
+    --alert: #b0392f;
+    --alert-bg: rgba(176,57,47,0.08);
+    --pending-bg: rgba(166,124,46,0.1);
+  }
+  :root[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #14170f; --panel: #1b1f15; --panel-raised: #23281a;
-    --border: #3a4029; --border-bright: #565f38;
-    --text: #eef0e6; --text-dim: #97a084;
-    --toxic: #a6e600; --toxic-dim: #7fb300; --brass: #c9963e; --ember: #ff7a45; --gold: #ffd651;
+    --paper: #14161a;
+    --card: #1b1e24;
+    --hairline: #333844;
+    --hairline-strong: #454b59;
+    --ink: #e8eaed;
+    --text-dim: #8b93a3;
+    --bullion: #d4af61;
+    --bullion-dim: #b8934f;
+    --verified: #3fa9a0;
+    --verified-bg: rgba(63,169,160,0.14);
+    --alert: #e0645a;
+    --alert-bg: rgba(224,100,90,0.14);
+    --pending-bg: rgba(212,175,97,0.14);
   }
   * { box-sizing: border-box; }
   body {
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg); color: var(--text);
-    background-image: radial-gradient(ellipse at top, rgba(166,230,0,0.05), transparent 60%);
-    display: flex; align-items: center; justify-content: center;
-    min-height: 100vh; margin: 0; padding: 1rem;
+    margin: 0; background: var(--paper); color: var(--ink); min-height: 100vh;
   }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 1rem; padding: 0.9rem 1.5rem; background: var(--card);
+    border-bottom: 1px solid var(--hairline-strong);
+  }
+  .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .brand h1 {
+    font-size: 1.05rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
+    text-transform: uppercase; color: var(--ink);
+  }
+  .seal { color: var(--verified); flex-shrink: 0; }
+  .nav { display: flex; gap: 0.4rem; align-items: center; }
+  .nav a, .nav button {
+    background: transparent; border: 1px solid transparent; color: var(--text-dim);
+    border-radius: 3px; padding: 0.4rem 0.7rem; cursor: pointer; font-size: 0.8rem;
+    text-decoration: none; font-weight: 600; font-family: inherit;
+  }
+  .nav a:hover, .nav button:hover { border-color: var(--hairline-strong); color: var(--ink); }
+  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.4rem 0.55rem; }
+
+  .shell { display: flex; justify-content: center; padding: 2.5rem 1.5rem; }
   .card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
     padding: 2rem; width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 1.1rem;
   }
-  h1 {
-    font-size: 1.15rem; margin: 0; font-weight: 800;
+  h2 {
+    font-size: 1rem; margin: 0; font-weight: 800;
     text-transform: uppercase; letter-spacing: -0.01em;
   }
-  .row { display: flex; justify-content: space-between; align-items: center; font-size: 0.88rem; gap: 1rem; }
-  .row .lbl { color: var(--text-dim); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .row { display: flex; justify-content: space-between; align-items: center; font-size: 0.88rem; gap: 1rem; padding-bottom: 0.9rem; border-bottom: 1px solid var(--hairline); }
+  .row .lbl { color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; }
   .row span:not(.lbl) { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
   .badge {
     display: inline-block; padding: 0.2rem 0.6rem; border-radius: 3px;
     font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  .badge.active { background: rgba(166,230,0,0.15); color: var(--toxic); border: 1px solid var(--toxic-dim); }
-  .badge.inactive { background: rgba(255,122,69,0.12); color: var(--ember); border: 1px solid var(--ember); }
-  .badge.pending { background: rgba(255,214,81,0.12); color: var(--gold); border: 1px solid var(--gold); }
+  .badge.active { background: var(--verified-bg); color: var(--verified); border: 1px solid var(--verified); }
+  .badge.inactive { background: var(--alert-bg); color: var(--alert); border: 1px solid var(--alert); }
+  .badge.pending { background: var(--pending-bg); color: var(--bullion); border: 1px solid var(--bullion); }
   button, a.btn {
-    background: var(--toxic); border: 1px solid var(--toxic); color: #0f1400;
+    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
     border-radius: 3px; padding: 0.6rem; cursor: pointer; font-size: 0.85rem;
     font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
-    text-align: center; text-decoration: none; display: block;
+    text-align: center; text-decoration: none; display: block; font-family: inherit;
   }
-  button:hover, a.btn:hover { background: var(--toxic-dim); border-color: var(--toxic-dim); }
+  button:hover, a.btn:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
   button:disabled { opacity: 0.6; cursor: default; }
-  button:focus-visible, a:focus-visible { outline: 2px solid var(--toxic); outline-offset: 1px; }
-  a.secondary { background: var(--panel-raised); border: 1px solid var(--border-bright); color: var(--text); }
-  a.secondary:hover { background: var(--border); }
-  .error { color: var(--ember); font-size: 0.8rem; min-height: 1em; }
-  .nav { font-size: 0.8rem; color: var(--text-dim); }
-  .nav a { color: var(--brass); }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
+  .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>Profile</h1>
-  <div class="row"><span class="lbl">Email</span><span id="email">…</span></div>
-  <div class="row"><span class="lbl">Subscription</span><span id="status-badge">…</span></div>
-  <div class="row" id="period-row" style="display:none;">
-    <span class="lbl">Renews / ends</span><span id="period-end"></span>
+<div class="topbar">
+  <div class="brand">
+    <svg class="seal" width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
+      <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
+      <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>AH Snipe Ledger</h1>
   </div>
-  <div id="error" class="error"></div>
-  <div id="actions"></div>
-  <div class="nav"><a href="/">&larr; Back to dashboard</a></div>
+  <div class="nav">
+    <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
+    <a href="/">Dashboard</a>
+    <a href="/log">Log</a>
+  </div>
+</div>
+<div class="shell">
+  <div class="card">
+    <h2>Profile</h2>
+    <div class="row"><span class="lbl">Email</span><span id="email">…</span></div>
+    <div class="row"><span class="lbl">Subscription</span><span id="status-badge">…</span></div>
+    <div class="row" id="period-row" style="display:none;">
+      <span class="lbl">Renews / ends</span><span id="period-end"></span>
+    </div>
+    <div id="error" class="error"></div>
+    <div id="actions"></div>
+  </div>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -114,6 +178,22 @@ async function startPortal() {
     actions.innerHTML = `<a class="btn" href="/subscribe">Subscribe</a>`;
   }
 })();
+
+function applyThemeButtonState() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  const btn = $("theme-toggle");
+  btn.textContent = dark ? "☀" : "☽";
+  const label = dark ? "Switch to light mode" : "Switch to dark mode";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+$("theme-toggle").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  applyThemeButtonState();
+});
+applyThemeButtonState();
 </script>
 </body>
 </html>

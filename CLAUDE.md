@@ -85,8 +85,8 @@ Buy-side scans don't need snapshot history — latest listings per realm suffice
 | `billing.py` | **Stage 3, done 2026-07-23 — deployed straight to Stripe live mode** (human decision, no test-mode verification pass first). `POST /billing/checkout` creates a Checkout Session for the single €4.99/mo price, `client_reference_id` ties it to the logged-in user, redirects to Stripe. `POST /billing/webhook` verifies the Stripe signature (never trust an unverified body) and handles exactly `checkout.session.completed`/`customer.subscription.updated`/`customer.subscription.deleted`, writing `subscription_status`/`stripe_customer_id`/`stripe_subscription_id`/`subscription_current_period_end` onto `db.User` — the only writer of those fields. **Real bug the test suite caught before shipping**: `event["data"]["object"]` from `stripe.Webhook.construct_event()` is a `StripeObject`, not a plain dict — supports `obj["key"]` but not `obj.get("key")`, which every handler used; would have thrown on the very first real webhook delivery. Fixed via `.to_dict()` (needed on the retrieved `Subscription` object too, same issue) |
 | `alembic/`, `alembic.ini` | DB migrations (async template). One migration so far: creates the `user` table. `alembic/env.py` reads `DATABASE_URL` from the environment (same source of truth `db.py` uses) rather than a hardcoded `alembic.ini` URL |
 | `docker-entrypoint.sh` | Container startup: `alembic upgrade head` then `exec python dashboard.py` — migrations run automatically on every deploy, so "database" is part of the same auto-deploy as "backend"/"web" (Stage 5's CD goal). Reads `PORT` (Railway-injected) and `DEFAULT_SELL` (UI prefill only) from env |
-| `static/login.html`, `static/register.html`, `static/subscribe.html`, `static/profile.html` | Plain HTML/JS forms/pages hitting FastAPI-Users' `/auth/login` (form-urlencoded), `/auth/register` (JSON), and `billing.py`'s `/billing/checkout`/`/billing/portal` routes — same no-build-step convention as `dashboard.html`. `profile.html` shows subscription status (with an admin-access badge for superusers) and links to the Stripe customer portal for self-service cancel/manage. `subscribe.html` has a real explainer pitch (headline, 3-step "how it works", feature list, funding note) as of 2026-07-23, replacing the earlier bare feature list. All four redesigned 2026-07-23 alongside `dashboard.html` (see "UI design pass" below) |
-| `static/log.html` | **Public "Auction house API log" page, added 2026-07-23 (human ask, explicitly public — see below).** Realm picker (from `GET /api/log/realms`) + a reverse-chronological list of every timestamp `GET /api/log?sell={cr}` reports the collector actually received *new* data for that realm — no auth, no account. Same visual system as the other pages for now (predates the planned full redesign) |
+| `static/login.html`, `static/register.html`, `static/subscribe.html`, `static/profile.html` | Plain HTML/JS forms/pages hitting FastAPI-Users' `/auth/login` (form-urlencoded), `/auth/register` (JSON), and `billing.py`'s `/billing/checkout`/`/billing/portal` routes — same no-build-step convention as `dashboard.html`. `profile.html` shows subscription status (with an admin-access badge for superusers) and links to the Stripe customer portal for self-service cancel/manage. `subscribe.html` has a real explainer pitch (headline, 3-step "how it works", feature list, funding note) as of 2026-07-23, replacing the earlier bare feature list. **Rebuilt 2026-07-24 to the light "assay ledger" tokens** (same palette/dark-mode toggle as `dashboard.html`, see "Full visual rethink" below) — `login.html`/`register.html` are a minimal centered card with the seal/wordmark above and no nav; `profile.html` gained a full `.topbar` (Dashboard/Log links) replacing its old single back-link. JS/functional logic unchanged from the first pass |
+| `static/log.html` | **Public "Auction house API log" page, added 2026-07-23 (human ask, explicitly public — see below).** Realm picker (from `GET /api/log/realms`) + a reverse-chronological list of every timestamp `GET /api/log?sell={cr}` reports the collector actually received *new* data for that realm — no auth, no account. **Rebuilt 2026-07-24** to the same light "assay ledger" tokens/dark-mode toggle as `dashboard.html`, with a full `.topbar` (Dashboard link) replacing the old back-link — see "Full visual rethink" below |
 | `requirements.txt` | `requests`, `pyarrow`, `duckdb`, `fastapi`, `uvicorn`, `httpx`, `fastapi-users[sqlalchemy]`, `sqlalchemy[asyncio]`, `asyncpg`, `aiosqlite` (tests only), `alembic`, `stripe`, `pytest-asyncio` (Python 3.10+) |
 | `.env.example` | `BLIZZ_CLIENT_ID`, `BLIZZ_CLIENT_SECRET`, `BLIZZ_REGION=eu`, `STRIPE_PUBLISHABLE_KEY`/`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`/`STRIPE_PRICE_ID`/`STRIPE_PRODUCT_ID`, `SECRET`, `COOKIE_SECURE`, `DATABASE_URL` |
 
@@ -116,10 +116,13 @@ that risk indefinitely unless the human decides to run the verification
 protocol later.
 
 Not yet present: sell/scan realm config split (manual `--exclude`/`--items`
-flags stand in for now), retention, CI, `VALIDATION.md`. Whether Phase 3 still
-needs a per-item transferability flag at all is open (see the 2026-07-23
-correction above — AH listings are guaranteed unsoulbound, so the original
-"Warbound vs BoP" framing for that flag was wrong).
+flags stand in for now), retention, CI, `VALIDATION.md`. The per-item
+transferability flag question is now **resolved, not open** (human decision,
+2026-07-24): this tool only ever surfaces items that are actually listed on
+the AH, and an AH listing is unconditionally unsoulbound — nothing outside
+the AH is in scope for a snipe check to begin with, so there's no case where
+a per-item Warbound/BoP/Unique-equipped flag could change a recommendation.
+No flag will be built for this.
 
 **Second process deviation (human decision, 2026-07-23):** `dashboard.py` was
 pulled forward from Phase 5 (web dashboard) to now, ahead of Phase 3
@@ -232,11 +235,26 @@ served via a local static file server, screenshotted via the
 `claude-in-chrome` skill, never committed) confirmed the seal, dots, coin
 icons, and gold accent all render correctly together before deploying.
 
-**Still not started**: `login.html`, `register.html`, `subscribe.html`,
-`profile.html`, `log.html` all still run the old dark "Undermine cartel"
-palette — only `dashboard.html` has been redesigned so far, deliberately
-(human wanted to see one page live before committing to all six). Do not
-touch the other five until the human reacts to the live dashboard.
+**Rollout to the other 5 pages — done 2026-07-24.** `login.html`,
+`register.html`, `subscribe.html`, `profile.html`, `log.html` all now run the
+same light "assay ledger" tokens as `dashboard.html`, including the dark-mode
+toggle (theme choice is `localStorage`-backed and shared across all six pages
+via the same pre-paint `<head>` script — switching theme on one page carries
+across navigation). `login.html`/`register.html` use a minimal centered
+layout (brand/seal above the form card, theme toggle fixed top-right, no nav
+— there's nothing to navigate to before authenticating). `subscribe.html`
+keeps its pitch/steps/price-card structure, restyled; the price figure now
+uses `--bullion` instead of a separate gold token, matching the "gold is the
+one signature accent" thesis. `profile.html` and `log.html` gained a full
+`.topbar` matching `dashboard.html`'s (brand/seal, theme toggle, nav links)
+instead of their old single "&larr; Back to dashboard" text link. All five
+pages' JS/functional logic was preserved exactly — same element ids, same
+fetch calls, same redirects — only markup/CSS changed, continuing the
+convention from the first redesign pass. Verified via the same throwaway
+local-preview + `claude-in-chrome` screenshot technique (light and dark, all
+five pages) before considering this done; no backend touched, `pytest -q`
+stayed green (154 passing) throughout since none of these files are covered
+by the test suite (structure isn't asserted on, only the API layer is).
 
 **Dark mode toggle, added 2026-07-23 (same evening).** The light "assay
 ledger" palette above is the default, but a `#theme-toggle` button in the
@@ -540,17 +558,21 @@ state). The Warbands market structure (see section above) drives this phase:
 - ~~First snipe-check CLI~~ **done** (`snipe_check.py`): joins scan-realm
   listings against sell-realm sold-price percentiles + sales/day; flags
   listings below a discount threshold net of the 5% AH cut. This is the
-  end-to-end "validated snipe" proof, with the caveat that it can't yet tell
-  Warbound/BoE items from BoP ones (needs Phase 3's transferability flag) —
-  `--items`/`--items-file` are the manual-curation workaround until then.
+  end-to-end "validated snipe" proof. (Originally noted here as unable to
+  tell Warbound/BoE items from BoP ones — that concern turned out to be moot,
+  see the "Transferability flag, resolved" note below: every item this flags
+  is by definition AH-listed, hence unconditionally unsoulbound, so no such
+  distinction was ever needed.)
 - Hardening carried over: retention on sell-realm snapshots (compact >7 days
   into daily per-item aggregates before deleting), systemd unit / Windows Task
   Scheduler examples in README, `--since` flag for incremental diffing if event
   rebuilds get slow.
 
 ### Phase 2 — commodities feed
-Region-wide collector + quantity-delta inference (see API facts). Separate
-schema; do not force gear and commodities into one table.
+**Out of scope (human decision, 2026-07-24) — not being pursued.** Region-wide
+collector + quantity-delta inference (see API facts) was the original plan;
+separate schema, don't force gear and commodities into one table if this is
+ever revisited, but there's no current intent to build it.
 
 ### Phase 3 — appearance layer
 itemId → appearanceId via wago.tools DB2 exports (`ItemModifiedAppearance`),
@@ -568,14 +590,18 @@ rarity proxy, not a real farmability check), and region-wide AH scarcity
 *of currently listed appearances* (source_count is a static catalog-level
 rarity signal, not "how many are for sale on the AH right now" — that would
 need joining the appearance cache against live listings data, not built yet).
-**Transferability flag, reconsidered (2026-07-23):** the original plan was a
-per-item "warband transferability flag" (warbound vs BoP). That framing was
-wrong — AH listings are guaranteed unsoulbound (BoP can't be listed), so
-warband-bank transfer isn't item-dependent; the only real risk is equipping/
-using the item before moving it, which is a *usage* caveat, not a per-item
-data flag. Decide at Phase 3 start whether any per-item flag is still needed
-(e.g. for genuine edge cases like Unique-equipped or quest-bound items) or
-whether the CAVEAT text alone covers it.
+**Transferability flag, resolved — no flag will be built (2026-07-23,
+finalized 2026-07-24):** the original plan was a per-item "warband
+transferability flag" (warbound vs BoP). That framing was wrong — AH
+listings are guaranteed unsoulbound (BoP can't be listed), so warband-bank
+transfer isn't item-dependent; the only real risk is equipping/using the
+item before moving it, which is a *usage* caveat, not a per-item data flag.
+2026-07-24 human decision closes this for good, not just for now: since
+every item this tool ever surfaces is, by construction, something actually
+listed on the AH, "is this item Warbound or BoP" can never be a live
+question for it — there is no non-AH item in scope to need the distinction
+for. The existing CAVEAT text (equip/use before transferring locks it) is
+the only transferability guidance this product needs.
 
 ### Phase 4 — deal score + Discord alerts (first paid feature)
 Score = f(discount vs the *sell realm's* sold-price percentile net of 5% AH

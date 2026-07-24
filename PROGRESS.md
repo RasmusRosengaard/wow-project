@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-23 (evening session, part 2).
+Last updated: 2026-07-24 (redesign rollout to the other 5 pages).
 
 ## Status at a glance
 
@@ -41,19 +41,25 @@ Last updated: 2026-07-23 (evening session, part 2).
   full detail on both parts.
 
 **Not built yet**, in priority order — see "Next up" below for detail:
-1. Restricted Stripe key (still the full `sk_live_...` secret).
+1. Restricted Stripe key (still the full `sk_live_...` secret). Human-only, not scheduled.
 2. A camped-relist false-positive still slips through occasionally (separate,
    older bug from the crafted-item fragmentation fix — see "Known gaps" below).
-3. The other 5 pages (login/register/subscribe/profile/log) still run the old
-   dark theme — only `dashboard.html` has been redesigned so far.
-4. Everything past Stage 5 of the hosted pivot — see "Longer-term roadmap" at the bottom.
+
+**New this session (2026-07-24)**: the light "assay ledger" redesign (with
+dark-mode toggle) rolled out to all 5 remaining pages — `login.html`,
+`register.html`, `subscribe.html`, `profile.html`, `log.html` — matching
+`dashboard.html`. All six pages now share one visual identity. See
+`CLAUDE.md`'s "Full visual rethink" note for detail. Also: the Phase 3
+per-item transferability flag question is **closed, not just deferred** —
+human decision that no flag will ever be needed, since every item this tool
+surfaces is by definition AH-listed and therefore unconditionally
+unsoulbound (see `CLAUDE.md`'s "Transferability flag, resolved" note).
 
 ## Next up (short list, do these in roughly this order)
-1. **Restricted Stripe key** — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, not done yet — lower urgency than functionality, but real bug-radius reduction). **Human-only, asked explicitly 2026-07-23**: do not rotate/swap this live credential without the human present, even when otherwise told to keep working autonomously.
-2. Roll the new light "assay ledger" redesign out to the other 5 pages (login, register, subscribe, profile, log) now that the human has seen `dashboard.html` live — see `CLAUDE.md`'s "Full visual rethink" note for the finalized token system.
-3. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
-4. Decide whether Phase 3 still needs a per-item transferability flag (see Phase status table — the original framing for this was wrong and got corrected 2026-07-23).
-5. Phase 2 (commodities feed) — see "Longer-term roadmap".
+1. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
+2. TSM/Auctionator buylist export idea (see "Future work" below) — no design done yet.
+3. Restricted Stripe key — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, real bug-radius reduction but low urgency). **Human-only, asked explicitly 2026-07-23**: do not rotate/swap this live credential without the human present, even when otherwise told to keep working autonomously.
+4. Phase 2 (commodities feed) — explicitly out of scope per human direction 2026-07-24, not being pursued.
 
 ## Future work (ideas, not scheduled)
 
@@ -341,6 +347,51 @@ Test suite: 110 → **154 passing** over the course of the session (new:
 `tests/test_appearance.py`, `tests/test_market_key.py`, plus additions to
 `test_snipe_check.py`/`test_dashboard.py`/`test_diff.py`/`test_item_names.py`).
 
+### Session 2026-07-24: redesign rollout to the other 5 pages, transferability flag closed
+
+Picking up "Next up" item #2 from the prior handoff. Two decisions from the
+human at the start of this session, both closing open questions rather than
+deferring them further:
+- The Phase 3 "per-item transferability flag" question is **closed for
+  good, no flag will be built** — every item this tool ever surfaces is by
+  definition AH-listed, and an AH listing is unconditionally unsoulbound, so
+  there's no non-AH item in scope for a Warbound/BoP distinction to matter.
+  See `CLAUDE.md`'s "Transferability flag, resolved" note.
+- Phase 2 (commodities feed) is explicitly out of scope, not just
+  deprioritized.
+
+**Redesign rollout, done**: `login.html`, `register.html`, `subscribe.html`,
+`profile.html`, `log.html` rebuilt on the same light "assay ledger" tokens
+and dark-mode toggle as `dashboard.html` (the light `--paper`/`--card`/
+`--hairline`/`--ink`/`--bullion`/`--verified`/`--alert` palette, plus its
+`:root[data-theme="dark"]` variant and pre-paint `<head>` script). All six
+pages now read as one product instead of five old dark "Undermine cartel"
+pages next to one redesigned dashboard. Specifics:
+- `login.html`/`register.html`: minimal centered layout — brand/seal above
+  the form card, theme toggle fixed top-right, no nav (nothing to navigate
+  to pre-auth).
+- `subscribe.html`: kept its pitch/steps/price-card structure exactly,
+  restyled; the price figure now uses `--bullion` (the one signature gold
+  accent) instead of a separate token.
+- `profile.html`/`log.html`: gained a full `.topbar` matching
+  `dashboard.html`'s (brand/seal, theme toggle, nav links), replacing their
+  old single "&larr; Back to dashboard" text link.
+- All five pages' JS/functional logic preserved exactly (same element ids,
+  same fetch calls, same redirects) — only markup/CSS changed, same
+  discipline as the original `dashboard.html` redesign.
+- Theme choice is `localStorage`-backed and shared across all six pages via
+  the same pre-paint script, so switching theme on one page carries across
+  navigation to any other.
+
+**Verified** the same way the original dashboard redesign was: a throwaway
+local preview (this time all 5 files, `profile.html`/`log.html` had their
+auth-gated `init()` fetches stubbed with sample data) served via
+`python -m http.server`, screenshotted in both light and dark via the
+`claude-in-chrome` skill, checked for contrast/consistency against
+`dashboard.html` before considering it done. Never committed. No backend
+touched; `pytest -q` stayed green (154 passing) throughout — none of these
+files are covered by the test suite (only the API layer is asserted on).
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
@@ -365,10 +416,12 @@ instead (Linux binary, never touches that policy).
 |---|---|---|
 | 0 — Validate the sale-inference signal | 48h manual verification protocol | **Gated, skipped** (human decision 2026-07-20) — signal still unvalidated against real seller behavior. |
 | 1 — Cross-realm engine + hardening | Region scanner, snipe-check, orchestration | **Mostly done.** Remaining: sell/scan realm config file, `--since` incremental diff. |
-| 2 — Commodities feed | Region-wide, quantity-delta inference | Not started — separate schema from gear, don't merge. |
-| 3 — Appearance layer | ItemModifiedAppearance scarcity mapping | **Groundwork started 2026-07-23**, ahead of Phase 1's remaining hardening (deliberate skip-ahead, see `CLAUDE.md`'s process-deviation notes). Done: itemId→appearance-rarity mapping (`appearance.py`), wired into `snipe_check.py`/dashboard as a "unique transmog" filter. Not done: static-API fallback, real obtainability flags (source_count is a rarity proxy, not a farmability check — known to diverge from Wowhead's own "same model as" data on at least one item), region-wide AH scarcity *of currently listed* appearances. The originally planned "warband transferability flag" was based on a wrong assumption (BoP items can't be AH-listed at all, corrected 2026-07-23) — still open whether any per-item flag is needed. |
+| 2 — Commodities feed | Region-wide, quantity-delta inference | **Out of scope** (human decision, 2026-07-24) — not being pursued. |
+| 3 — Appearance layer | ItemModifiedAppearance scarcity mapping | **Groundwork started 2026-07-23**, ahead of Phase 1's remaining hardening (deliberate skip-ahead, see `CLAUDE.md`'s process-deviation notes). Done: itemId→appearance-rarity mapping (`appearance.py`), wired into `snipe_check.py`/dashboard as a "unique transmog" filter. Not done: static-API fallback, real obtainability flags (source_count is a rarity proxy, not a farmability check — known to diverge from Wowhead's own "same model as" data on at least one item), region-wide AH scarcity *of currently listed* appearances. The originally planned "warband transferability flag" is **closed, no flag will be built** (human decision 2026-07-24): every item this tool surfaces is by definition AH-listed, hence unconditionally unsoulbound — there's no non-AH item in scope for a Warbound/BoP distinction to ever matter. |
 | 4 — Deal score + Discord alerts | Second paid feature | Not started — blocked on Phase 3 data. |
 | 5 — Free companion addon | In-game tooltip overlay | Not started. The *web dashboard* half of this phase already shipped as part of the hosted pivot above; only the addon itself remains. |
+
+**Phase 2 (commodities feed) is explicitly out of scope** (human decision, 2026-07-24) — not being pursued, not just deprioritized.
 
 ## Known gaps / risks
 
