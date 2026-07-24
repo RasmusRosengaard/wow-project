@@ -29,7 +29,7 @@ import analyze
 import billing
 import blizz
 import snipe_check
-from auth import UserCreate, UserRead, auth_backend, current_active_user, current_subscribed_user, fastapi_users
+from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users
 from db import User
 from item_names import NameCache
 
@@ -221,6 +221,25 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
     }
 
 
+# Free tier, added 2026-07-25 (human decision): a logged-in-but-unsubscribed
+# user can now see the dashboard at all, capped to a small row budget --
+# previously current_subscribed_user hard-gated everyone below "active
+# subscription or superuser" straight to /subscribe with zero preview.
+# Superuser isn't a real subscription tier, just generous founder/admin
+# headroom. The client always requests the same generous top (dashboard.html's
+# BATCH_TOP); the server is what actually enforces the real per-tier ceiling,
+# so the frontend doesn't need to know its own tier ahead of time.
+SNIPE_TIER_CAPS = {"free": 250, "subscribed": 2000, "superuser": 5000}
+
+
+def _snipe_cap(user: User) -> int:
+    if user.is_superuser:
+        return SNIPE_TIER_CAPS["superuser"]
+    if user.subscription_status == "active":
+        return SNIPE_TIER_CAPS["subscribed"]
+    return SNIPE_TIER_CAPS["free"]
+
+
 @app.get("/api/snipes")
 def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
@@ -229,7 +248,8 @@ def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_sales: int = 2, max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
                 top: int = 50, sort: str = Query("discount"), names: bool = False,
-                user: User = Depends(current_subscribed_user)) -> dict:
+                user: User = Depends(current_active_user)) -> dict:
+    top = min(top, _snipe_cap(user))
     events_path = DATA / "events" / f"{sell}.parquet"
     if not events_path.exists():
         raise HTTPException(400, f"{events_path} not found -- run diff_snapshots.py --cr-id {sell} first")
@@ -283,7 +303,10 @@ def _realms_payload(cr_ids: list[int]) -> list[dict]:
 
 
 @app.get("/api/realms")
-def api_realms(user: User = Depends(current_subscribed_user)) -> dict:
+def api_realms(user: User = Depends(current_active_user)) -> dict:
+    # current_active_user, not current_subscribed_user -- the free tier
+    # (see /api/snipes' SNIPE_TIER_CAPS) still needs the realm picker to
+    # pick a sell realm at all, it's just capped on row count once it fetches.
     return {"realms": _realms_payload(_list_collected_realms())}
 
 
@@ -339,7 +362,8 @@ def api_log(sell: int) -> dict:
 
 
 @app.get("/api/status")
-def api_status(sell: int, user: User = Depends(current_subscribed_user)) -> dict:
+def api_status(sell: int, user: User = Depends(current_active_user)) -> dict:
+    # current_active_user -- same free-tier reasoning as /api/realms above.
     state_path = DATA / "state" / f"{sell}.json"
     last_modified = None
     if state_path.exists():

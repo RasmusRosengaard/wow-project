@@ -161,6 +161,54 @@ def test_api_snipes_returns_rows_and_caveat(data_dir, monkeypatch):
     assert body["sell_realm_slug"] == f"realm-{SELL_CR}"
 
 
+def _user(is_superuser=False, subscription_status=None):
+    return User(email="tier@example.com", hashed_password="x", is_active=True,
+               is_superuser=is_superuser, is_verified=True, subscription_status=subscription_status)
+
+
+def test_snipe_cap_by_tier():
+    """dashboard._snipe_cap(): the free tier (2026-07-25) exists so a
+    logged-in-but-unsubscribed user can preview real data, just capped much
+    lower than a paying subscriber; superuser is generous founder/admin
+    headroom, not a real subscription concept."""
+    assert dashboard._snipe_cap(_user()) == 250
+    assert dashboard._snipe_cap(_user(subscription_status="past_due")) == 250
+    assert dashboard._snipe_cap(_user(subscription_status="active")) == 2000
+    assert dashboard._snipe_cap(_user(is_superuser=True)) == 5000
+    # Superuser wins even with no/expired subscription -- matches
+    # auth.has_active_subscription's existing "is_superuser OR active" logic.
+    assert dashboard._snipe_cap(_user(is_superuser=True, subscription_status=None)) == 5000
+
+
+@pytest.mark.parametrize("is_superuser,subscription_status,expected_cap", [
+    (False, None, 250),
+    (False, "active", 2000),
+    (True, None, 5000),
+])
+def test_api_snipes_clamps_top_to_tier_cap(data_dir, monkeypatch, is_superuser, subscription_status, expected_cap):
+    """The client can request any `top` it likes (dashboard.html always asks
+    for its own BATCH_TOP ceiling) -- the server is what actually enforces
+    the real per-tier row budget, regardless of what was requested."""
+    run_diff(monkeypatch)
+    dashboard.app.dependency_overrides[auth.current_active_user] = \
+        lambda: _user(is_superuser=is_superuser, subscription_status=subscription_status)
+    try:
+        captured = {}
+        real_find_snipes = snipe_check.find_snipes
+
+        def spy(*args, **kwargs):
+            captured["top"] = kwargs.get("top")
+            return real_find_snipes(*args, **kwargs)
+        monkeypatch.setattr(dashboard.snipe_check, "find_snipes", spy)
+
+        r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                              "min_per_day": 0.1, "top": 999999})
+        assert r.status_code == 200
+        assert captured["top"] == expected_cap
+    finally:
+        dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
+
+
 def _write_single_ilvl_fixture(tmp_path, monkeypatch, bk):
     monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
     monkeypatch.setattr(analyze, "DATA", tmp_path)
@@ -434,14 +482,6 @@ def test_index_serves_html():
     assert b"AH Snipe Dashboard" in r.content
 
 
-def test_index_html_redirect_check_respects_superuser():
-    """Regression test: the frontend's own client-side redirect-to-/subscribe
-    logic must check is_superuser, not just subscription_status -- the
-    backend gate (auth.current_subscribed_user) already bypasses for
-    superusers, but a superuser was still bounced to /subscribe because this
-    check was missed when is_superuser was added (caught live, 2026-07-23)."""
-    r = client.get("/")
-    assert b"meData.is_superuser" in r.content
 
 
 def test_api_config_reports_default_sell():

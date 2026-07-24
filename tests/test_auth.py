@@ -110,24 +110,32 @@ def test_logout_revokes_access(client):
     assert client.get("/api/me").status_code == 401
 
 
-def test_dashboard_api_routes_require_auth(client):
+def test_dashboard_api_routes_require_login(client):
     """/api/snipes and /api/status are gated the same way as /api/me --
-    the security boundary is server-side, not just the frontend redirect."""
+    the security boundary is server-side, not just the frontend redirect.
+    Login alone (current_active_user) is the actual gate now -- a free tier
+    (2026-07-25 human decision) means logged-in-but-unsubscribed reaches the
+    same business logic a subscriber does, just capped on row count
+    downstream (see test_dashboard.py's _snipe_cap tests), not turned away
+    with a 402 like before."""
     UNCOLLECTED_REALM = 424242  # no data/events file -- guaranteed not to exist
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 401
     assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 401
 
     register(client)
     login(client)
-    # Logged in but not subscribed -- 402, not 401 (proves auth passed) and
-    # not 400 (proves it didn't skip straight to business logic either).
-    assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 402
-    assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 402
+    # Logged in but not subscribed -- reaches real business logic now (400
+    # for an uncollected realm), same as a subscriber would, proving login
+    # alone is sufficient to pass the gate.
+    assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
+    assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 200
 
 
 def test_dashboard_api_routes_require_active_subscription(client):
-    """Logged in AND subscribed reaches the actual business logic (400 for
-    an uncollected realm), not just past the login gate."""
+    """An active subscription still reaches the same business logic (400 for
+    an uncollected realm) the free tier does above -- what a real
+    subscription actually changes is the row cap (dashboard._snipe_cap),
+    not reachability."""
     UNCOLLECTED_REALM = 424242
     register(client)
     login(client)

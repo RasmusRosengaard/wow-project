@@ -253,7 +253,6 @@
     <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
     <label>Min sell realm low (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
     <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
-    <label>Top <input id="top" type="number" value="50"></label>
     <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
     <label class="auto-label">
       <input id="unique_appearance" type="checkbox"> Unique transmog only
@@ -326,13 +325,13 @@ let openGroups = new Set();  // group keys the user has expanded to see every li
 let currentRegion = null;
 let currentSellSlug = null;
 
-// Fetched once per batch, deliberately generous but still bounded -- without
-// SOME cap, a mature region-wide listings x sell-realm-sales join could
-// return an unbounded number of rows (every listing that merely breaks even,
-// across every scanned realm). 2000 comfortably covers this project's
-// current data volume with headroom; revisit if a sell realm's real match
-// count ever approaches it.
-const BATCH_TOP = 2000;
+// The ceiling this client ever asks for -- the server (dashboard.py's
+// SNIPE_TIER_CAPS) is what actually enforces the real per-account limit
+// (250 free / 2000 subscribed / 5000 superuser, added 2026-07-25), clamping
+// down regardless of what's requested here. Always requesting the top of
+// that range means the frontend never needs to know its own tier ahead of
+// time -- whatever comes back is already the correct, capped amount.
+const BATCH_TOP = 5000;
 
 // localStorage cache of the last-fetched batch, keyed per (sell realm, item
 // restriction) so a page refresh (or revisit) can paint instantly instead of
@@ -647,15 +646,9 @@ function renderTable() {
   const groups = buildGroups(filtered);
   groups.sort((a, b) => compareRows(a.rows[0], b.rows[0]));
 
-  // "Top" is a pure display cap now (post-filter, post-sort) -- it used to
-  // be the SQL LIMIT; the real fetch always asks for BATCH_TOP regardless.
-  const topRaw = Number($("top").value);
-  const cap = Number.isFinite(topRaw) && topRaw > 0 ? topRaw : Infinity;
-  const cappedGroups = groups.slice(0, cap);
-
   displayRows = [];
   const html = [];
-  cappedGroups.forEach(group => {
+  groups.forEach(group => {
     const best = group.rows[0];
     displayRows.push(best);
     html.push(buildRowHtml(best, displayRows.length - 1, group, false));
@@ -668,7 +661,7 @@ function renderTable() {
   });
 
   $("rows").innerHTML = html.join("");
-  $("empty").style.display = cappedGroups.length ? "none" : "block";
+  $("empty").style.display = groups.length ? "none" : "block";
   $("empty").textContent = "No snipes at these thresholds.";
 
   document.querySelectorAll("th[data-sort]").forEach(th => {
@@ -718,8 +711,9 @@ async function fetchBatch() {
   setLoading(true);
   try {
     const r = await fetch(`/api/snipes?${batchParams().toString()}`);
+    // 402 is no longer possible here -- /api/snipes only requires login now
+    // (the free tier, see dashboard.py's SNIPE_TIER_CAPS), not a subscription.
     if (r.status === 401) { window.location.href = "/login"; return; }
-    if (r.status === 402) { window.location.href = "/subscribe"; return; }
     if (!r.ok) {
       const err = await r.json().catch(() => ({detail: r.statusText}));
       cachedRows = [];
@@ -829,7 +823,7 @@ $("items").addEventListener("change", fetchBatch);
 // the user types/adjusts, not just on blur, matching the instant feel the
 // client-side sort already established.
 const LIVE_FILTER_IDS = ["min_discount_pct", "min_per_day", "min_gold", "max_gold",
-                         "min_sell_now", "top", "max_per_item"];
+                         "min_sell_now", "max_per_item"];
 LIVE_FILTER_IDS.forEach(id => $(id).addEventListener("input", () => {
   hideTooltip();
   renderTable();
@@ -908,14 +902,14 @@ async function populateRealmPicker(defaultSell) {
 }
 
 (async function init() {
+  // Login alone is the gate now (2026-07-25, free tier) -- no more
+  // redirect-to-/subscribe for a logged-in-but-unsubscribed user. The
+  // backend (dashboard.py's SNIPE_TIER_CAPS) is what actually enforces the
+  // real difference between tiers, by capping row count, not by blocking
+  // access outright.
   const me = await fetch("/api/me").catch(() => null);
   if (!me || !me.ok) {
     window.location.href = "/login";
-    return;
-  }
-  const meData = await me.json();
-  if (!meData.is_superuser && meData.subscription_status !== "active") {
-    window.location.href = "/subscribe";
     return;
   }
   let defaultSell = null;

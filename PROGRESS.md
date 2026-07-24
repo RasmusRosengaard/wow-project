@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-24 (client-side snipe filtering + item-class filter).
+Last updated: 2026-07-25 (market_key type 9 fix, free dashboard tier).
 
 ## Status at a glance
 
@@ -61,7 +61,23 @@ max-per-item, unique-transmog) re-filters an already-fetched batch instantly
 instead of round-tripping to the server on every change, plus a new 8-way
 item-class filter (weapons/armor/containers/profession/housing/battle pets/
 quest items/mounts). See "Client-side snipe filtering + item-class filter"
-below for the full design.
+below for the full design. Same day, also: the fetched batch is now cached
+in `localStorage` and the 60s auto-refresh only does the expensive query
+when Blizzard's data actually changed — see "localStorage batch cache"
+below.
+
+**New this session (2026-07-25)**: investigating a user-reported bad price
+(item 7761, Steelclaw Reaver) found `market_key()` was missing another
+undocumented modifier type (9) that fragmented matching the same way 42/44
+did — fixed, human-confirmed safe (doesn't affect transmog) before shipping.
+The same investigation exposed a deeper, still-open gap: if a sell realm's
+*entire* observed history for an item is troll/camped listings, no existing
+guard can rescue the estimate (see "Known gaps" below). Also: the dashboard
+now has a **free tier** — any logged-in account can preview real (capped)
+data instead of hitting a hard subscribe wall, with row budgets tiered by
+account (250 free / 2000 subscribed / 5000 superuser); the "Top" display-cap
+control was removed as redundant once tiering made the real budget visible
+server-side. See "Tiered batch caps + free dashboard tier" below for both.
 
 ## Next up (short list, do these in roughly this order)
 1. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
@@ -502,6 +518,74 @@ multi-select/OR'd together, as designed.)
 No backend changed this round; `pytest -q` stayed green (160 passing)
 throughout since this is a pure `dashboard.html` frontend change.
 
+### Session 2026-07-25: market_key type 9 fix, tiered batch caps, free dashboard tier
+
+New day, kicked off by a user-reported bad price on item 7761 (Steelclaw
+Reaver, Silvermoon buy realm / Draenor sell realm).
+
+**Live investigation** (via `railway ssh`, same technique as the earlier
+production bug hunts): traced item 7761's full sale/listing history.
+Draenor's sell-side data was **100% troll/camped-relist listings** — 3
+"inferred sales" and all 4 currently-live listings priced at the same
+~398,605g, regardless of a varying `m:9=NN` bonus modifier (25 through 90
+observed). Pulling every region-wide listing for the item showed the real
+range: 28,500g up to 1.7 million gold across dozens of realms — almost all
+decoy pricing, with the genuinely cheap listings sitting at the bottom.
+Human confirmed the item's actual cheap listings existed region-wide but
+under a *different* `9=` value than what was on Draenor, so it never
+matched at all — same root shape as the already-fixed 42/44 crafted-item
+fragmentation, except this item isn't crafted (level 21 Rare weapon), so
+the "crafted stat roll" explanation didn't apply. Human confirmed live
+(before shipping, not assumed) that modifier 9 doesn't affect the item's
+transmog appearance — safe to pool. `MARKET_IGNORE_MODIFIER_TYPES` extended
+to `{9, 42, 44}` in both `fetch_snapshot.py` and the `analyze.py` SQL macro
+mirror; new test vectors in `tests/test_market_key.py` using item 7761's
+real bonus strings.
+
+**Still open, not fixed this session**: even with pooling, if a sell
+realm's *entire* history for an item is troll listings (as Draenor's was
+here), there's no legitimate sell-side data to fall back to — `min_sales`
+and the current-lowest-listing cap both assume some real data exists. A
+region-wide cross-check against the buy-side listings data (already
+collected) was discussed as the principled fix; parked, not built, flagged
+in "Known gaps."
+
+**Tiered batch caps + free dashboard tier**: the item 7761 investigation
+prompted "how many snipes do we even load in" — until this session, a flat
+`BATCH_TOP` for every account alike. Human's follow-up: make it tier-based,
+and — confirmed explicitly as an intentional paywall change, not inferred —
+let a logged-in-but-unsubscribed account preview the dashboard instead of
+the previous hard `/subscribe` wall with zero preview. Shipped: 250 rows
+(free/logged-in), 2000 (active subscription), 5000 (superuser). Backend
+(`dashboard.py`): `/api/snipes`/`/api/realms`/`/api/status` switched from
+`current_subscribed_user` to `current_active_user`; `_snipe_cap(user)`
+clamps the real `top` server-side regardless of what's requested.
+`auth.current_subscribed_user` itself stays defined, just unused for now.
+Frontend (`dashboard.html`): the old subscribe-redirect gate in `init()` is
+gone; `BATCH_TOP` raised 2000→5000 (the ceiling across every tier, server
+enforces the real amount); the now-unreachable 402 handling in `fetchBatch()`
+removed as dead code.
+
+**"Top" display-cap control removed**, human's own follow-up once tiering
+made the real row budget visible server-side — with client-side sorting
+already in place, an extra "only show top N" truncation added a control
+with no remaining purpose. Removed the input, its `LIVE_FILTER_IDS` entry,
+and the capping logic in `renderTable()`.
+
+**Tests**: `test_auth.py`'s subscription-gate test updated for the new
+reachability (logged-in-unsubscribed now reaches business logic, 400 for an
+uncollected realm, instead of the old 402); `test_dashboard.py` gained pure
+unit coverage of `_snipe_cap()` for all three tiers plus a parametrized test
+spying on `snipe_check.find_snipes` to confirm the real `top` value is
+clamped regardless of what was requested. One now-obsolete test guarding
+the deleted client-side redirect logic was removed outright. `pytest -q`:
+167 passing.
+
+**Verified in a real browser**: a mocked-fetch preview simulating a
+logged-in, non-superuser, non-subscribed account confirmed it reaches the
+dashboard and renders real rows (the actual behavior change), and that the
+"Top" field and its logic are fully gone with no console errors.
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
@@ -537,7 +621,8 @@ instead (Linux binary, never touches that policy).
 
 - Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior. Partial mitigation added 2026-07-23: `snipe_check.find_snipes()`'s `min_sales` floor (default 2) stops a single unverified sample from becoming the whole sold-price percentile, after exactly that happened live (item 15138) — but two bad samples can still both be false positives, so this reduces rather than closes the risk.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.
-- The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, but the underlying meaning is still community-sourced, not official. Same caveat now applies to modifier types 42/44 (`market_key()`'s ignore-list) — inference from real data, not documented facts.
+- The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, but the underlying meaning is still community-sourced, not official. Same caveat now applies to modifier types 9/42/44 (`market_key()`'s ignore-list) — inference from real data, not documented facts (type 9 was additionally human-confirmed not to affect transmog before pooling, 2026-07-24).
+- **If a sell realm's entire observed history for an item is troll/camped listings, no existing guard can rescue the estimate** (found live 2026-07-24, item 7761/Steelclaw Reaver on Draenor: all 3 "sales" and all 4 current listings were the same ~398,605g decoy price). `min_sales` and the current-lowest-listing cap both assume *some* legitimate data exists on the sell realm to fall back to — when literally everything observed is bogus, there's nothing to fall back to. A region-wide cross-check against `data/listings/*.parquet` (already collected for the buy side) was proposed as the principled fix but not built — parked, same status as the camped-relist window bug above.
 - A camped-relist can still occasionally slip through the relist-matching window and get misclassified as `inferred_sale` (seen live on item 238014's `29=77` sub-variant, 2026-07-23 evening) — separate from, and not fixed by, the same-day crafted-item pooling fix. No mitigation yet beyond the existing `min_sales` floor.
 - `appearance.py`'s rarity signal (`source_count`) is known to diverge from Wowhead's own "same model as" data on at least one item (14042) — see "Evening session" above. No Wowhead API exists to reconcile against.
 - The tightened background-poll window (`:12-:28` past the hour, `dashboard.py`) is based on ~7 observed data points from one realm (Draenor). It's a shared, global schedule across every deep-collected realm, not learned per-realm — other realms may publish at a different offset that the window doesn't cover as tightly. Revisit with per-realm learned offsets if `/log` history across more realms shows the window is miscalibrated.
