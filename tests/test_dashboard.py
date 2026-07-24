@@ -2,12 +2,14 @@
 snipe_check.find_snipes(). Mirrors test_snipe_check.py's synthetic-pipeline
 fixture style -- real duckdb/pyarrow, no mocking, only the HTTP/JSON
 boundary is new relative to the existing test conventions."""
+import asyncio
 import sys
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import analyze
 import appearance
@@ -17,7 +19,7 @@ import dashboard
 import diff_snapshots
 import item_names
 import snipe_check
-from db import User
+from db import Base, User, get_async_session
 from fetch_snapshot import SCHEMA
 from scan_region import LISTING_SCHEMA
 
@@ -44,6 +46,39 @@ def bypass_auth():
     yield
     dashboard.app.dependency_overrides.pop(auth.current_active_user, None)
     dashboard.app.dependency_overrides.pop(auth.current_subscribed_user, None)
+
+
+@pytest.fixture(autouse=True)
+def bypass_get_async_session(tmp_path):
+    """/api/snipes now also depends on get_async_session directly (for the
+    free-tier realm lock, see dashboard._enforce_realm_lock) -- FastAPI
+    resolves every declared dependency regardless of whether a given
+    request's code path actually uses it, so even a subscribed FAKE_USER
+    request (which never reaches the lock's write branch) still needs this
+    to resolve. Without an override it falls through to the real
+    get_async_session, which requires DATABASE_URL -- absent in CI, and
+    this suite has no business touching a real Postgres anyway. Same
+    throwaway-per-test-SQLite pattern test_auth.py's `client` fixture uses,
+    just for dashboard.py's TestClient(app) module-level instance instead of
+    a per-test one."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'test_dashboard.db'}"
+    engine = create_async_engine(db_url)
+
+    async def _create_tables():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    asyncio.run(_create_tables())
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def override_get_async_session():
+        async with session_factory() as session:
+            yield session
+
+    dashboard.app.dependency_overrides[get_async_session] = override_get_async_session
+    yield
+    dashboard.app.dependency_overrides.pop(get_async_session, None)
+    asyncio.run(engine.dispose())
 
 
 @pytest.fixture(autouse=True)
