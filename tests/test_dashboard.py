@@ -73,11 +73,15 @@ def isolate_appearance_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(appearance, "CACHE_PATH", tmp_path / "appearances_test_cache.json")
 
 
-def stub_item_details(monkeypatch, name="Stub Item", quality="EPIC", level=600, icon="https://example/icon.jpg"):
+def stub_item_details(monkeypatch, name="Stub Item", quality="EPIC", level=600,
+                      icon="https://example/icon.jpg", item_class=None, item_subclass=None,
+                      inventory_type=None):
     """item_names.NameCache hits the live Blizzard API -- stub the network
     edge so names=true tests stay offline and deterministic."""
     monkeypatch.setattr(item_names, "_fetch_item_details",
-                        lambda item_id: {"name": name, "quality": quality, "level": level})
+                        lambda item_id: {"name": name, "quality": quality, "level": level,
+                                         "item_class": item_class, "item_subclass": item_subclass,
+                                         "inventory_type": inventory_type})
     monkeypatch.setattr(item_names, "_fetch_icon", lambda path: icon)
 
 
@@ -213,6 +217,41 @@ def test_api_snipes_variant_falls_back_when_ilvl_implausible(tmp_path, monkeypat
     assert row["variant"] == "5 bonuses"
     assert "ilvl" not in row["variant"]
     assert row["variant_raw"] == bk
+
+
+def test_api_snipes_carries_item_class_when_names_resolved(data_dir, monkeypatch):
+    """item_class/item_subclass back the dashboard's client-side item-class
+    filter -- must ride along on every row when names=true, same as icon/
+    quality_color."""
+    run_diff(monkeypatch)
+    stub_item_details(monkeypatch, item_class=2, item_subclass=7)  # Weapon/Sword
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "min_per_day": 0.1, "names": True})
+    row = r.json()["rows"][0]
+    assert row["item_class"] == 2
+    assert row["item_subclass"] == 7
+
+
+def test_api_snipes_flags_profession_items_for_unique_transmog_toggle(data_dir, monkeypatch):
+    """is_profession_item mirrors find_snipes()'s NON_TRANSMOG_INVENTORY_TYPES
+    check exactly, so the dashboard's client-side "Unique transmog only"
+    toggle can reproduce --max-appearance-sources' exclusion without a
+    server round trip."""
+    run_diff(monkeypatch)
+    stub_item_details(monkeypatch, inventory_type="PROFESSION_TOOL")
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "min_per_day": 0.1, "names": True})
+    row = r.json()["rows"][0]
+    assert row["is_profession_item"] is True
+
+
+def test_api_snipes_omits_item_class_without_names(data_dir, monkeypatch):
+    run_diff(monkeypatch)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3, "min_per_day": 0.1})
+    row = r.json()["rows"][0]
+    assert "item_class" not in row
+    assert "item_subclass" not in row
+    assert "is_profession_item" not in row
 
 
 def test_api_snipes_variant_falls_back_without_names_resolved(tmp_path, monkeypatch):

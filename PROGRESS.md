@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-24 (redesign rollout to the other 5 pages).
+Last updated: 2026-07-24 (client-side snipe filtering + item-class filter).
 
 ## Status at a glance
 
@@ -54,6 +54,14 @@ per-item transferability flag question is **closed, not just deferred** —
 human decision that no flag will ever be needed, since every item this tool
 surfaces is by definition AH-listed and therefore unconditionally
 unsoulbound (see `CLAUDE.md`'s "Transferability flag, resolved" note).
+
+**Also new this session**: the dashboard's filter rail is now entirely
+client-side — every threshold (discount%, sales/day, gold range, sell-now,
+max-per-item, unique-transmog) re-filters an already-fetched batch instantly
+instead of round-tripping to the server on every change, plus a new 8-way
+item-class filter (weapons/armor/containers/profession/housing/battle pets/
+quest items/mounts). See "Client-side snipe filtering + item-class filter"
+below for the full design.
 
 ## Next up (short list, do these in roughly this order)
 1. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
@@ -391,6 +399,66 @@ auth-gated `init()` fetches stubbed with sample data) served via
 `dashboard.html` before considering it done. Never committed. No backend
 touched; `pytest -q` stayed green (154 passing) throughout — none of these
 files are covered by the test suite (only the API layer is asserted on).
+
+### Session 2026-07-24, continued: client-side snipe filtering + item-class filter
+
+Same day, picking up right after the redesign rollout above. Human's ask:
+item-class filters (weapons/armor/containers/profession/housing/battle pets/
+quest items/mounts), but flagged that the filter rail's underlying
+architecture should be fixed first, since every new filter would otherwise
+inherit the same problem — changing any threshold did nothing until the user
+clicked Refresh (each click round-tripping to DuckDB), the same shape of lag
+already fixed for column sorting in the earlier "Dashboard QoL pass."
+
+**Architecture change**: `dashboard.html` now fetches one loose, generously-
+sized batch per sell realm (`fetchBatch()`, `BATCH_TOP=2000` rows, `/api/
+snipes` called with `min_discount=0`/`min_per_day=0`/no gold-or-appearance
+narrowing) instead of a tightly-thresholded top-50. Every filter-rail
+control — discount%, sales/day, gold range, sell-now, max-per-item, unique-
+transmog, and the new item-class checkboxes — now re-filters that cached
+batch entirely in the browser (`applyFilters()`/`renderTable()`), with zero
+network round-trip. Only four things still fetch: switching the sell realm,
+changing the item-id restriction, the 60s auto-refresh timer, or an explicit
+Refresh click — all of which either change the underlying SQL candidate pool
+or are an explicit "get fresh data now" request. Considered and rejected:
+literally "load all possible snipes" with no floor at all — an unbounded
+region-wide join could return tens of thousands of rows, which would make
+the page slower rather than faster; `BATCH_TOP` is a deliberate, generous-
+but-real cap instead.
+
+**Item-class filter, the actual feature ask**: 8 checkboxes backed by
+Blizzard's official (not guessed) `item_class`/`item_subclass` ids,
+confirmed live via `GET /data/wow/item-class/index` — `item_names.NameCache`
+gained `.item_class()`/`.item_subclass()` (same one-API-call-per-item cost
+as the existing name/quality/level/inventory_type fields, since they're all
+one combined fetch). Notably, **Housing (class 20) and Profession (class 19)
+already exist as real, current Blizzard item classes** — no heuristic
+guessing needed for either, confirmed by directly querying Blizzard's own
+item-class index rather than assuming.
+
+**One correctness subtlety**: making "Unique transmog only" fully
+client-side needed a new `is_profession_item` field on each row
+(`dashboard.py`), reproducing `snipe_check.find_snipes()`'s existing
+`NON_TRANSMOG_INVENTORY_TYPES` exclusion exactly (a Mining Pick can have
+`appearance_sources == 1` and still not be a real "unique transmog" in any
+meaningful sense) — verified in the browser test below that this exclusion
+still fires correctly under the new client-side path.
+
+**Verified in a real browser**: a stubbed `dashboard.html` preview with 8
+sample rows spanning every item class confirmed (a) every filter re-renders
+instantly with no loading flicker, (b) the Mounts checkbox isolates exactly
+the mount row, (c) "Unique transmog only" correctly excludes the profession-
+tool sample row despite its `appearance_sources` looking unique, and (d) the
+Refresh button's round-trip path doesn't throw (checked via the browser
+console). No backend behavior changed for existing callers — `snipe_check.py`
+CLI flags are untouched; only `dashboard.html`'s fetch strategy and three new
+always-present `names=true` response fields
+(`item_class`/`item_subclass`/`is_profession_item`).
+
+Test suite: 154 → **160 passing** (new: `NameCache.item_class()`/
+`.item_subclass()` coverage in `test_item_names.py`, plus `item_class`/
+`item_subclass`/`is_profession_item` response-shape tests in
+`test_dashboard.py`).
 
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 

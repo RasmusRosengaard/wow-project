@@ -20,11 +20,12 @@ def cache_path(tmp_path, monkeypatch):
 
 
 def stub_details(monkeypatch, name="Ornate Spyglass", quality="COMMON", level=35,
-                 inventory_type=None, calls=None):
+                 inventory_type=None, item_class=None, item_subclass=None, calls=None):
     def fake(item_id):
         if calls is not None:
             calls.append(item_id)
-        return {"name": name, "quality": quality, "level": level, "inventory_type": inventory_type}
+        return {"name": name, "quality": quality, "level": level, "inventory_type": inventory_type,
+                "item_class": item_class, "item_subclass": item_subclass}
     monkeypatch.setattr(item_names, "_fetch_item_details", fake)
 
 
@@ -100,6 +101,36 @@ def test_inventory_type_unknown_item_returns_none(cache_path, monkeypatch):
 def test_inventory_type_pet_cage_returns_none(cache_path, monkeypatch):
     nc = NameCache()
     assert nc.inventory_type(PET_ITEM) is None
+
+
+def test_item_class_resolves_and_caches(cache_path, monkeypatch):
+    calls = []
+    stub_details(monkeypatch, item_class=2, item_subclass=7, calls=calls)  # Weapon/Sword
+    nc = NameCache()
+    assert nc.item_class(19019) == 2
+    assert nc.item_subclass(19019) == 7
+    assert nc.item_class(19019) == 2
+    assert calls == [19019]  # second call served from cache, not refetched
+
+
+def test_item_class_unknown_item_returns_none(cache_path, monkeypatch):
+    monkeypatch.setattr(item_names, "_fetch_item_details", lambda item_id: None)
+    nc = NameCache()
+    assert nc.item_class(999999) is None
+    assert nc.item_subclass(999999) is None
+
+
+def test_backfills_item_class_for_pre_existing_name_only_cache(cache_path, monkeypatch):
+    """Same backfill guarantee as inventory_type -- a cache file predating
+    item_class support must still resolve it on demand."""
+    cache_path.write_text(json.dumps({"items": {"19019": "Thunderfury"}, "pets": {}}))
+    calls = []
+    stub_details(monkeypatch, name="Thunderfury", item_class=2, item_subclass=7, calls=calls)
+    nc = NameCache()
+    assert nc.get(19019) == "Thunderfury"  # already cached, no fetch needed for this alone
+    assert nc.item_class(19019) == 2  # triggers the backfill fetch
+    assert nc.item_subclass(19019) == 7  # already backfilled by the item_class() call
+    assert calls == [19019]
 
 
 def test_base_level_resolves_and_caches(cache_path, monkeypatch):

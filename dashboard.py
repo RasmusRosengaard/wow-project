@@ -188,6 +188,22 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         out["name"] = names.get(r["item_id"], r["pet_species_id"])
         out["icon"] = names.icon(r["item_id"], r["pet_species_id"])
         out["quality_color"] = names.quality_color(r["item_id"], r["pet_species_id"], r["pet_quality_id"])
+        # Official Blizzard item_class/item_subclass ids (see item_names.py),
+        # not the appearance_sources/max_appearance_sources filter above --
+        # this backs the dashboard's item-class filter (weapon/armor/
+        # container/profession/housing/battle pet/quest/mount), applied
+        # entirely client-side against the cached batch, same as discount%/
+        # gold/sell-now.
+        out["item_class"] = names.item_class(r["item_id"])
+        out["item_subclass"] = names.item_subclass(r["item_id"])
+        # Same check find_snipes()'s --max-appearance-sources uses to
+        # exclude profession tool/accessory slots from "unique transmog" --
+        # exposed here (unconditionally, not just when that filter is
+        # active) so the dashboard's client-side "Unique transmog only"
+        # toggle can reproduce it exactly with zero extra API calls: it's
+        # already fetched as a side effect of the same NameCache lookup
+        # that resolved name/icon/quality above.
+        out["is_profession_item"] = names.inventory_type(r["item_id"]) in snipe_check.NON_TRANSMOG_INVENTORY_TYPES
     return out
 
 
