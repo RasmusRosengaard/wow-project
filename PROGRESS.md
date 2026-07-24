@@ -648,6 +648,22 @@ already locked to Draenor, where the server's own generic default pointed
 at a *different* realm (Silvermoon) — confirmed the dropdown still locks to
 Draenor specifically and is genuinely disabled, not just visually greyed.
 
+**CI went red on push, fixed same-session**: `/api/snipes` now depends on
+`get_async_session` directly (for the realm lock above), so FastAPI
+resolves it on *every* request regardless of whether that request's code
+path ever reaches the write branch. `test_dashboard.py` never overrode that
+dependency the way `test_auth.py` does, so it fell through to the real
+`get_async_session`, which needs `DATABASE_URL` — unset in CI, so every
+`/api/snipes` test failed on dependency resolution alone (17 failures).
+Passed locally only by accident: `.env` happens to have `DATABASE_URL` set
+(pointing at a stopped local Postgres container), and SQLAlchemy engines
+are lazy, so nothing ever actually tried to connect since none of those
+tests exercise the write path. Fixed with the same throwaway-per-test-
+SQLite override `test_auth.py` already uses; verified by re-running the
+full suite with `DATABASE_URL` explicitly unset, matching CI exactly,
+before pushing the fix. `pytest -q`: 173 passing, confirmed green in CI
+(`aef383c`).
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project

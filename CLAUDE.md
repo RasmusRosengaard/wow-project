@@ -628,6 +628,25 @@ dropdown still locks to Draenor specifically (not just "whatever's first"),
 is genuinely `disabled`, and the hint text renders correctly, no console
 errors.
 
+**CI went red after pushing this, fixed same-session (`aef383c`)**: adding
+`session: AsyncSession = Depends(get_async_session)` to `/api/snipes` means
+FastAPI resolves that dependency on *every* request to the route,
+regardless of whether `_enforce_realm_lock` ever reaches its write branch.
+`test_dashboard.py` didn't override `get_async_session` the way
+`test_auth.py` does, so it fell through to the real one, which needs
+`DATABASE_URL` — unset in CI, 17 tests failed on dependency resolution
+alone. Passed locally purely by accident (`.env` has `DATABASE_URL` set,
+pointing at a stopped local Postgres container — SQLAlchemy engines are
+lazy, so nothing tried to actually connect since none of those tests write).
+Fixed with the same throwaway-per-test-SQLite override pattern
+`test_auth.py` already uses; this time verified by re-running the full
+suite with `DATABASE_URL` explicitly unset (`env -u DATABASE_URL pytest`)
+*before* pushing, matching CI exactly rather than trusting a local pass.
+**Lesson for next time a route gains a new dependency**: check whether
+every test file hitting that route overrides it, don't assume a local green
+run means CI will agree — a locally-configured `.env` can mask exactly this
+class of gap.
+
 ### Hosted deployment (Railway)
 
 **Live at `https://wow-project-production.up.railway.app`.** Project
