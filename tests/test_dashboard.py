@@ -311,6 +311,26 @@ def test_api_snipes_variant_falls_back_when_ilvl_implausible(tmp_path, monkeypat
     assert row["variant_raw"] == bk
 
 
+def test_api_snipes_variant_falls_back_when_ilvl_within_ratio_but_absurd(tmp_path, monkeypatch):
+    """Reproduces a second, different bug (caught live 2026-07-25): item
+    237468 (Nightfall Executioner's Girdle, a modern raid item, base 610)
+    showed "ilvl 3031" -- INSIDE the 5x ratio (610*5=3050) but obviously not
+    a real item level (every live listing for that item carried modifier 28
+    set to 3031 or 2462, nothing else, suggesting it isn't ilvl at all for
+    this item). The ratio check alone isn't tight enough for high-base-level
+    items; ILVL_ABSOLUTE_MAX must also reject this."""
+    bk = "b:1504,6652,10844,12265,12921|m:28=3031"
+    _write_single_ilvl_fixture(tmp_path, monkeypatch, bk)
+    stub_item_details(monkeypatch, level=610)
+
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "min_per_day": 0.1, "names": True})
+    row = r.json()["rows"][0]
+    assert row["variant"] == "5 bonuses"
+    assert "ilvl" not in row["variant"]
+    assert row["variant_raw"] == bk
+
+
 def test_api_snipes_carries_item_class_when_names_resolved(data_dir, monkeypatch):
     """item_class/item_subclass back the dashboard's client-side item-class
     filter -- must ride along on every row when names=true, same as icon/

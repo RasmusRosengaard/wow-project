@@ -691,6 +691,20 @@ scoped to pages that touch money/account state, not every page. Verified
 all four pages in a real browser (a mocked `/api/me` for `profile.html`,
 since it's auth-gated) before shipping.
 
+**Second ilvl bug caught live, same day**: human reported "ilvl 3031" on a
+real snipe (item 237468, Nightfall Executioner's Girdle). Traced live: base
+level 610, so 3031 sits inside the existing 5x ratio guard (3050) added for
+a different case (a classic item claiming ilvl 1112 vs base ~34) — the
+ratio check alone wasn't tight enough for a high-base-level item. Every
+live listing for this item carried modifier 28 set to only 3031 or 2462,
+never near the real ~610 base, suggesting that modifier isn't ilvl at all
+for this item's itemization. Fixed with a new `ILVL_ABSOLUTE_MAX = 1000` in
+`dashboard.py`, ANDed with the existing ratio check — real WoW item levels
+have never approached four digits, so this catches implausible claims on
+high-base-level items the ratio check missed, while the ratio check still
+covers low-base-level items an absolute cap alone wouldn't catch. New
+regression test using this item's real numbers. `pytest -q`: 174 passing.
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project

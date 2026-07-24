@@ -703,6 +703,32 @@ inside it, which would have placed it beside the profile card instead of
 below it — caught before shipping by checking the actual CSS rather than
 assuming block-level stacking.
 
+### Second ilvl-plausibility bug: absolute ceiling added (2026-07-25)
+
+Human reported a wrong-looking ilvl on a real snipe: item 237468
+(Nightfall Executioner's Girdle) showed "ilvl 3031". Traced live: base
+catalog level is 610, and 3031 sits *inside* the existing
+`ILVL_PLAUSIBILITY_MULTIPLE` (5x → 3050) — the exact ratio-based guard
+added 2026-07-23 for a different case (a classic item claiming "ilvl 1112"
+against a base of ~34) didn't catch this one, since the ratio here (~5x)
+just barely stayed under the threshold. Checking every live listing for
+this item found *only two* modifier-28 values ever appear (3031, 2462),
+never anything close to the real ~610 base — strong evidence type 28 isn't
+encoding item level at all for this item's itemization, not just a loosely
+-scaled approximation of it.
+
+**Fix**: `dashboard.py` gained `ILVL_ABSOLUTE_MAX = 1000`, ANDed with the
+existing ratio check in `_variant_label()` — both must pass for a claimed
+ilvl to display. Real WoW item levels have never approached four digits
+across the game's history, so 1000 is deliberately generous headroom for
+future content, not a tightly-fitted bound; it exists specifically to catch
+implausible claims on *high*-base-level items, where the ratio check alone
+isn't tight enough (the original ratio check remains the guard for *low*-
+base-level items, where even a moderate absolute value can be nonsense —
+neither check alone covers both failure modes). New regression test
+mirroring the existing ilvl-1112 test, using this item's real numbers.
+`pytest -q`: 174 passing.
+
 ### Hosted deployment (Railway)
 
 **Live at `https://wow-project-production.up.railway.app`.** Project
