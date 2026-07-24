@@ -174,6 +174,14 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         "item_id": r["item_id"],
         "variant": variant,
         "variant_raw": r["bonus_key"] or None,
+        # The coarser pooled key snipe_check.find_snipes() already matched/
+        # priced this row against (see its docstring) -- dashboard.html
+        # groups table rows by this instead of variant_raw, since real
+        # listings across different realms often share a market_key (and,
+        # provably, the same sell price) without sharing an exact bonus_key.
+        # Empty for pets, same as bonus_key -- doesn't change the existing
+        # (separate, not addressed here) pet-species grouping behavior.
+        "market_key": r["market_key"],
         "buy_g": r["buy_g"],
         "sell_p_g": r["sell_p_g"],
         "sell_now_g": r["sell_now_g"],

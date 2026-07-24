@@ -161,6 +161,15 @@ def test_api_snipes_returns_rows_and_caveat(data_dir, monkeypatch):
     assert body["sell_realm_slug"] == f"realm-{SELL_CR}"
 
 
+def test_api_snipes_rows_carry_market_key_without_names(data_dir, monkeypatch):
+    """market_key must ride along even without names=true -- it's what
+    dashboard.html groups rows by, unrelated to the names/icon/quality
+    resolution names=true gates."""
+    run_diff(monkeypatch)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3, "min_per_day": 0.1})
+    assert "market_key" in r.json()["rows"][0]
+
+
 def _user(is_superuser=False, subscription_status=None):
     return User(email="tier@example.com", hashed_password="x", is_active=True,
                is_superuser=is_superuser, is_verified=True, subscription_status=subscription_status)

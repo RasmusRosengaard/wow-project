@@ -14,7 +14,7 @@ import appearance
 import diff_snapshots
 import item_names
 import snipe_check
-from fetch_snapshot import SCHEMA
+from fetch_snapshot import SCHEMA, market_key
 from scan_region import LISTING_SCHEMA
 
 SELL_CR = 9999
@@ -128,6 +128,20 @@ def test_find_snipes_flags_cheap_listing_and_excludes_others(data_dir, monkeypat
     assert r["buy_g"] == pytest.approx(1.0)      # 10_000 copper = 1g
     assert r["sell_p_g"] == pytest.approx(2.05)  # p25 of [20_000, 22_000] = 20_500 copper
     assert r["discount_pct"] > 30
+
+
+def test_find_snipes_rows_carry_market_key(data_dir, monkeypatch):
+    """market_key (added 2026-07-24, previously computed for the join but
+    excluded from the output) is what dashboard.html now groups rows by
+    instead of the exact bonus_key -- real listings across different realms
+    often share a market_key (same price) without sharing an exact
+    bonus_key (per-instance modifiers), so the frontend needs this to
+    collapse them into one group instead of splitting an already-identically
+    -priced market into separate rows."""
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1)
+    assert rows[0]["market_key"] == market_key(rows[0]["bonus_key"] or "")
 
 
 def test_find_snipes_does_not_conflate_pet_species(tmp_path, monkeypatch):

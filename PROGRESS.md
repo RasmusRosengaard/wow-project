@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-25 (market_key type 9 fix, free dashboard tier).
+Last updated: 2026-07-25 (market_key type 9 fix, free dashboard tier, table grouping fix).
 
 ## Status at a glance
 
@@ -585,6 +585,19 @@ the deleted client-side redirect logic was removed outright. `pytest -q`:
 logged-in, non-superuser, non-subscribed account confirmed it reaches the
 dashboard and renders real rows (the actual behavior change), and that the
 "Top" field and its logic are fully gone with no console errors.
+
+**Same day, one more fix**: a user screenshot showed 8 separate table rows
+for one item across 8 realms, all with byte-identical Sell p25/Sell realm
+low numbers — the backend already knew these were one market
+(`market_key()`), but `dashboard.html`'s row-grouping used the exact
+`bonus_key` instead, which differs per listing instance even when the
+market is the same. `market_key` was being computed for the join but
+explicitly excluded from `find_snipes()`'s SQL output — stopped excluding
+it, threaded it through `dashboard.py`'s response unconditionally, switched
+`groupKey()` to use it. Verified live with a mocked preview reproducing the
+exact reported shape (3 realms, identical sell-side numbers, different
+exact bonus strings) — now correctly collapses into one expandable group.
+`pytest -q`: 169 passing.
 
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 

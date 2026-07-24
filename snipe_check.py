@@ -153,7 +153,16 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     isn't worth the trip regardless of discount%. A row with no current
     listing on the sell realm (cheapest_now IS NULL) is excluded when this
     is set, same reasoning as max_appearance_sources: can't prove it clears
-    a floor that isn't known."""
+    a floor that isn't known.
+
+    Each returned row now also carries `market_key` (added 2026-07-24,
+    previously computed for the join/matching but excluded from the output).
+    dashboard.html groups rows by this instead of the exact `bonus_key` --
+    real listings across different realms often share one market_key (same
+    price, same tradeable item) but never share an exact bonus_key (per-
+    instance modifiers), so grouping by the exact string was splitting one
+    genuinely-collapsible market into several separate table rows even
+    though the price shown for each was already identical."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -247,7 +256,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             ) AS item_rank
             FROM matches
         )
-        SELECT * EXCLUDE (item_rank, market_key)
+        SELECT * EXCLUDE (item_rank)
         FROM capped
         {f"WHERE item_rank <= {int(max_per_item)}" if max_per_item is not None else ""}
         ORDER BY {SORT_COLUMNS[sort]}

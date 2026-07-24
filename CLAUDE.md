@@ -443,6 +443,41 @@ message — "only one togglable at a time" — was explicitly retracted by the
 human before being acted on; the OR-together multi-select behavior described
 above is unchanged and correct as designed.)
 
+### Table grouping now matches backend pricing (added 2026-07-25)
+
+Caught from a real user screenshot: 8 separate top-level table rows for one
+item ("Dawnforged Edge"), one per buy realm, all with byte-identical Sell
+p25/Sell realm low numbers — proof the backend already priced them as one
+market, but the table wasn't showing them as one. Root cause:
+`snipe_check.find_snipes()` already matches/prices rows by `market_key`
+(the coarser, pooled key from the 42/44/9 fixes above), but the SQL
+explicitly excluded that column from the output (`SELECT * EXCLUDE
+(item_rank, market_key)`), and `dashboard.html`'s `groupKey()` grouped by
+the exact `variant_raw`/`bonus_key` instead. Two real listings on different
+realms routinely share a `market_key` (and, provably, the same sell price)
+without ever sharing an exact `bonus_key` (per-instance modifiers) — so
+grouping by the exact string was splitting an already-identically-priced
+market into separate rows.
+
+**Fix**: stopped excluding `market_key` from `find_snipes()`'s output;
+`dashboard.py`'s `_row_to_json()` now includes it unconditionally (not
+gated behind `names=true`, unlike `item_class`/`item_subclass` — it's not a
+display nicety, it's the field grouping structurally depends on);
+`dashboard.html`'s `groupKey()` groups by `market_key` (falling back to
+`variant_raw` only if it's ever missing). The "Variant" column and tooltip
+are unaffected — they still show the precise per-listing bonus string,
+only the grouping changed. Pet rows are unaffected by this change either
+way (market_key is empty for pets, same as bonus_key was — the existing,
+separate, not-addressed-here pet-species grouping caveat is unchanged, not
+made worse).
+
+**Verified in a real browser**: a mocked preview reproducing the exact
+reported shape (one item, 3 realms, identical sell-side numbers, different
+exact bonus strings) confirmed the 3 rows now collapse into one group with
+a working expand toggle, sorted best-discount-first, no console errors.
+`pytest -q`: 169 passing (new: `find_snipes()` row carries `market_key`,
+`/api/snipes` includes it even without `names=true`).
+
 ### Tiered batch caps + free dashboard tier (added 2026-07-25)
 
 Same day, immediately after the item 7761 investigation above (which is what
