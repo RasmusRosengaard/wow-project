@@ -301,14 +301,28 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
         raise HTTPException(400, f"sort must be one of {sorted(snipe_check.SORT_COLUMNS)}")
 
     item_ids = snipe_check.parse_items(items, None)
-    con = analyze.connect(sell)
-    rows = snipe_check.find_snipes(con, sell, items=item_ids, min_discount=min_discount,
-                                   min_per_day=min_per_day, sell_percentile=sell_percentile,
-                                   min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
-                                   min_sales=min_sales,
-                                   max_appearance_sources=max_appearance_sources,
-                                   max_per_item=max_per_item,
-                                   top=top, sort=sort)
+
+    def _run_query() -> list:
+        con = analyze.connect(sell)
+        return snipe_check.find_snipes(con, sell, items=item_ids, min_discount=min_discount,
+                                       min_per_day=min_per_day, sell_percentile=sell_percentile,
+                                       min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
+                                       min_sales=min_sales,
+                                       max_appearance_sources=max_appearance_sources,
+                                       max_per_item=max_per_item,
+                                       top=top, sort=sort)
+
+    # find_snipes() can now make blocking Blizzard API calls mid-query
+    # (_populate_base_levels(), added 2026-07-25 for type-28 ilvl pooling --
+    # see snipe_check.py) on top of its own DuckDB work. Both are
+    # synchronous/blocking; running them directly in this async route body
+    # would freeze the *entire* single-process server for every other
+    # request (including /api/status) for as long as this one call takes --
+    # confirmed live 2026-07-25 as a real outage after a fresh deploy hit a
+    # cold NameCache and had to resolve many never-before-seen items
+    # sequentially. to_thread() keeps the rest of the app responsive while
+    # this one request does its (possibly slow, first-time) work.
+    rows = await asyncio.to_thread(_run_query)
     name_cache = NameCache() if names else None
     out_rows = [_row_to_json(r, name_cache) for r in rows]
     if name_cache is not None:
