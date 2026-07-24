@@ -167,3 +167,49 @@ def test_superuser_bypasses_subscription_check(client):
     assert me["subscription_status"] is None  # confirms this isn't just testing an active sub
 
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
+
+
+def test_free_tier_locks_to_first_sell_realm(client):
+    """Free tier (2026-07-25): locks to whichever sell realm /api/snipes is
+    first queried with, to bound how many distinct expensive queries a
+    non-paying account can generate. Real DB persistence, unlike
+    test_dashboard.py's dependency-override tests -- this exercises the
+    actual write via dashboard._enforce_realm_lock. Neither realm needs to
+    be collected -- the lock check runs before the "is this realm
+    collected" business logic, so an uncollected realm still returns 400
+    (not 403) on a permitted request."""
+    REALM_A, REALM_B = 111111, 222222
+    register(client)
+    login(client)
+
+    r = client.get("/api/snipes", params={"sell": REALM_A})
+    assert r.status_code == 400  # uncollected, but past the lock -- proves it was set
+    assert client.get("/api/me").json()["locked_sell_realm"] == REALM_A
+
+    r = client.get("/api/snipes", params={"sell": REALM_B})
+    assert r.status_code == 403
+    assert "locked" in r.json()["detail"].lower()
+
+    # The locked realm itself is still always reachable.
+    assert client.get("/api/snipes", params={"sell": REALM_A}).status_code == 400
+
+
+def test_active_subscription_is_never_realm_locked(client):
+    REALM_A, REALM_B = 111111, 222222
+    register(client)
+    login(client)
+    asyncio.run(_activate_subscription(client.session_factory, EMAIL))
+
+    assert client.get("/api/snipes", params={"sell": REALM_A}).status_code == 400
+    assert client.get("/api/snipes", params={"sell": REALM_B}).status_code == 400
+    assert client.get("/api/me").json()["locked_sell_realm"] is None
+
+
+def test_superuser_is_never_realm_locked(client):
+    REALM_A, REALM_B = 111111, 222222
+    register(client)
+    login(client)
+    asyncio.run(_make_superuser(client.session_factory, EMAIL))
+
+    assert client.get("/api/snipes", params={"sell": REALM_A}).status_code == 400
+    assert client.get("/api/snipes", params={"sell": REALM_B}).status_code == 400

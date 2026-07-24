@@ -104,6 +104,7 @@
   button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
   .note { color: var(--text-dim); font-size: 0.75rem; }
+  .note a { color: var(--bullion); display: block; margin-top: 0.3rem; }
   .fund { color: var(--text-dim); font-size: 0.8rem; text-align: center; line-height: 1.5; }
   .fund b { color: var(--bullion); }
   .nav { text-align: center; font-size: 0.8rem; }
@@ -136,17 +137,19 @@
   <div class="card">
     <div class="price">€4.99 <span>/ month</span></div>
     <ul>
-      <li>Live, auto-refreshing snipe dashboard across every collected realm</li>
-      <li>Sold-price percentiles validated against real inferred sales, not fictional listing prices</li>
-      <li>Pick any collected sell realm, not just one fixed default</li>
-      <li>Filter by budget, liquidity, and discount threshold</li>
+      <li>8x more results per query — 2,000 vs. the free tier's 250</li>
+      <li>Query and switch between <b>any</b> collected sell realm, not locked to one</li>
+      <li>Everything the free tier already gets, uncapped</li>
     </ul>
     <div id="error" class="error"></div>
     <button id="subscribe">Subscribe with Stripe</button>
-    <div class="note">Redirects to Stripe's secure checkout. Cancel anytime from your profile page.</div>
+    <div class="note">Redirects to Stripe's secure checkout. Cancel anytime from your profile page.
+      <a href="/pricing">See the full free vs. subscriber comparison &rarr;</a></div>
   </div>
 
-  <div class="fund">Your subscription is what pays for the data collection itself — <b>funding more realms</b> means more validated snipes for everyone, not just a bigger bill.</div>
+  <div class="fund">Your subscription is what pays for the hosting and data collection this
+    product runs on — <b>funding more realms</b> means more validated snipes for everyone, and
+    room to build more advanced snipe-search features in the future, not just a bigger bill.</div>
 
   <div class="nav"><a href="/">&larr; Back to dashboard</a></div>
 </div>

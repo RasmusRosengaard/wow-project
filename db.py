@@ -14,7 +14,7 @@ from datetime import datetime
 
 from fastapi import Depends
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
-from sqlalchemy import DateTime, String
+from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -33,6 +33,13 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     subscription_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     subscription_current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Free tier (2026-07-25): a non-subscribed account is locked to the
+    # first sell realm it ever queries via /api/snipes, to bound the number
+    # of distinct expensive DuckDB queries a free account can generate --
+    # written once by dashboard.py's api_snipes() on first use, never by
+    # client input directly. NULL until a free-tier account's first query;
+    # never enforced for an active subscription or superuser.
+    locked_sell_realm: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 def _database_url() -> str:

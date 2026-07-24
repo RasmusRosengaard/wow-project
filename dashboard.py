@@ -24,13 +24,14 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import analyze
 import billing
 import blizz
 import snipe_check
-from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users
-from db import User
+from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users, has_active_subscription
+from db import User, get_async_session
 from item_names import NameCache
 
 ROOT = Path(__file__).resolve().parent
@@ -226,6 +227,12 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
         ),
         "has_stripe_customer": user.stripe_customer_id is not None,
         "is_superuser": user.is_superuser,
+        # Free tier only -- None for a subscriber/superuser (never enforced
+        # for them) and for a free account that hasn't queried /api/snipes
+        # yet. dashboard.html uses this to pre-select and lock the realm
+        # dropdown before the user can even attempt a request that would
+        # 403, rather than letting them find out by trying.
+        "locked_sell_realm": user.locked_sell_realm,
     }
 
 
@@ -248,16 +255,38 @@ def _snipe_cap(user: User) -> int:
     return SNIPE_TIER_CAPS["free"]
 
 
+async def _enforce_realm_lock(user: User, sell: int, session: AsyncSession) -> None:
+    """Free tier only (SNIPE_TIER_CAPS) -- to bound how many distinct
+    expensive DuckDB queries a non-paying account can generate, it's locked
+    to the first sell realm it ever queries via /api/snipes, written once on
+    first use. A subscriber or superuser is never restricted -- checked via
+    has_active_subscription so this stays in sync with every other
+    subscription check in the app rather than re-deriving the same logic."""
+    if has_active_subscription(user):
+        return
+    if user.locked_sell_realm is None:
+        user.locked_sell_realm = sell
+        await session.commit()
+    elif user.locked_sell_realm != sell:
+        raise HTTPException(
+            403,
+            f"Free tier is locked to sell realm {user.locked_sell_realm} -- "
+            "subscribe to query any realm",
+        )
+
+
 @app.get("/api/snipes")
-def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
+async def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
                 min_sell_now: float | None = None,
                 min_sales: int = 2, max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
                 top: int = 50, sort: str = Query("discount"), names: bool = False,
-                user: User = Depends(current_active_user)) -> dict:
+                user: User = Depends(current_active_user),
+                session: AsyncSession = Depends(get_async_session)) -> dict:
     top = min(top, _snipe_cap(user))
+    await _enforce_realm_lock(user, sell, session)
     events_path = DATA / "events" / f"{sell}.parquet"
     if not events_path.exists():
         raise HTTPException(400, f"{events_path} not found -- run diff_snapshots.py --cr-id {sell} first")
@@ -412,6 +441,13 @@ def register_page() -> FileResponse:
 @app.get("/subscribe")
 def subscribe_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "subscribe.html")
+
+
+@app.get("/pricing")
+def pricing_page() -> FileResponse:
+    """Deliberately public, no auth check (like /log) -- a pricing page a
+    visitor can't see before signing up defeats its own purpose."""
+    return FileResponse(ROOT / "static" / "pricing.html")
 
 
 @app.get("/profile")

@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-25 (market_key type 9 fix, free dashboard tier, table grouping fix).
+Last updated: 2026-07-25 (free-tier single-realm lock + /pricing page).
 
 ## Status at a glance
 
@@ -78,6 +78,12 @@ data instead of hitting a hard subscribe wall, with row budgets tiered by
 account (250 free / 2000 subscribed / 5000 superuser); the "Top" display-cap
 control was removed as redundant once tiering made the real budget visible
 server-side. See "Tiered batch caps + free dashboard tier" below for both.
+Same day, also: dashboard table rows now group by the pooled `market_key`
+instead of the exact bonus string (fixes a real case of one market showing
+as several separate rows); a **free-tier account is now locked to one sell
+realm** (bounds real query cost) with a new public **`/pricing`** page
+explaining free vs. subscriber; `subscribe.html`'s copy was rewritten to
+match. See "Free-tier single-realm lock + /pricing page" below.
 
 ## Next up (short list, do these in roughly this order)
 1. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
@@ -598,6 +604,49 @@ it, threaded it through `dashboard.py`'s response unconditionally, switched
 exact reported shape (3 realms, identical sell-side numbers, different
 exact bonus strings) — now correctly collapses into one expandable group.
 `pytest -q`: 169 passing.
+
+### Session 2026-07-25, continued: free-tier single-realm lock + /pricing page
+
+Same day, human's follow-up on the free tier: "to minimize requests," a
+free account should only be able to query one sell realm, not switch freely
+like a subscriber can — plus a request to explain the tiers somewhere,
+which turned into a dedicated `/pricing` page (confirmed via a quick
+clarifying question rather than assumed: new page + route, not folded into
+`/subscribe`).
+
+**Shipped**: `db.User.locked_sell_realm` (new column + migration) — a
+free-tier account gets locked to the first sell realm it ever queries via
+`/api/snipes`; querying a different realm afterward returns 403 with an
+upgrade message. Subscribers and superusers are never restricted.
+`/api/me` now reports the lock so `dashboard.html` can disable the realm
+dropdown and explain the restriction *before* the user hits a failed
+request, not after. New public `static/pricing.html` (`GET /pricing`,
+unauthenticated like `/log`) lays out Free (€0, 250 results, one locked
+realm) vs Subscriber (€4.99/mo, 2,000 results, any realm) side by side with
+an FAQ explaining the lock is about bounding real compute cost, not an
+arbitrary paywall — and that both tiers read identical, equally-fresh data.
+Linked from every page's nav. `subscribe.html`'s old feature-bullet list
+(which described things the free tier now also has) was rewritten to focus
+on what a subscription actually changes, plus the funding narrative,
+linking to `/pricing` instead of duplicating the comparison.
+
+**One real correctness subtlety**: `current_active_user`'s `user` and a
+directly-injected `AsyncSession` share the same underlying SQLAlchemy
+session within one request (FastAPI's per-request dependency caching), so
+mutating `user.locked_sell_realm` and committing persists correctly without
+an explicit `session.add()` — same pattern `billing.py`'s webhook already
+uses, confirmed rather than assumed.
+
+**Tests**: three new real-DB-persistence tests in `test_auth.py`
+(deliberately not `test_dashboard.py` — its dependency-override pattern
+bypasses the real session-backed user object the lock depends on, so it
+can't actually prove persistence) covering free/subscribed/superuser
+behavior, plus a `/pricing` reachability test. `pytest -q`: 173 passing.
+
+**Verified in a real browser**: a mocked preview with a free-tier account
+already locked to Draenor, where the server's own generic default pointed
+at a *different* realm (Silvermoon) — confirmed the dropdown still locks to
+Draenor specifically and is genuinely disabled, not just visually greyed.
 
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 

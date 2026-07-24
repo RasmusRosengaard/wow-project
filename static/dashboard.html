@@ -119,6 +119,11 @@
     letter-spacing: 0.05em; margin-bottom: 0.55rem; padding-top: 0.1rem;
     border-top: 1px solid var(--hairline);
   }
+  .realm-lock-hint {
+    font-size: 0.72rem; color: var(--text-dim); line-height: 1.4; margin-top: -0.5rem;
+  }
+  .realm-lock-hint a { color: var(--bullion); }
+  .filters select:disabled { opacity: 0.65; cursor: not-allowed; }
   .item-class-filters { display: flex; flex-direction: column; gap: 0.5rem; }
   .item-class-filters .auto-label { text-transform: none; letter-spacing: 0; }
   .filters input, .filters select {
@@ -237,6 +242,7 @@
   </div>
   <div class="nav">
     <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
+    <a href="/pricing">Pricing</a>
     <a href="/log">Log</a>
     <a href="/profile">Profile</a>
     <button id="logout">Log out</button>
@@ -247,6 +253,7 @@
   <aside class="filters">
     <div class="ticker" id="ticker"></div>
     <label>Sell realm <select id="sell"></select></label>
+    <div id="realm-lock-hint" class="realm-lock-hint" style="display:none;"></div>
     <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
     <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
     <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
@@ -912,6 +919,36 @@ async function populateRealmPicker(defaultSell) {
   }
 }
 
+// Free tier (2026-07-25): the server (dashboard._enforce_realm_lock) locks
+// a non-subscribed account to the first sell realm it ever queries. This
+// mirrors that lock in the UI *before* the user can attempt a request that
+// would 403, rather than letting them find out by trying. If the locked
+// realm isn't in the fetched /api/realms list (can happen if the lock was
+// set against a realm with no visible data yet), inject it as an option
+// anyway -- the UI must reflect what's actually locked server-side, not
+// silently show a different realm as selected.
+function applyFreeTierRealmLock(lockedSellRealm) {
+  const sel = $("sell");
+  const hint = $("realm-lock-hint");
+  hint.style.display = "block";
+  if (lockedSellRealm == null) {
+    hint.innerHTML = "Free tier: your first realm choice below will be locked in. " +
+      "<a href=\"/pricing\">See plans</a> to query any realm instead.";
+    return;
+  }
+  const lockedStr = String(lockedSellRealm);
+  if (![...sel.options].some(opt => opt.value === lockedStr)) {
+    const opt = document.createElement("option");
+    opt.value = lockedStr;
+    opt.textContent = `Realm ${lockedStr}`;
+    sel.appendChild(opt);
+  }
+  sel.value = lockedStr;
+  sel.disabled = true;
+  hint.innerHTML = "Free tier: locked to this realm. " +
+    "<a href=\"/pricing\">See plans</a> to query any realm.";
+}
+
 (async function init() {
   // Login alone is the gate now (2026-07-25, free tier) -- no more
   // redirect-to-/subscribe for a logged-in-but-unsubscribed user. The
@@ -923,13 +960,18 @@ async function populateRealmPicker(defaultSell) {
     window.location.href = "/login";
     return;
   }
+  const meData = await me.json();
+  const isFreeTier = !meData.is_superuser && meData.subscription_status !== "active";
   let defaultSell = null;
   try {
     const r = await fetch("/api/config");
     const cfg = await r.json();
     defaultSell = cfg.default_sell;
   } catch (e) { /* no default, user picks one */ }
+  // A real per-user lock always wins over the server's generic prefill.
+  if (isFreeTier && meData.locked_sell_realm != null) defaultSell = meData.locked_sell_realm;
   await populateRealmPicker(defaultSell);
+  if (isFreeTier) applyFreeTierRealmLock(meData.locked_sell_realm);
   const sell = $("sell").value;
   if (sell) {
     // Instant paint from whatever this browser last cached for this realm --

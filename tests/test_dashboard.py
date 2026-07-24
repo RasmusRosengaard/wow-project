@@ -484,6 +484,15 @@ def test_log_page_served_without_auth():
     assert "text/html" in r.headers["content-type"]
 
 
+def test_pricing_page_served_without_auth():
+    """Public like /log -- a pricing page a visitor can't see before
+    registering would defeat its own purpose."""
+    _drop_auth_overrides()
+    r = client.get("/pricing", follow_redirects=False)
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+
+
 def test_index_serves_html():
     r = client.get("/")
     assert r.status_code == 200
