@@ -671,6 +671,38 @@ confirmed zero `/api/snipes` calls on load (previously would have been 1,
 silently locking to the server's default) and exactly one call after
 simulating an explicit dropdown selection, locking to *that* realm instead.
 
+### Copy pass + contact info (added 2026-07-25)
+
+Same day, human follow-up on `pricing.html`/`subscribe.html` copy: "Up to
+250/2,000 validated snipes per query" reworded to "250/2,000 snipes in
+total, refreshes every hour when new AH data comes" (more accurate — the
+cap is a total budget per batch, not a per-request thing, and ties the
+number to the real refresh cadence rather than reading like an arbitrary
+limit); removed "No card required" (Free) and "Everything in Free"/
+"Everything the free tier already gets, uncapped" (Subscriber) as
+redundant given the rest of the copy already says this; removed the em-dash
+from the funding sentence, split into two plain sentences instead. Applied
+consistently to both `pricing.html` and `subscribe.html`.
+
+`static/log.html`'s lede paragraph shortened from a 3-sentence explainer to
+one line ("Log for when the collector has gotten new AH data from
+Blizzard.") per direct human instruction — the longer version explaining
+the `If-Modified-Since`/no-op-poll mechanics was judged unnecessary for a
+page whose UI already makes the point self-evident.
+
+**Contact info added** — `rasmus2001@gmail.com` / Discord `rasmus5533`, for
+site or payment issues — to `subscribe.html` (near the checkout button,
+where payment issues are most relevant), `profile.html` (new `.contact`
+block below the account card), and `pricing.html` (below the FAQ). Not
+added to every page — deliberately scoped to the pages that actually touch
+money/account state, not `dashboard.html`/`log.html`/`login.html`/
+`register.html`. On `profile.html` specifically, the block had to be moved
+*outside* `.shell` (a `display:flex` container with no explicit
+`flex-direction`, i.e. row by default) rather than added as a second child
+inside it, which would have placed it beside the profile card instead of
+below it — caught before shipping by checking the actual CSS rather than
+assuming block-level stacking.
+
 ### Hosted deployment (Railway)
 
 **Live at `https://wow-project-production.up.railway.app`.** Project

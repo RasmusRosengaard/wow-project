@@ -679,6 +679,18 @@ Verified live with a mocked preview: zero `/api/snipes` calls on load
 after simulating a real dropdown pick, correctly locking to that realm
 instead.
 
+**Copy pass + contact info, same day**: reworded the "Up to N validated
+snipes per query" tier copy on `pricing.html`/`subscribe.html` to "N snipes
+in total, refreshes every hour when new AH data comes" (more accurate —
+ties the number to the real hourly refresh cadence); removed redundant
+bullets ("No card required", "Everything in Free"); removed an em-dash from
+the funding sentence, split into two plain sentences. `log.html`'s lede
+shortened from a 3-sentence explainer to one line. Added contact info
+(email + Discord) to `subscribe.html`/`profile.html`/`pricing.html` —
+scoped to pages that touch money/account state, not every page. Verified
+all four pages in a real browser (a mocked `/api/me` for `profile.html`,
+since it's auth-gated) before shipping.
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project

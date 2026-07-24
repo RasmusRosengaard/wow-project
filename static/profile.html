@@ -100,6 +100,8 @@
   button:disabled { opacity: 0.6; cursor: default; }
   button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
+  .contact { font-size: 0.75rem; color: var(--text-dim); text-align: center; margin-top: 0.9rem; }
+  .contact a { color: var(--bullion); }
 </style>
 </head>
 <body>
@@ -130,6 +132,11 @@
     <div id="error" class="error"></div>
     <div id="actions"></div>
   </div>
+</div>
+<div class="contact">
+  Issues with the site or payment? Email
+  <a href="mailto:rasmus2001@gmail.com">rasmus2001@gmail.com</a> or find
+  <b>rasmus5533</b> on Discord.
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
