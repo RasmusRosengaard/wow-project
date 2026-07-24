@@ -1043,6 +1043,33 @@ approach above is the shape both answers point to, but it was explicitly
 parked this session, not implemented — next session's starting point is
 `collect_all.py`'s `prune_old_snapshots()` and `RETENTION_DAYS`.
 
+### Reusable Claude Code tooling (added 2026-07-25)
+
+The Railway/CI/test incantations above existed only as prose until this
+point — every session had to re-derive the exact `docker exec`/
+`MSYS_NO_PATHCONV`/`node .../railway.js` invocation from scratch. Turned the
+recurring ones into project-scoped slash commands and a skill, all under
+`.claude/`:
+
+- **`/railway-status`** — deploy status, latest CI run, volume usage vs the
+  4.9GB cap, read-only.
+- **`/railway-debug <command>`** — runs a command against live production
+  data via `railway ssh` (the actual technique behind every "traced live"
+  bug writeup in this file).
+- **`/ship`** — this project's real deploy flow end to end: test (including
+  the CI-matching `env -u DATABASE_URL` run), commit, push, watch CI,
+  confirm the Railway deploy landed, optionally live-verify via
+  `/railway-debug`.
+- **`project-review` skill** — a repo-specific pre-push checklist (not a
+  generic review) covering the traps that have actually bitten this project:
+  market_key Python/SQL parity, copper-vs-gold unit bugs, the CI-env test
+  mismatch class of bug, the ToS/secrets/Stripe-key guardrails, and the
+  frontend-verify-in-a-real-browser convention.
+
+Keep these current the same way as everything else here — if the Railway
+CLI invocation changes, or a new recurring trap gets found, update the
+command/skill file, not just this paragraph.
+
 ## Conventions
 
 - Python 3.10+, stdlib `argparse` CLIs, minimal deps. No pandas, no ORM.
