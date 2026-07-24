@@ -116,9 +116,10 @@
   }
   .filters-heading {
     font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 0.05em; margin-bottom: -0.35rem;
+    letter-spacing: 0.05em; margin-bottom: 0.55rem; padding-top: 0.1rem;
+    border-top: 1px solid var(--hairline);
   }
-  .item-class-filters { display: flex; flex-direction: column; gap: 0.4rem; }
+  .item-class-filters { display: flex; flex-direction: column; gap: 0.5rem; }
   .item-class-filters .auto-label { text-transform: none; letter-spacing: 0; }
   .filters input, .filters select {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
@@ -333,6 +334,44 @@ let currentSellSlug = null;
 // count ever approaches it.
 const BATCH_TOP = 2000;
 
+// localStorage cache of the last-fetched batch, keyed per (sell realm, item
+// restriction) so a page refresh (or revisit) can paint instantly instead of
+// showing a blank table while the network round trip is in flight, and so
+// the 60s auto-refresh timer can skip the expensive /api/snipes DuckDB query
+// entirely when Blizzard hasn't actually published anything new -- see
+// checkForUpdates() below. CACHE_VERSION bumps if the cached row shape ever
+// changes, so an old cache from a previous version of this page can't get
+// rendered against code that expects different fields.
+const CACHE_VERSION = 1;
+// Safety net, not the primary freshness signal: even if last_modified still
+// matches, force a real refetch once a cache is this old, in case the
+// status endpoint itself is stuck/wrong for some other reason. Comfortably
+// above Blizzard's ~hourly publish cadence so it practically never fires in
+// the normal case.
+const MAX_CACHE_AGE_MS = 2 * 60 * 60 * 1000;
+
+function cacheKey(sell, items) {
+  return `snipe_cache_v${CACHE_VERSION}_${sell}_${items || ""}`;
+}
+function loadCache(sell, items) {
+  try {
+    const raw = localStorage.getItem(cacheKey(sell, items));
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function saveCache(sell, items, payload) {
+  try {
+    localStorage.setItem(cacheKey(sell, items), JSON.stringify(payload));
+  } catch (e) { /* storage full/unavailable -- cache is a perf optimization only, fail soft */ }
+}
+function clearAllCaches() {
+  try {
+    Object.keys(localStorage)
+      .filter(k => k.startsWith("snipe_cache_v"))
+      .forEach(k => localStorage.removeItem(k));
+  } catch (e) { /* nothing to clean up if localStorage itself is unavailable */ }
+}
+
 // Blizzard's official item_class ids (confirmed live via
 // GET /data/wow/item-class/index, 2026-07-24 -- see item_names.py). Mounts
 // need the subclass too since they're a subclass of Miscellaneous(15), not
@@ -546,23 +585,32 @@ function hideTooltip() {
   $("tooltip").style.display = "none";
 }
 
+// One number, one meaning: when Blizzard's AH data (s.last_modified, the
+// real Last-Modified header from the sell-realm collector) was last
+// actually new -- not "Polled" (removed earlier, was just the browser's
+// render-time wall clock) and not split across three overlapping signals
+// (Snapshot/Listings swept/Ledger build status) that all gestured at "is the
+// data fresh" without a single clear answer.
+function renderStatusTicker(s) {
+  const stale = !s.events_exist;
+  $("ticker").innerHTML = `
+    <div class="seg"><span class="k">Last auction data</span><span class="v mono ${stale ? "stale" : "ok"}">${fmtHttpDate(s.last_modified)}</span></div>
+  `;
+}
+
+// Cheap by comparison to fetchBatch() -- no DuckDB join, just a file mtime
+// lookup -- so checkForUpdates() below can call this every 60s to decide
+// *whether* the expensive query is even worth running. Returns the parsed
+// status (so callers can read last_modified) or null on failure.
 async function loadStatus(sell) {
-  if (!sell) return;
+  if (!sell) return null;
   try {
     const r = await fetch(`/api/status?sell=${encodeURIComponent(sell)}`);
-    if (!r.ok) return;
+    if (!r.ok) return null;
     const s = await r.json();
-    const stale = !s.events_exist;
-    // One number, one meaning: when Blizzard's AH data (s.last_modified,
-    // the real Last-Modified header from the sell-realm collector) was last
-    // actually new -- not "Polled" (removed earlier, was just the browser's
-    // render-time wall clock) and not split across three overlapping
-    // signals (Snapshot/Listings swept/Ledger build status) that all
-    // gestured at "is the data fresh" without a single clear answer.
-    $("ticker").innerHTML = `
-      <div class="seg"><span class="k">Last auction data</span><span class="v mono ${stale ? "stale" : "ok"}">${fmtHttpDate(s.last_modified)}</span></div>
-    `;
-  } catch (e) { /* leave last-known status visible */ }
+    renderStatusTicker(s);
+    return s;
+  } catch (e) { return null; /* leave last-known status visible */ }
 }
 
 function buildRowHtml(row, idx, group, isSub) {
@@ -640,15 +688,33 @@ function setLoading(isLoading) {
   $("table-wrap").classList.toggle("loading", isLoading);
 }
 
-// The only network round-trip in the normal filtering flow -- fetches one
+// Paints the last-known batch for (sell, items) from localStorage, if any --
+// used both on page load and right before fetchBatch()'s own network call,
+// so a realm switch or a page refresh never shows a blank table while the
+// real request is in flight. Returns true if it painted something.
+function renderFromCache(sell, items) {
+  const cached = loadCache(sell, items);
+  if (!cached) return false;
+  currentRegion = cached.region;
+  currentSellSlug = cached.sellRealmSlug;
+  cachedRows = cached.rows;
+  openGroups.clear();
+  renderTable();
+  return true;
+}
+
+// The only real "give me fresh data" network round-trip -- fetches one
 // loose, generously-sized batch (see batchParams()/BATCH_TOP) for the
-// current sell realm + item-id restriction. Triggered by a realm switch, an
-// items-csv change, the 60s auto-refresh timer, or an explicit Refresh
-// click -- never by a filter-rail threshold changing (those call
-// renderTable() directly instead, see the listeners wired at the bottom).
+// current sell realm + item-id restriction, then caches it to localStorage.
+// Triggered by a realm switch, an items-csv change, an explicit Refresh
+// click, or checkForUpdates() below when it detects genuinely new data --
+// never by a filter-rail threshold changing (those call renderTable()
+// directly instead, see the listeners wired at the bottom).
 async function fetchBatch() {
   const sell = $("sell").value;
   if (!sell) return;
+  const items = $("items").value.trim();
+  renderFromCache(sell, items);  // instant paint from last-known-good while the real fetch is in flight
   setLoading(true);
   try {
     const r = await fetch(`/api/snipes?${batchParams().toString()}`);
@@ -671,10 +737,38 @@ async function fetchBatch() {
     cachedRows = data.rows;
     openGroups.clear();  // fresh fetch -- collapse groups back to best-first summaries
     renderTable();
-    await loadStatus(sell);
+    const status = await loadStatus(sell);
+    if (status) {
+      saveCache(sell, items, {
+        rows: data.rows, region: data.region, sellRealmSlug: data.sell_realm_slug,
+        lastModified: status.last_modified, fetchedAt: Date.now(),
+      });
+    }
   } finally {
     setLoading(false);
   }
+}
+
+// The auto-refresh timer and the initial page load both go through this
+// instead of fetchBatch() directly: it's a cheap /api/status check (a file
+// mtime, no DuckDB join) first, and only calls the expensive fetchBatch()
+// when Blizzard's data has actually changed since our cache -- Blizzard
+// republishes AH data roughly hourly, so polling the heavy query every 60s
+// regardless (the original behavior) was ~60 checks for every 1 real
+// update. MAX_CACHE_AGE_MS is a safety net in case the status signal itself
+// ever gets stuck.
+async function checkForUpdates() {
+  const sell = $("sell").value;
+  if (!sell) return;
+  const items = $("items").value.trim();
+  const status = await loadStatus(sell);
+  if (!status) { await fetchBatch(); return; }  // status check itself failed -- fall back to a real fetch rather than silently doing nothing
+  const cached = loadCache(sell, items);
+  if (cached && cached.lastModified === status.last_modified
+      && (Date.now() - cached.fetchedAt) < MAX_CACHE_AGE_MS) {
+    return;  // nothing new since our cache -- skip the DuckDB query entirely
+  }
+  await fetchBatch();
 }
 
 document.getElementById("rows").addEventListener("mouseover", (e) => {
@@ -716,7 +810,10 @@ $("refresh").addEventListener("click", fetchBatch);
 
 function scheduleAuto() {
   if (timer) clearInterval(timer);
-  if ($("auto").checked) timer = setInterval(fetchBatch, 60000);
+  // checkForUpdates(), not fetchBatch() directly -- most 60s ticks find
+  // nothing new (Blizzard publishes roughly hourly) and skip the DuckDB
+  // query entirely, see checkForUpdates()'s own comment.
+  if ($("auto").checked) timer = setInterval(checkForUpdates, 60000);
 }
 $("auto").addEventListener("change", scheduleAuto);
 
@@ -748,6 +845,10 @@ ITEM_CLASS_FILTERS.forEach(c => $(`class_${c.key}`).addEventListener("change", (
 
 $("logout").addEventListener("click", async () => {
   await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+  // localStorage is origin-scoped, not per-account -- clear the cached
+  // batches so a different user logging in on this browser never gets an
+  // instant paint of the previous account's snipe data, even briefly.
+  clearAllCaches();
   window.location.href = "/login";
 });
 
@@ -824,7 +925,16 @@ async function populateRealmPicker(defaultSell) {
     defaultSell = cfg.default_sell;
   } catch (e) { /* no default, user picks one */ }
   await populateRealmPicker(defaultSell);
-  if ($("sell").value) await fetchBatch();
+  const sell = $("sell").value;
+  if (sell) {
+    // Instant paint from whatever this browser last cached for this realm --
+    // no blank table while checkForUpdates() below decides whether a real
+    // fetch is even necessary. On a brand-new browser/first-ever visit
+    // there's nothing to paint, and checkForUpdates() falls through to a
+    // real fetchBatch() itself.
+    renderFromCache(sell, $("items").value.trim());
+    await checkForUpdates();
+  }
   scheduleAuto();
 })();
 </script>

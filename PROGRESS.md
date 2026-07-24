@@ -460,6 +460,48 @@ Test suite: 154 → **160 passing** (new: `NameCache.item_class()`/
 `item_subclass`/`is_profession_item` response-shape tests in
 `test_dashboard.py`).
 
+### Session 2026-07-24, continued again: localStorage batch cache + status-gated refresh
+
+Same day, right after the item-class filter above. Human's follow-up ask:
+avoid a full re-fetch on every page refresh, and only actually re-fetch when
+Blizzard's AH data has genuinely changed rather than on a blind 60s timer.
+
+`dashboard.html` now caches the last-fetched batch in `localStorage` (keyed
+per sell realm + item-id restriction) and paints it instantly on page
+load/realm switch — no more blank table during the network round trip. The
+60s auto-refresh timer (and initial load) now calls a new `checkForUpdates()`
+instead of fetching directly: it does one cheap `/api/status` check (a file
+timestamp, no DuckDB join) and only runs the real, expensive `/api/snipes`
+query when the sell realm's `last_modified` has actually advanced since the
+cache — Blizzard republishes roughly hourly, so this cuts real query volume
+from ~60 checks/hour down to ~1. A manual Refresh click, a realm switch, or
+an items-csv change still always force a real fetch (explicit "give me
+fresh/different data" actions). Cache is cleared on logout since
+`localStorage` is per-browser, not per-account.
+
+**Known, accepted tradeoff**: this gates purely on the sell realm's own
+`last_modified`, so a fresh buy-side listing that appears on some other
+scanned realm between sell-side updates won't trigger an automatic refresh
+— same order of magnitude staleness (up to ~an hour) this product already
+tolerates elsewhere; Refresh is always available for anyone who wants it
+immediately.
+
+**Verified with a real browser and a mocked `window.fetch`** (the actual
+`fetchBatch()`/`checkForUpdates()` functions ran unmodified against canned
+responses, not a facsimile) — confirmed exactly one real fetch on first
+load, zero real fetches on a reload with unchanged mocked data, and exactly
+one real fetch after flipping the mocked `last_modified`.
+
+**UI fix in the same pass**: human flagged (from a live screenshot) that the
+"Item class" checkbox group's heading had negative spacing crowding it
+against the checkboxes — fixed with a top divider and real spacing. (A
+second piece of feedback in that same message, about making the checkboxes
+single-select, was explicitly retracted before being acted on — they stay
+multi-select/OR'd together, as designed.)
+
+No backend changed this round; `pytest -q` stayed green (160 passing)
+throughout since this is a pure `dashboard.html` frontend change.
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project

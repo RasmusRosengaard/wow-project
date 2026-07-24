@@ -367,6 +367,75 @@ strategy and three new always-present response fields
 `NameCache.item_class()`/`.item_subclass()` and the two new response
 fields).
 
+### localStorage batch cache + status-gated refresh (added 2026-07-24)
+
+Same day, immediately after the client-side filtering change above. Human's
+follow-up: a page refresh (or revisit) still re-ran the full `/api/snipes`
+fetch every time, showing a blank table for the round trip; the 60s
+auto-refresh timer also blindly re-ran that same expensive DuckDB query
+every tick regardless of whether Blizzard had actually published anything
+new since the last check (~60 checks for every 1 real hourly update).
+
+**Fix, two parts, both in `dashboard.html`:**
+1. **Instant paint from `localStorage`.** `fetchBatch()`'s successful result
+   is cached to `localStorage` (`cacheKey()`: `snipe_cache_v{CACHE_VERSION}_
+   {sell}_{items}`, scoped per sell realm *and* per item-id restriction since
+   they're different underlying datasets) alongside the sell realm's
+   `last_modified` from the same fetch's `/api/status` call. `renderFromCache()`
+   paints whatever's cached the instant the page loads (or a realm switches)
+   — no more blank table during the network round trip. `CACHE_VERSION` exists
+   so a future row-shape change can't get rendered against code that expects
+   different fields; bump it if that ever happens.
+2. **`checkForUpdates()` replaces `fetchBatch()` as what the 60s auto-refresh
+   timer (and the initial page load) actually calls.** It first does a cheap
+   `/api/status` check (a file-mtime lookup, no DuckDB join) and compares the
+   live `last_modified` against the cached one — only calling the expensive
+   `fetchBatch()` when they differ (or the cache is missing, or older than
+   `MAX_CACHE_AGE_MS` = 2h, a safety net in case the status signal itself
+   ever gets stuck). Realm switch, an items-csv change, and the manual
+   Refresh button all still call `fetchBatch()` directly, bypassing this gate
+   — those are explicit "give me fresh/different data now" actions, not
+   passive polling.
+
+**Known, accepted tradeoff**: gating on the *sell realm's* `last_modified`
+alone can miss a genuinely new region-wide *buy-side* listing that appears
+between sell-side updates (`collect_all.py` sweeps every scanned realm's
+listings every cycle regardless of whether any one sell realm's own snapshot
+changed that cycle — see its entry above). Worst case, a fresh cheap listing
+elsewhere in the region sits unseen until the next real sell-side update
+(same order of magnitude as the ~hourly staleness this product already
+tolerates everywhere else); the manual Refresh button is always available
+for anyone who wants the always-fresh guarantee immediately. Not treated as
+a bug, just a documented, deliberate tradeoff for a large reduction in real
+query volume.
+
+**Cache cleared on logout** (`clearAllCaches()`) — `localStorage` is
+per-browser, not per-account, so a different user logging in on a shared
+machine must never get an instant paint of the previous account's cached
+snipe data, even briefly.
+
+**Verified with a real browser + a mocked `window.fetch`** (not a stubbed
+`init()` this time — the actual `fetchBatch()`/`loadStatus()`/
+`checkForUpdates()` functions ran unmodified against canned `/api/*`
+responses, so the real code paths were exercised, not a facsimile):
+confirmed a first load does exactly one real `/api/snipes` call and writes
+the cache; a reload with an unchanged mocked `last_modified` paints
+instantly from `localStorage` with **zero** `/api/snipes` calls (only the
+cheap status check); and flipping the mocked `last_modified` and re-running
+`checkForUpdates()` correctly triggers exactly one fresh `/api/snipes` call.
+`pytest -q` stayed green throughout (160 passing, no backend touched by this
+change).
+
+**UI fix, same pass**: human feedback on a live screenshot — the "Item
+class" section heading sat right on top of the "Weapons" checkbox with
+negative spacing (`margin-bottom: -0.35rem`, a leftover from an earlier
+layout attempt). Fixed with a top hairline divider + real positive spacing
+(`.filters-heading`), giving the item-class group visual separation from
+"Unique transmog only" above it. (A second piece of feedback in the same
+message — "only one togglable at a time" — was explicitly retracted by the
+human before being acted on; the OR-together multi-select behavior described
+above is unchanged and correct as designed.)
+
 ### Hosted deployment (Railway)
 
 **Live at `https://wow-project-production.up.railway.app`.** Project
