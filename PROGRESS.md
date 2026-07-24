@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-25 (type-28 conditional pooling fix, item 164353; disk/retention investigated).
+Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed same session; disk/retention investigated).
 
 ## Status at a glance
 
@@ -777,6 +777,36 @@ more aggressively if total usage approaches a safety threshold (e.g.
 `CLAUDE.md`'s matching section for the exact next-session starting point
 (`collect_all.py`'s `prune_old_snapshots()`/`RETENTION_DAYS`).
 
+### Session 2026-07-25, continued again: real production outage from the type-28 fix, fixed same session
+
+Immediately after deploying the type-28 fix above, the human reported the
+live site completely unresponsive for 5+ minutes. Confirmed independently
+(`curl` from outside timed out; a direct request from *inside* the
+container to its own listening port also timed out, while `railway status`
+still reported the service "Online" the whole time — the platform's health
+signal doesn't catch an application-level hang).
+
+**Root cause**: `_populate_base_levels()` (the type-28 fix's own new code)
+makes a real Blizzard API call per never-before-seen item, gathered
+unconditionally across every sell realm's sales *and* the entire region's
+buy-side listings. `dashboard.py`'s `api_snipes()` is an `async def` route
+but called `find_snipes()` (and therefore this) directly on the event loop
+thread — so the first real request after deploying, against a cold cache,
+meant hundreds of sequential blocking HTTP calls with the *entire*
+single-process server unable to answer anything else for the duration.
+
+**Fixed the same session**: `api_snipes()` now runs the whole query via
+`await asyncio.to_thread(...)`, so a slow first-time call no longer blocks
+other requests; `_populate_base_levels()` also now saves its cache
+incrementally (every 50 items) instead of only at the end, so an
+interrupted run (exactly what happened when this fix itself deployed)
+doesn't lose all its progress. Verified live: the homepage returned HTTP
+200 in ~0.25-0.3s consistently, including while a deliberately-triggered
+slow cold-cache run was in flight in parallel via `railway ssh` — the exact
+condition that caused the outage. `pytest -q`: 225 passing (this was an
+availability bug under load, not something the existing test suite would
+have caught — noted in `CLAUDE.md` as a real gap).
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
@@ -813,6 +843,7 @@ instead (Linux binary, never touches that policy).
 - Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior. Partial mitigation added 2026-07-23: `snipe_check.find_snipes()`'s `min_sales` floor (default 2) stops a single unverified sample from becoming the whole sold-price percentile, after exactly that happened live (item 15138) — but two bad samples can still both be false positives, so this reduces rather than closes the risk.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.
 - The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, and `market_key()` now conditionally pools implausible values into matching too (2026-07-25, `ILVL_PLAUSIBILITY_MULTIPLE = 3x`), but the underlying meaning is still community-sourced, not official. Same caveat applies to modifier types 9/42/44 (`market_key()`'s unconditional ignore-list) — inference from real data, not documented facts (type 9 was additionally human-confirmed not to affect transmog before pooling, 2026-07-24).
+- **No test coverage for "does an async route block the event loop"** — the type-28 fix's outage (2026-07-25, fixed same session, see "Session 2026-07-25, continued again" above) was an availability bug the existing test suite couldn't have caught, since `TestClient` calls are synchronous and don't exercise concurrent-request behavior. Worth a regression test (e.g. a slow stub swapped into `_populate_base_levels()`, asserting a concurrent request to a lightweight route still completes quickly) if this class of bug recurs — not built yet.
 - **Disk usage will exceed the Railway Volume's practical ~4.9GB cap at the current `RETENTION_DAYS = 14`** — confirmed 2026-07-25 by extrapolating early growth (~1.33 days of history projects to ~8.7GB at full retention). An adaptive retention scheme (target 14 days, trim harder if usage nears a safety threshold) was proposed and confirmed in direction by the human but not built — see `collect_all.py`'s `prune_old_snapshots()`/`RETENTION_DAYS` for the starting point.
 - **If a sell realm's entire observed history for an item is troll/camped listings, no existing guard can rescue the estimate** (found live 2026-07-24, item 7761/Steelclaw Reaver on Draenor: all 3 "sales" and all 4 current listings were the same ~398,605g decoy price). `min_sales` and the current-lowest-listing cap both assume *some* legitimate data exists on the sell realm to fall back to — when literally everything observed is bogus, there's nothing to fall back to. A region-wide cross-check against `data/listings/*.parquet` (already collected for the buy side) was proposed as the principled fix but not built — parked, same status as the camped-relist window bug above.
 - A camped-relist can still occasionally slip through the relist-matching window and get misclassified as `inferred_sale` (seen live on item 238014's `29=77` sub-variant, 2026-07-23 evening) — separate from, and not fixed by, the same-day crafted-item pooling fix. No mitigation yet beyond the existing `min_sales` floor.
