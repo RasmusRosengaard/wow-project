@@ -647,6 +647,30 @@ every test file hitting that route overrides it, don't assume a local green
 run means CI will agree — a locally-configured `.env` can mask exactly this
 class of gap.
 
+**Real bug caught live after deploy, fixed same-day**: the human reported a
+free-tier account got locked to a sell realm it never actually chose.
+Traced to `init()`: it pre-selected and immediately auto-queried the
+server's site-wide default realm (`/api/config`'s `default_sell`) before
+the human touched anything — for a free-tier account with no lock yet, that
+silent auto-fetch is exactly what `_enforce_realm_lock()` used to set the
+lock, so "your choice" was actually whichever realm the server happens to
+default to, the same for every visitor. **Not an old-vs-new-account issue**
+— this would hit any free-tier account, new or old, on its first-ever
+dashboard load, since `locked_sell_realm` starts NULL for everyone
+regardless of when the account was created. Fixed by giving
+`populateRealmPicker()` a `requirePick` mode (a leading blank "Choose a
+sell realm..." placeholder, `defaultSell` ignored entirely) used only when
+free-tier *and* unlocked — `init()` computes `freeTierUnlocked` and passes
+it through. With the select genuinely empty, `checkForUpdates()`/
+`fetchBatch()`'s existing `if (!sell) return` guards mean nothing fetches
+until the human makes an explicit selection, which is the only thing that
+should ever become a lock. Subscribed/superuser accounts and already-locked
+free-tier accounts are unaffected -- the placeholder only appears for the
+one case that was actually broken. Verified live with a mocked preview:
+confirmed zero `/api/snipes` calls on load (previously would have been 1,
+silently locking to the server's default) and exactly one call after
+simulating an explicit dropdown selection, locking to *that* realm instead.
+
 ### Hosted deployment (Railway)
 
 **Live at `https://wow-project-production.up.railway.app`.** Project

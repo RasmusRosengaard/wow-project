@@ -896,8 +896,15 @@ async function loadRealms() {
 
 // Replaces the old free-typed realm-id box -- the server already knows which
 // realms it has collected (data/events/{cr}.parquet exists), so pick from
-// those instead of guessing an id.
-async function populateRealmPicker(defaultSell) {
+// those instead of guessing an id. `requirePick` (added 2026-07-25, free-
+// tier realm lock bugfix): a leading blank placeholder, and defaultSell is
+// ignored entirely -- without this, a free-tier account's very first page
+// load silently pre-selected and auto-queried whatever realm the server
+// happens to be configured with as its site-wide default (/api/config),
+// which then became that account's *lock* even though the human never
+// actually chose it (caught live, 2026-07-25). Only a genuine, explicit
+// dropdown selection should ever be able to set a free-tier lock.
+async function populateRealmPicker(defaultSell, requirePick) {
   const realms = await loadRealms();
   const sel = $("sell");
   sel.innerHTML = "";
@@ -908,13 +915,19 @@ async function populateRealmPicker(defaultSell) {
     sel.appendChild(opt);
     return;
   }
+  if (requirePick) {
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose a sell realm...";
+    sel.appendChild(placeholder);
+  }
   for (const realm of realms) {
     const opt = document.createElement("option");
     opt.value = realm.id;
     opt.textContent = realm.name;
     sel.appendChild(opt);
   }
-  if (defaultSell && realms.some(realm => String(realm.id) === String(defaultSell))) {
+  if (!requirePick && defaultSell && realms.some(realm => String(realm.id) === String(defaultSell))) {
     sel.value = String(defaultSell);
   }
 }
@@ -968,9 +981,14 @@ function applyFreeTierRealmLock(lockedSellRealm) {
     const cfg = await r.json();
     defaultSell = cfg.default_sell;
   } catch (e) { /* no default, user picks one */ }
-  // A real per-user lock always wins over the server's generic prefill.
+  // A real per-user lock always wins over the server's generic prefill. A
+  // free-tier account with no lock yet gets no default at all -- see
+  // populateRealmPicker's requirePick param -- since silently pre-selecting
+  // the server's generic default and auto-querying it is exactly what was
+  // setting the lock without a genuine user choice.
+  const freeTierUnlocked = isFreeTier && meData.locked_sell_realm == null;
   if (isFreeTier && meData.locked_sell_realm != null) defaultSell = meData.locked_sell_realm;
-  await populateRealmPicker(defaultSell);
+  await populateRealmPicker(defaultSell, freeTierUnlocked);
   if (isFreeTier) applyFreeTierRealmLock(meData.locked_sell_realm);
   const sell = $("sell").value;
   if (sell) {

@@ -664,6 +664,21 @@ full suite with `DATABASE_URL` explicitly unset, matching CI exactly,
 before pushing the fix. `pytest -q`: 173 passing, confirmed green in CI
 (`aef383c`).
 
+**Real bug caught live after deploying, fixed same-day**: human reported a
+free-tier account got locked to a sell realm it never chose. Root cause:
+`init()` pre-selected and auto-queried the server's site-wide default realm
+before the human touched anything -- for an unlocked free-tier account,
+that silent auto-fetch is exactly what set the lock. Not an old-vs-new-
+account issue (confirmed) -- `locked_sell_realm` starts NULL for every
+account regardless of age, so this hits anyone's first free-tier load.
+Fixed with a `requirePick` mode on `populateRealmPicker()` (blank "Choose a
+sell realm..." placeholder, no default) used only when free-tier and
+unlocked, so nothing fetches until a genuine explicit selection is made.
+Verified live with a mocked preview: zero `/api/snipes` calls on load
+(previously 1, silently locking to the server default), exactly one call
+after simulating a real dropdown pick, correctly locking to that realm
+instead.
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
