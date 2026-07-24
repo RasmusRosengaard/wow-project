@@ -63,6 +63,49 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
 NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
 
 
+def _populate_base_levels(con: duckdb.DuckDBPyConnection) -> None:
+    """market_key()'s type-28 pooling (added 2026-07-25, see
+    fetch_snapshot.py) needs each candidate item's catalog base level to
+    decide whether a claimed ilvl is plausible -- DuckDB can't make an HTTP
+    call mid-query, so this runs first, gathering every distinct item_id
+    that could possibly need one and populating a temp table the main query
+    joins against. Prefiltered to bonus_keys that actually contain a type-28
+    modifier at all (LIKE '%28=%', deliberately over-inclusive -- e.g. it'd
+    also match a hypothetical "128=" that isn't a real type -- since this is
+    just a candidate-narrowing prefilter, not the authoritative check;
+    market_key()'s own anchored regex is what actually decides). Most items
+    have no type-28 modifier and never need a lookup at all. Deliberately
+    ignores item_filter/--items -- sell_now's own CTE is unfiltered by
+    design (the current-lowest-listing cap applies across every item on the
+    sell realm, not just a narrowed watchlist), so restricting the base-
+    level gather to a watchlist could leave sell_now's items without one;
+    the cost of gathering a few extra items unfiltered is small.
+
+    NameCache resolves+caches each lazily (data/item_names.json), same cost
+    profile as every other names=true lookup elsewhere in this project -- a
+    one-time Blizzard API call per never-before-seen item, free on every
+    call after. This is the one place find_snipes() can now make a network
+    call where it previously never did (see CLAUDE.md for the tradeoff
+    this was weighed against)."""
+    ids = con.execute(r"""
+        SELECT DISTINCT item_id FROM sales WHERE bonus_key LIKE '%28=%'
+        UNION
+        SELECT DISTINCT item_id FROM snaps
+        WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
+          AND buyout IS NOT NULL AND bonus_key LIKE '%28=%'
+        UNION
+        SELECT DISTINCT item_id FROM listings WHERE bonus_key LIKE '%28=%'
+    """).fetchall()
+
+    names = NameCache()
+    rows = [(item_id, names.base_level(item_id)) for (item_id,) in ids]
+    names.save()
+
+    con.execute("CREATE OR REPLACE TEMP TABLE item_base_levels (bl_item_id BIGINT, base_level BIGINT)")
+    if rows:
+        con.executemany("INSERT INTO item_base_levels VALUES (?, ?)", rows)
+
+
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
                 min_per_day: float = 0.5, sell_percentile: float = 0.25,
@@ -184,23 +227,28 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         SELECT * FROM read_parquet('{(DATA / "listings" / "*.parquet").as_posix()}')
         WHERE cr_id != {int(sell_cr)} AND buyout IS NOT NULL
     """)
+    _populate_base_levels(con)
     res = con.execute(f"""
         WITH sell_now AS (
-            SELECT item_id, market_key(bonus_key) AS market_key, pet_species_id, pet_quality_id,
-                   min(buyout * 1.0 / quantity) AS cheapest_now
-            FROM snaps
-            WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
-              AND buyout IS NOT NULL
-            GROUP BY item_id, market_key(bonus_key), pet_species_id, pet_quality_id
+            SELECT s.item_id, market_key(s.bonus_key, bl.base_level) AS market_key,
+                   s.pet_species_id, s.pet_quality_id,
+                   min(s.buyout * 1.0 / s.quantity) AS cheapest_now
+            FROM snaps s
+            LEFT JOIN item_base_levels bl ON s.item_id = bl.bl_item_id
+            WHERE s.snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
+              AND s.buyout IS NOT NULL
+            GROUP BY s.item_id, market_key(s.bonus_key, bl.base_level), s.pet_species_id, s.pet_quality_id
         ),
         sell_stats AS (
-            SELECT item_id, market_key(bonus_key) AS market_key, pet_species_id, pet_quality_id,
+            SELECT sa.item_id, market_key(sa.bonus_key, bl.base_level) AS market_key,
+                   sa.pet_species_id, sa.pet_quality_id,
                    count(*)                                            AS sales,
                    round(count(*) / (SELECT days FROM span), 2)        AS per_day,
-                   quantile_cont(unit_price, {float(sell_percentile)}) AS sell_price
-            FROM sales
+                   quantile_cont(sa.unit_price, {float(sell_percentile)}) AS sell_price
+            FROM sales sa
+            LEFT JOIN item_base_levels bl ON sa.item_id = bl.bl_item_id
             WHERE 1=1 {item_filter}
-            GROUP BY item_id, market_key(bonus_key), pet_species_id, pet_quality_id
+            GROUP BY sa.item_id, market_key(sa.bonus_key, bl.base_level), sa.pet_species_id, sa.pet_quality_id
             HAVING per_day >= {float(min_per_day)} AND sales >= {int(min_sales)}
         ),
         sell_eff AS (
@@ -216,10 +264,12 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
              AND s.pet_quality_id IS NOT DISTINCT FROM n.pet_quality_id
         ),
         buy AS (
-            SELECT cr_id, item_id, bonus_key, market_key(bonus_key) AS market_key,
-                   pet_species_id, pet_quality_id, auction_id,
-                   buyout * 1.0 / quantity AS buy_unit_price
-            FROM listings
+            SELECT l.cr_id, l.item_id, l.bonus_key,
+                   market_key(l.bonus_key, bl.base_level) AS market_key,
+                   l.pet_species_id, l.pet_quality_id, l.auction_id,
+                   l.buyout * 1.0 / l.quantity AS buy_unit_price
+            FROM listings l
+            LEFT JOIN item_base_levels bl ON l.item_id = bl.bl_item_id
             WHERE 1=1 {item_filter}
         ),
         matches AS (

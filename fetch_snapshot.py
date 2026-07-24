@@ -101,13 +101,64 @@ def bonus_key(item: dict) -> str:
 MARKET_IGNORE_MODIFIER_TYPES = {9, 42, 44}
 
 
-def market_key(bk: str) -> str:
+# Same plausibility check dashboard.py's ilvl display uses (kept here, not
+# duplicated in dashboard.py, since market_key() below now needs it too --
+# dashboard.py imports these instead of defining its own copy). A claimed
+# modifier-28 "item level" is only trusted if it's both within a generous
+# multiple of the item's own catalog base level AND under an absolute
+# ceiling -- real WoW item levels have never approached four digits, so
+# ILVL_ABSOLUTE_MAX is deliberately generous headroom for future content,
+# not a tightly-fitted bound. Two independent guards because neither alone
+# covers both failure modes: the ratio catches implausible claims on low-
+# base-level items (where even a moderate absolute value is nonsense), the
+# absolute cap catches implausible claims on high-base-level items (where
+# the ratio alone isn't tight enough) -- see dashboard.py's ILVL_* comment
+# for the two real production cases (item 1112-vs-34, item 3031-vs-610)
+# that motivated each guard.
+#
+# Multiplier lowered 5 -> 3 on 2026-07-25, investigating item 164353
+# (Plundered Scalebane Claymore, base level 60): real live listings carried
+# 28=186/189/289, all comfortably inside the old 5x ratio (300) and so left
+# unpooled -- market_key() kept treating them as distinct markets from the
+# item's real sales (28=645/670, already caught by 5x), so the bug this
+# guard exists to fix only partially resolved. Verified 3x still keeps the
+# one known-legitimate case distinct (base 600, claimed 636) while catching
+# every known junk value across both real cases (164353 and 237468) -- see
+# tests/test_market_key.py.
+ILVL_PLAUSIBILITY_MULTIPLE = 3
+ILVL_ABSOLUTE_MAX = 1000
+
+
+def ilvl_plausible(claimed: int, base_level: int | None) -> bool:
+    return (base_level is not None
+            and claimed <= base_level * ILVL_PLAUSIBILITY_MULTIPLE
+            and claimed <= ILVL_ABSOLUTE_MAX)
+
+
+def market_key(bk: str, base_level: int | None = None) -> str:
     """Coarser version of bonus_key for MATCHING/GROUPING only -- sold-price
     percentiles, the current-lowest-listing cap, relist detection, and the
     buy/sell join in snipe_check.py -- so near-identical crafted items pool
     into one market instead of fragmenting into dozens of 1-2-sale buckets
     (see MARKET_IGNORE_MODIFIER_TYPES above for why). The raw bonus_key is
     still stored and displayed as-is everywhere; only matching uses this.
+
+    base_level (added 2026-07-25, optional, defaults to None) additionally
+    strips modifier type 28 -- but ONLY when its claimed value fails
+    ilvl_plausible() against this item's own catalog base level. Type 28
+    isn't unconditionally ignorable like 9/42/44: it's genuinely meaningful
+    ilvl-scaling data for *some* items (a real high-ilvl variant should stay
+    a distinct, differently-priced market from a low-ilvl one), but for
+    others it's junk that happens to look numeric -- e.g. item 164353
+    (Plundered Scalebane Claymore, a Rare weapon, base level 60) had live
+    listings tagged 28=186/189/645/670/289, none remotely close to 60,
+    fragmenting one item into unrelated buckets that could never match each
+    other for snipe purposes. Callers that don't have a base_level handy
+    (diff_snapshots.py's relist_key(), still just market_key(bonus_key), no
+    behavior change there) get the pre-2026-07-25 behavior unchanged --
+    unknown base_level always means "don't strip 28," never "assume it's
+    junk," since a wrong strip could incorrectly merge two items that really
+    do have different, price-relevant item levels.
 
     Mirrored as a SQL macro in analyze.connect() for DuckDB-side grouping
     (sold-price/current-lowest queries) rather than shared as a single
@@ -119,13 +170,21 @@ def market_key(bk: str) -> str:
     asserts identical results."""
     if not bk:
         return bk
+    ignore_types = set(MARKET_IGNORE_MODIFIER_TYPES)
+    if base_level is not None:
+        for part in bk.split("|"):
+            if part.startswith("m:"):
+                for pair in part[2:].split(","):
+                    t, _, v = pair.partition("=")
+                    if t == "28" and v and not ilvl_plausible(int(v), base_level):
+                        ignore_types.add(28)
     parts = []
     for part in bk.split("|"):
         if not part.startswith("m:"):
             parts.append(part)
             continue
         mods = [pair for pair in part[2:].split(",")
-                if int(pair.split("=", 1)[0]) not in MARKET_IGNORE_MODIFIER_TYPES]
+                if int(pair.split("=", 1)[0]) not in ignore_types]
         if mods:
             parts.append("m:" + ",".join(mods))
     return "|".join(parts)

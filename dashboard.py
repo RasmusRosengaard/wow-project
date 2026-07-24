@@ -32,6 +32,7 @@ import blizz
 import snipe_check
 from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users, has_active_subscription
 from db import User, get_async_session
+from fetch_snapshot import ilvl_plausible
 from item_names import NameCache
 
 ROOT = Path(__file__).resolve().parent
@@ -119,22 +120,13 @@ _realm_info_cache: dict[int, dict] = {}
 # The modifier-28 "item level" isn't officially documented (see CLAUDE.md);
 # it's clearly wrong for items outside the modern ilvl-scaling system -- e.g.
 # a classic fixed-stat wand showed "ilvl 1112" despite a catalog level in the
-# 30s (caught 2026-07-23). A second, different failure mode caught live
-# 2026-07-25: item 237468 (Nightfall Executioner's Girdle, a modern raid
-# item, base level 610) showed "ilvl 3031" -- inside the 5x ratio
-# (610*5=3050) but obviously not a real item level. Every single live
-# listing for that item carried modifier 28 set to either 3031 or 2462,
-# nothing else varying, which is strong evidence type 28 encodes something
-# other than ilvl entirely for at least some modern items, not just a scaled
-# value close to the truth. Two independent guards now, both must pass: the
-# ratio check (catches implausible claims for low-base-level items, where
-# even a moderate absolute value can be nonsense) and an absolute ceiling
-# (catches implausible claims for high-base-level items, where the ratio
-# alone isn't tight enough). Real WoW item levels have never approached four
-# digits across the game's history; ILVL_ABSOLUTE_MAX is deliberately
-# generous headroom for future content, not a tightly-fitted bound.
-ILVL_PLAUSIBILITY_MULTIPLE = 5
-ILVL_ABSOLUTE_MAX = 1000
+# 30s (caught 2026-07-23), and a modern raid item showed "ilvl 3031" against
+# a real base of 610 (caught 2026-07-25). ilvl_plausible()/ILVL_* constants
+# now live in fetch_snapshot.py, not here -- market_key() needs the exact
+# same check (2026-07-25, see its docstring) to decide whether to pool an
+# implausible type-28 value across listings, so this is the single source of
+# truth for both display and matching rather than two copies that could
+# silently drift apart.
 
 
 def _realm_info(cr_id: int) -> dict:
@@ -169,10 +161,7 @@ def _variant_label(bk: str, item_id: int, names: NameCache | None) -> str:
     ilvl_ok = False
     if parsed["ilvl"] and names is not None:
         base = names.base_level(item_id)
-        claimed = int(parsed["ilvl"])
-        ilvl_ok = (base is not None
-                   and claimed <= base * ILVL_PLAUSIBILITY_MULTIPLE
-                   and claimed <= ILVL_ABSOLUTE_MAX)
+        ilvl_ok = ilvl_plausible(int(parsed["ilvl"]), base)
     if ilvl_ok:
         return f"ilvl {parsed['ilvl']}"
     if bk:

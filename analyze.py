@@ -27,21 +27,55 @@ DATA = ROOT / "data"
 # SQL mirror of fetch_snapshot.market_key() -- see that function's docstring
 # for why this is a duplicated implementation rather than a shared Python
 # UDF (numpy dependency), and tests/test_market_key.py for the parity check
-# (run against this exact constant, not a copy) that keeps the two in sync.
-# Strips MARKET_IGNORE_MODIFIER_TYPES = {9, 42, 44} from the "m:..." segment
-# of a bonus_key, in 4 ordered passes: (1) any occurrence with a leading
-# comma, (2) a leading occurrence followed by more modifiers, (3) a lone
-# occurrence that's the entire "m:" segment, (4) a bonus_key that's nothing
-# but that lone occurrence (no "b:" part at all).
+# (run against these exact macros, not a copy) that keeps the two in sync.
+#
+# market_key(bk, base_level) unconditionally strips MARKET_IGNORE_MODIFIER_
+# TYPES = {9, 42, 44} from the "m:..." segment, then ALSO conditionally
+# strips type 28 -- but only when its claimed value fails the same
+# ilvl-plausibility check dashboard.py's display logic uses (ratio vs.
+# base_level, AND an absolute ceiling): real ilvl-scaling data should stay a
+# distinct market from junk data that merely looks numeric (see
+# fetch_snapshot.market_key()'s docstring for the real production case --
+# item 164353, a Rare weapon, base level 60, with live listings tagged
+# 28=186/189/645/670/289, none close to 60). base_level=NULL always means
+# "don't strip 28" (never "assume it's junk"), matching the Python side's
+# same fail-safe default.
+#
+# Three small helper macros instead of one giant expression, for the same
+# reason the string-stripping logic below is broken into passes: readable
+# and independently testable pieces beat one dense regex.
+#   _ilvl28_value(bk): the modifier-28 value if present, else NULL. \b28=
+#     (a word-boundary anchor, not a leading-comma/start-of-string anchor)
+#     correctly matches "m:28=" (the common case, type 28 first) without
+#     also matching inside "128=" (not a real type, but proves the anchor
+#     choice matters) since digits are word characters and ':'/',' aren't.
+#   _ilvl28_implausible(bk, base_level): the plausibility check itself.
+#   _strip_type(bk, type_pattern): the original 4-pass strip, parameterized
+#     by which type(s) to remove instead of hardcoded to 9|42|44, so both
+#     the unconditional strip and the conditional type-28 strip reuse it.
 MARKET_KEY_MACRO_SQL = r"""
-    CREATE OR REPLACE MACRO market_key(bk) AS
-      regexp_replace(
+    CREATE OR REPLACE MACRO _ilvl28_value(bk) AS
+        TRY_CAST(regexp_extract(bk, '\b28=([0-9]+)', 1) AS BIGINT);
+
+    CREATE OR REPLACE MACRO _ilvl28_implausible(bk, base_level) AS
+        base_level IS NOT NULL
+        AND _ilvl28_value(bk) IS NOT NULL
+        AND _ilvl28_value(bk) > LEAST(base_level * 3, 1000);
+
+    CREATE OR REPLACE MACRO _strip_type(bk, type_pattern) AS
         regexp_replace(
           regexp_replace(
-            regexp_replace(bk, ',(9|42|44)=[0-9]+', '', 'g'),
-          'm:(9|42|44)=[0-9]+,', 'm:', 'g'),
-        '\|m:(9|42|44)=[0-9]+$', '', 'g'),
-      '^m:(9|42|44)=[0-9]+$', '', 'g')
+            regexp_replace(
+              regexp_replace(bk, ',(' || type_pattern || ')=[0-9]+', '', 'g'),
+            'm:(' || type_pattern || ')=[0-9]+,', 'm:', 'g'),
+          '\|m:(' || type_pattern || ')=[0-9]+$', '', 'g'),
+        '^m:(' || type_pattern || ')=[0-9]+$', '', 'g');
+
+    CREATE OR REPLACE MACRO market_key(bk, base_level := NULL) AS
+        _strip_type(
+          CASE WHEN _ilvl28_implausible(bk, base_level) THEN _strip_type(bk, '28') ELSE bk END,
+          '9|42|44'
+        );
 """
 
 

@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-25 (free-tier single-realm lock + /pricing page).
+Last updated: 2026-07-25 (type-28 conditional pooling fix, item 164353; disk/retention investigated).
 
 ## Status at a glance
 
@@ -42,8 +42,21 @@ Last updated: 2026-07-25 (free-tier single-realm lock + /pricing page).
 
 **Not built yet**, in priority order — see "Next up" below for detail:
 1. Restricted Stripe key (still the full `sk_live_...` secret). Human-only, not scheduled.
-2. A camped-relist false-positive still slips through occasionally (separate,
+2. Adaptive disk retention — current `RETENTION_DAYS = 14` projects to
+   ~8.7GB at full history, over the Volume's ~4.9GB practical cap.
+   Investigated 2026-07-25, proposed but not built — see "Known gaps" below.
+3. A camped-relist false-positive still slips through occasionally (separate,
    older bug from the crafted-item fragmentation fix — see "Known gaps" below).
+
+**New this session (2026-07-25, continued again)**: a real snipe-matching
+bug (item 164353, cheap Auchindoun listing not surfacing as a snipe) traced
+to `market_key()` matching on raw, junk type-28 "ilvl" values — fixed with
+per-item conditional pooling (a plausible ilvl on current-content gear
+stays distinct; an implausible one on old transmog gear pools away), which
+also required tightening `ILVL_PLAUSIBILITY_MULTIPLE` from 5x to 3x. Also
+investigated (not built) an adaptive disk-retention scheme after confirming
+current growth would exceed Railway's volume cap at the existing 14-day
+retention. See "Session 2026-07-25, continued again" below for both.
 
 **New this session (2026-07-24)**: the light "assay ledger" redesign (with
 dark-mode toggle) rolled out to all 5 remaining pages — `login.html`,
@@ -86,10 +99,11 @@ explaining free vs. subscriber; `subscribe.html`'s copy was rewritten to
 match. See "Free-tier single-realm lock + /pricing page" below.
 
 ## Next up (short list, do these in roughly this order)
-1. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
-2. TSM/Auctionator buylist export idea (see "Future work" below) — no design done yet.
-3. Restricted Stripe key — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, real bug-radius reduction but low urgency). **Human-only, asked explicitly 2026-07-23**: do not rotate/swap this live credential without the human present, even when otherwise told to keep working autonomously.
-4. Phase 2 (commodities feed) — explicitly out of scope per human direction 2026-07-24, not being pursued.
+1. Adaptive disk retention — `collect_all.py`'s `prune_old_snapshots()`/`RETENTION_DAYS`; scope confirmed with the human 2026-07-25 (tighten day-based retention, budget "up to 4-5GB") but not yet implemented — see "Known gaps".
+2. Decide whether to fix the remaining camped-relist false-positive bug (relist-matching window logic — deferred, not started, see "Known gaps").
+3. TSM/Auctionator buylist export idea (see "Future work" below) — no design done yet.
+4. Restricted Stripe key — swap the full `sk_live_...` secret key for a key restricted to just Checkout/Customers/Subscriptions/Webhooks (Stripe's own current guidance, real bug-radius reduction but low urgency). **Human-only, asked explicitly 2026-07-23**: do not rotate/swap this live credential without the human present, even when otherwise told to keep working autonomously.
+5. Phase 2 (commodities feed) — explicitly out of scope per human direction 2026-07-24, not being pursued.
 
 ## Future work (ideas, not scheduled)
 
@@ -705,6 +719,64 @@ high-base-level items the ratio check missed, while the ratio check still
 covers low-base-level items an absolute cap alone wouldn't catch. New
 regression test using this item's real numbers. `pytest -q`: 174 passing.
 
+### Session 2026-07-25, continued again: type-28 conditional pooling (item 164353) + disk/retention investigation
+
+Human found a cheaper Auchindoun listing for item 164353 (Plundered
+Scalebane Claymore) not surfacing as a snipe against Argent Dawn despite
+looking like an obvious discount, and asked whether it was a real data gap
+or a limit cutting it off. Traced live: the listing was present, but
+`market_key()` still matched on raw type-28 values, and this item had five
+different type-28 values region-wide (186, 189, 645, 670, 289) against a
+real catalog base level of 60 — junk, the same way item 237468's was, just
+on an old Rare weapon instead of a modern raid item. Human's framing: ilvl
+is transmog-irrelevant noise specifically for old BoE gear people snipe for
+transmog, not a rule that holds for every item — so type 28 needed
+*conditional* pooling (per-item, based on plausibility), not the
+unconditional treatment 9/42/44 already get, since a genuinely different
+ilvl on current-content gear is a genuinely different market.
+
+**Shipped**: `market_key(bk, base_level=None)` gained an optional second
+arg — when supplied, a type-28 value that fails `ilvl_plausible()` gets
+pooled away same as 9/42/44; a plausible one is left untouched. Unknown
+`base_level` (the default, and what `diff_snapshots.relist_key()` still
+passes) means "don't strip," never "assume junk." `analyze.MARKET_KEY_MACRO_SQL`
+rebuilt into three small macros mirroring this. `snipe_check.find_snipes()`
+gained `_populate_base_levels()`, run once per call, which gathers every
+candidate item with a type-28 modifier and resolves+caches its base level
+via `NameCache` into a temp table the main query joins against — the one
+place this pipeline can now make a network call where it never did before
+(mitigated by the existing cache, so it's a one-time cost per new item).
+
+**The multiplier itself needed tightening**: the existing 5x ratio
+(`ILVL_PLAUSIBILITY_MULTIPLE`, from the item 237468 fix earlier the same
+day) still didn't strip 186/189/289 for a base-60 item — only 645/670
+exceeded it — so the conditional-pooling fix alone would have only
+partially closed the bug. Compared 2x/3x/4x/5x against every known real
+case; both 2x and 3x correctly stripped all known junk in both cases
+(164353 and 237468) while leaving the one known-legitimate case (base 600,
+claimed 636) untouched. Chose **3x** as the more conservative of the two
+working values. `ILVL_PLAUSIBILITY_MULTIPLE` moved from `dashboard.py` into
+`fetch_snapshot.py` (single source of truth, now that `market_key()` needs
+it too, not just the dashboard's display logic). `tests/test_market_key.py`
+encodes the real vectors from both items plus the legitimate case.
+`pytest -q`: 225 passing (also verified against CI's exact environment,
+`env -u DATABASE_URL pytest -q`, given this session's earlier CI incident).
+
+**Disk usage / retention, investigated but not built**: same day, human
+asked whether Railway's disk usage had been checked. Confirmed live:
+`RETENTION_DAYS = 14` is real and running, but with only ~1.33 days of
+actual history collected so far, extrapolating current growth to the full
+14-day window projects to ~8.7GB — past the ~4.9GB practical cap on the
+attached Volume. Asked the human two clarifying questions via
+`AskUserQuestion`: confirmed the fix should tighten the existing day-based
+retention (not switch to a different mechanism), and confirmed a target
+budget of "up to 4-5GB," with 14 days as the hoped-for depth if it fits.
+Proposed an adaptive approach — keep targeting 14 days by default, trim
+more aggressively if total usage approaches a safety threshold (e.g.
+4.5GB) — but this was explicitly parked, not implemented this session. See
+`CLAUDE.md`'s matching section for the exact next-session starting point
+(`collect_all.py`'s `prune_old_snapshots()`/`RETENTION_DAYS`).
+
 ### Stage 5 detail — hosting (done, Wait-for-CI verified 2026-07-23)
 
 Live at `https://wow-project-production.up.railway.app`. Project
@@ -740,7 +812,8 @@ instead (Linux binary, never touches that policy).
 
 - Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior. Partial mitigation added 2026-07-23: `snipe_check.find_snipes()`'s `min_sales` floor (default 2) stops a single unverified sample from becoming the whole sold-price percentile, after exactly that happened live (item 15138) — but two bad samples can still both be false positives, so this reduces rather than closes the risk.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.
-- The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, but the underlying meaning is still community-sourced, not official. Same caveat now applies to modifier types 9/42/44 (`market_key()`'s ignore-list) — inference from real data, not documented facts (type 9 was additionally human-confirmed not to affect transmog before pooling, 2026-07-24).
+- The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented; the dashboard sanity-checks it against the item's catalog level, and `market_key()` now conditionally pools implausible values into matching too (2026-07-25, `ILVL_PLAUSIBILITY_MULTIPLE = 3x`), but the underlying meaning is still community-sourced, not official. Same caveat applies to modifier types 9/42/44 (`market_key()`'s unconditional ignore-list) — inference from real data, not documented facts (type 9 was additionally human-confirmed not to affect transmog before pooling, 2026-07-24).
+- **Disk usage will exceed the Railway Volume's practical ~4.9GB cap at the current `RETENTION_DAYS = 14`** — confirmed 2026-07-25 by extrapolating early growth (~1.33 days of history projects to ~8.7GB at full retention). An adaptive retention scheme (target 14 days, trim harder if usage nears a safety threshold) was proposed and confirmed in direction by the human but not built — see `collect_all.py`'s `prune_old_snapshots()`/`RETENTION_DAYS` for the starting point.
 - **If a sell realm's entire observed history for an item is troll/camped listings, no existing guard can rescue the estimate** (found live 2026-07-24, item 7761/Steelclaw Reaver on Draenor: all 3 "sales" and all 4 current listings were the same ~398,605g decoy price). `min_sales` and the current-lowest-listing cap both assume *some* legitimate data exists on the sell realm to fall back to — when literally everything observed is bogus, there's nothing to fall back to. A region-wide cross-check against `data/listings/*.parquet` (already collected for the buy side) was proposed as the principled fix but not built — parked, same status as the camped-relist window bug above.
 - A camped-relist can still occasionally slip through the relist-matching window and get misclassified as `inferred_sale` (seen live on item 238014's `29=77` sub-variant, 2026-07-23 evening) — separate from, and not fixed by, the same-day crafted-item pooling fix. No mitigation yet beyond the existing `min_sales` floor.
 - `appearance.py`'s rarity signal (`source_count`) is known to diverge from Wowhead's own "same model as" data on at least one item (14042) — see "Evening session" above. No Wowhead API exists to reconcile against.

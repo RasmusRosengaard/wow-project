@@ -1,16 +1,19 @@
 """Tests for market_key(): the coarser matching key that pools near-identical
 bonus_key variants so sold-price percentiles, the current-lowest cap, and
 relist detection don't fragment on Blizzard's undocumented modifiers (types
-9/42/44). See fetch_snapshot.py's MARKET_IGNORE_MODIFIER_TYPES docstring for
-the real production cases this was caught from: item 238014 (Sun-Blessed
-Sickle, crafted-item stat roll + serial, types 42/44) and item 7761
-(Steelclaw Reaver, a non-crafted item -- type 9, confirmed by a human not to
-affect transmog/real value, 2026-07-24).
+9/42/44 always, type 28 conditionally -- see below). See fetch_snapshot.py's
+MARKET_IGNORE_MODIFIER_TYPES docstring for the real production cases this
+was caught from: item 238014 (Sun-Blessed Sickle, crafted-item stat roll +
+serial, types 42/44) and item 7761 (Steelclaw Reaver, a non-crafted item --
+type 9, confirmed by a human not to affect transmog/real value, 2026-07-24).
 
 Includes a parity check between the Python implementation
 (fetch_snapshot.market_key) and its SQL mirror (analyze.MARKET_KEY_MACRO_SQL)
 -- they're two separate implementations (no shared UDF, see fetch_snapshot's
-docstring for why), so this test is what keeps them from silently drifting."""
+docstring for why), so this test is what keeps them from silently drifting.
+Parametrized over both no-base_level and real base_level cases, since the
+type-28 conditional stripping (added 2026-07-25) only ever triggers with one
+supplied."""
 import duckdb
 import pytest
 
@@ -31,15 +34,72 @@ VECTORS = [
     "b:6710|m:9=30,28=211",    # item 7761 real vector, type 9 first
     "b:6710|m:9=90,28=211",    # item 7761 real vector, different 9= value
     "b:X|m:28=1,9=2",          # ignored type 9 in the middle
+    "b:1504,6652,10844,12265,12921|m:28=3031",  # item 237468 real vector (girdle)
+    "m:28=645",                                  # item 164353 real vector (weapon), lone modifier
 ]
 
 
 @pytest.mark.parametrize("bk", VECTORS)
-def test_sql_macro_matches_python_implementation(bk):
+def test_sql_macro_matches_python_implementation_no_base_level(bk):
     con = duckdb.connect()
     con.execute(analyze.MARKET_KEY_MACRO_SQL)
     sql_result = con.execute("SELECT market_key(?)", [bk]).fetchone()[0]
     assert sql_result == market_key(bk)
+
+
+@pytest.mark.parametrize("bk,base_level", [
+    (bk, base) for bk in VECTORS for base in (60, 610, 636)
+])
+def test_sql_macro_matches_python_implementation_with_base_level(bk, base_level):
+    con = duckdb.connect()
+    con.execute(analyze.MARKET_KEY_MACRO_SQL)
+    sql_result = con.execute("SELECT market_key(?, ?)", [bk, base_level]).fetchone()[0]
+    assert sql_result == market_key(bk, base_level)
+
+
+def test_implausible_type_28_pools_across_different_values():
+    """Real production case: item 164353 (Plundered Scalebane Claymore, a
+    Rare weapon, base level 60) had live listings tagged 28=186, 28=189,
+    28=645, 28=670, 28=289 -- none remotely close to the real base level.
+    With a base_level supplied, all of these must pool to the same market
+    key; without one (the pre-2026-07-25 behavior, still used by
+    diff_snapshots.relist_key()), they must stay distinct."""
+    variants = ["m:28=186", "m:28=189", "m:28=645", "m:28=670", "m:28=289"]
+    pooled = {market_key(bk, base_level=60) for bk in variants}
+    assert pooled == {""}, f"expected all variants to strip to empty, got {pooled}"
+    unpooled = {market_key(bk) for bk in variants}
+    assert len(unpooled) == len(variants), "without base_level, variants must stay distinct"
+
+
+def test_implausible_type_28_pools_via_absolute_ceiling():
+    """Real production case: item 237468 (Nightfall Executioner's Girdle,
+    base level 610) showed ilvl 3031 -- caught by the absolute ceiling
+    (ILVL_ABSOLUTE_MAX) regardless of which ratio multiplier is in effect.
+    market_key must strip it too, not just dashboard.py's display logic."""
+    bk = "b:1504,6652,10844,12265,12921|m:28=3031"
+    assert market_key(bk, base_level=610) == "b:1504,6652,10844,12265,12921"
+
+
+def test_plausible_type_28_is_never_stripped():
+    """The legitimate case market_key must NOT break: a real, current-
+    content ilvl-scaling item (base 600, claimed 636) should stay a
+    distinct market from a differently-scaled copy of itself -- pooling
+    these would incorrectly merge two items with different real prices."""
+    low = "b:6652,10844|m:28=610,29=79"
+    high = "b:6652,10844|m:28=636,29=79"
+    assert market_key(low, base_level=600) != market_key(high, base_level=600)
+    assert "28=610" in market_key(low, base_level=600)
+    assert "28=636" in market_key(high, base_level=600)
+
+
+def test_unknown_base_level_never_strips_type_28():
+    """base_level=None (unknown) must never be treated as 'assume implausible
+    and strip' -- that could incorrectly merge two items that really do have
+    different, price-relevant item levels. Only a KNOWN implausible value
+    triggers stripping."""
+    bk = "m:28=3031"
+    assert market_key(bk, base_level=None) == bk
+    assert market_key(bk) == bk  # default is also None
 
 
 def test_strips_ignored_types_keeps_the_rest():
