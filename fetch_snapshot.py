@@ -86,7 +86,19 @@ def bonus_key(item: dict) -> str:
 # thin enough that a single misclassified camped relist (a known separate
 # bug, see diff_snapshots.py's blind-spot note) could dominate a variant's
 # entire percentile.
-MARKET_IGNORE_MODIFIER_TYPES = {42, 44}
+#
+# Type 9 added 2026-07-24, investigating item 7761 (Steelclaw Reaver, a
+# non-crafted level-21 rare weapon): region-wide listings carried nine
+# distinct m:9=NN values (25/30/60/61/79/80/81/84/90) for what a human
+# confirmed is the same transmog appearance regardless of value -- i.e. not
+# a real, value-changing variant, same category as 42/44 even though this
+# item isn't crafted. Corroborating evidence from the same investigation:
+# Draenor's own troll/camped listings priced identically (~398,605g)
+# whether tagged 9=30 or 9=90, which wouldn't happen if the modifier were a
+# stat that mattered. Consequence of NOT pooling it: a genuinely cheap
+# region-wide listing (28,500g, tagged 9=30) never joined against Draenor's
+# sell-side data for 9=90, so it was invisible to snipe_check entirely.
+MARKET_IGNORE_MODIFIER_TYPES = {9, 42, 44}
 
 
 def market_key(bk: str) -> str:

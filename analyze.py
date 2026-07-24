@@ -28,20 +28,20 @@ DATA = ROOT / "data"
 # for why this is a duplicated implementation rather than a shared Python
 # UDF (numpy dependency), and tests/test_market_key.py for the parity check
 # (run against this exact constant, not a copy) that keeps the two in sync.
-# Strips MARKET_IGNORE_MODIFIER_TYPES = {42, 44} from the "m:..." segment of
-# a bonus_key, in 4 ordered passes: (1) any occurrence with a leading comma,
-# (2) a leading occurrence followed by more modifiers, (3) a lone occurrence
-# that's the entire "m:" segment, (4) a bonus_key that's nothing but that
-# lone occurrence (no "b:" part at all).
+# Strips MARKET_IGNORE_MODIFIER_TYPES = {9, 42, 44} from the "m:..." segment
+# of a bonus_key, in 4 ordered passes: (1) any occurrence with a leading
+# comma, (2) a leading occurrence followed by more modifiers, (3) a lone
+# occurrence that's the entire "m:" segment, (4) a bonus_key that's nothing
+# but that lone occurrence (no "b:" part at all).
 MARKET_KEY_MACRO_SQL = r"""
     CREATE OR REPLACE MACRO market_key(bk) AS
       regexp_replace(
         regexp_replace(
           regexp_replace(
-            regexp_replace(bk, ',(42|44)=[0-9]+', '', 'g'),
-          'm:(42|44)=[0-9]+,', 'm:', 'g'),
-        '\|m:(42|44)=[0-9]+$', '', 'g'),
-      '^m:(42|44)=[0-9]+$', '', 'g')
+            regexp_replace(bk, ',(9|42|44)=[0-9]+', '', 'g'),
+          'm:(9|42|44)=[0-9]+,', 'm:', 'g'),
+        '\|m:(9|42|44)=[0-9]+$', '', 'g'),
+      '^m:(9|42|44)=[0-9]+$', '', 'g')
 """
 
 

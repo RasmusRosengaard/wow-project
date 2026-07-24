@@ -1,9 +1,11 @@
 """Tests for market_key(): the coarser matching key that pools near-identical
-crafted-item bonus_key variants so sold-price percentiles, the current-lowest
-cap, and relist detection don't fragment on Blizzard's undocumented per-craft
-modifiers (types 42/44). See fetch_snapshot.py's MARKET_IGNORE_MODIFIER_TYPES
-docstring for the real production case (item 238014, Sun-Blessed Sickle) this
-was caught from.
+bonus_key variants so sold-price percentiles, the current-lowest cap, and
+relist detection don't fragment on Blizzard's undocumented modifiers (types
+9/42/44). See fetch_snapshot.py's MARKET_IGNORE_MODIFIER_TYPES docstring for
+the real production cases this was caught from: item 238014 (Sun-Blessed
+Sickle, crafted-item stat roll + serial, types 42/44) and item 7761
+(Steelclaw Reaver, a non-crafted item -- type 9, confirmed by a human not to
+affect transmog/real value, 2026-07-24).
 
 Includes a parity check between the Python implementation
 (fetch_snapshot.market_key) and its SQL mirror (analyze.MARKET_KEY_MACRO_SQL)
@@ -26,6 +28,9 @@ VECTORS = [
     "m:44=245822",             # lone ignored type, no b: part at all
     "b:X|m:42=487,44=245822",  # only ignored types
     "b:X|m:29=1,30=2",         # no ignored types present -- unchanged
+    "b:6710|m:9=30,28=211",    # item 7761 real vector, type 9 first
+    "b:6710|m:9=90,28=211",    # item 7761 real vector, different 9= value
+    "b:X|m:28=1,9=2",          # ignored type 9 in the middle
 ]
 
 
@@ -52,10 +57,21 @@ def test_two_near_identical_crafted_rolls_collapse_to_the_same_market_key():
 
 def test_different_ilvl_or_core_modifiers_do_not_collapse():
     """market_key must stay distinct for genuinely different items -- only
-    the specific ignored types (42, 44) are dropped."""
+    the specific ignored types (9, 42, 44) are dropped."""
     a = "b:12251,12253,12500|m:28=3615,29=79,38=6,39=57161,40=2691,42=245"
     b = "b:12251,12253,12500|m:28=9999,29=79,38=6,39=57161,40=2691,42=245"  # different ilvl (28)
     assert market_key(a) != market_key(b)
+
+
+def test_item_7761_type_9_variants_collapse_to_the_same_market_key():
+    """Real production case: item 7761 (Steelclaw Reaver, not crafted) had
+    nine distinct m:9=NN values region-wide for what's confirmed to be the
+    same item -- without pooling, a genuinely cheap listing under one 9=
+    value never matched the sell realm's data under a different 9= value,
+    making it invisible to snipe_check entirely."""
+    variant_a = "b:6710|m:9=30,28=211"
+    variant_b = "b:6710|m:9=90,28=211"
+    assert market_key(variant_a) == market_key(variant_b) == "b:6710|m:28=211"
 
 
 def test_no_ignored_types_present_is_unchanged():
