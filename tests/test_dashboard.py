@@ -567,7 +567,7 @@ def test_index_serves_html():
     r = client.get("/")
     assert r.status_code == 200
     assert b"<table" in r.content
-    assert b"AH Snipe Dashboard" in r.content
+    assert b"Realm Arbitrage" in r.content
 
 
 

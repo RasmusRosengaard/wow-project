@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AH Snipe Dashboard</title>
+<title>Realm Arbitrage</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
   // Runs before first paint, deliberately separate from the main script at
   // the end of body -- setting the theme attribute after CSS has already
@@ -97,8 +98,15 @@
   .shell { display: flex; align-items: flex-start; gap: 1.25rem; padding: 1.25rem 1.5rem; max-width: 1500px; margin-inline: auto; }
   .filters {
     flex: 0 0 15rem; background: var(--card); border: 1px solid var(--hairline);
-    border-radius: 6px; padding: 1rem; display: flex; flex-direction: column; gap: 0.9rem;
+    border-radius: 6px; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.55rem;
   }
+  /* Paired numeric inputs (min/max, etc.) side by side instead of stacked --
+     added 2026-07-26 so the whole rail fits one viewport without scrolling. */
+  /* align-items: end -- a longer label (e.g. "Min sell price (g)") can wrap
+     to two lines while its row partner ("Max per item") stays on one; without
+     this the two inputs sit at different heights instead of sharing a
+     baseline. */
+  .filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; align-items: end; }
   .content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.9rem; }
 
   /* Ticker: now a single quiet line (see loadStatus) -- lives at the top of
@@ -116,7 +124,7 @@
   }
   .filters-heading {
     font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 0.05em; margin-bottom: 0.55rem; padding-top: 0.1rem;
+    letter-spacing: 0.05em; margin-bottom: 0.4rem; padding-top: 0.1rem;
     border-top: 1px solid var(--hairline);
   }
   .realm-lock-hint {
@@ -124,7 +132,10 @@
   }
   .realm-lock-hint a { color: var(--bullion); }
   .filters select:disabled { opacity: 0.65; cursor: not-allowed; }
-  .item-class-filters { display: flex; flex-direction: column; gap: 0.5rem; }
+  /* 2-column grid, not a stacked list -- halves the vertical space these
+     checkbox groups take (added 2026-07-26 to fit the whole rail on one
+     screen without scrolling). Shared by both item-class and rarity groups. */
+  .item-class-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem 0.5rem; }
   .item-class-filters .auto-label { text-transform: none; letter-spacing: 0; }
   .filters input, .filters select {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
@@ -138,6 +149,20 @@
   /* ---------- Ledger table ---------- */
   .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hairline); border-radius: 6px; transition: opacity 0.15s ease; }
   .table-wrap.loading { opacity: 0.5; pointer-events: none; }
+  /* Explicit "fetching" signal -- the dimmed table alone (above) reads more
+     like "disabled" than "loading" at a glance. Was previously covered by
+     the manual Refresh button's own "Loading…" label before that button
+     was removed as redundant (2026-07-25). */
+  .loading-indicator {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.78rem; color: var(--text-dim); padding-bottom: 0.6rem;
+  }
+  .loading-indicator::before {
+    content: ""; width: 11px; height: 11px; border-radius: 50%;
+    border: 2px solid var(--hairline-strong); border-top-color: var(--bullion);
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   table { border-collapse: collapse; width: 100%; font-size: 0.85rem; min-width: 640px; }
   th, td { padding: 0.55rem 0.7rem; text-align: right; border-bottom: 1px solid var(--hairline); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
@@ -234,9 +259,21 @@
     <svg class="seal" width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
       <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
       <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
+      <!-- Coin-edge tick marks -- a struck medallion/assay-stamp detail, not
+           just a plain ring, reinforcing the certification-seal identity. -->
+      <g stroke="currentColor" stroke-width="0.9" stroke-linecap="round">
+        <line x1="15" y1="1" x2="15" y2="3.4"/>
+        <line x1="15" y1="26.6" x2="15" y2="29"/>
+        <line x1="1" y1="15" x2="3.4" y2="15"/>
+        <line x1="26.6" y1="15" x2="29" y2="15"/>
+        <line x1="5.11" y1="5.11" x2="6.81" y2="6.81"/>
+        <line x1="23.19" y1="23.19" x2="24.89" y2="24.89"/>
+        <line x1="5.11" y1="24.89" x2="6.81" y2="23.19"/>
+        <line x1="23.19" y1="6.81" x2="24.89" y2="5.11"/>
+      </g>
       <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
-    <h1>AH Snipe Ledger</h1>
+    <h1>Realm Arbitrage</h1>
     <span class="seal-label">Validated Data</span>
   </div>
   <div class="nav">
@@ -254,11 +291,15 @@
     <label>Sell realm <select id="sell"></select></label>
     <div id="realm-lock-hint" class="realm-lock-hint" style="display:none;"></div>
     <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
-    <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
-    <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
-    <label>Min sell price (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
+    <div class="filter-row">
+      <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
+      <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
+    </div>
+    <div class="filter-row">
+      <label>Min sell price (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
+      <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
+    </div>
     <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
-    <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
     <label class="auto-label">
       <input id="unique_appearance" type="checkbox"> Unique transmog only
     </label>
@@ -292,6 +333,7 @@
   </aside>
 
   <main class="content">
+    <div id="loading-indicator" class="loading-indicator" style="display:none;">Loading latest data&hellip;</div>
     <div class="table-wrap" id="table-wrap">
     <table>
       <thead>
@@ -707,6 +749,7 @@ function renderTable() {
 
 function setLoading(isLoading) {
   $("table-wrap").classList.toggle("loading", isLoading);
+  $("loading-indicator").style.display = isLoading ? "flex" : "none";
 }
 
 // Paints the last-known batch for (sell, items) from localStorage, if any --

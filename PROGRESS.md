@@ -35,9 +35,10 @@ Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day
 
 **Not built yet**, in priority order — see "Next up" below:
 1. Restricted Stripe key (still the full `sk_live_...` secret). Human-only, not scheduled.
-2. TSM/Auctionator buylist export idea (parked, no design work).
-3. Phase 4 (Deal Score + Discord alerts) — blocked on Phase 3 data.
-4. The free in-game addon itself (Phase 5's remaining half).
+2. Email verification for new registrations, to stop spam/throwaway free-tier accounts.
+3. TSM/Auctionator buylist export idea (parked, no design work).
+4. Phase 4 (Deal Score + Discord alerts) — blocked on Phase 3 data.
+5. The free in-game addon itself (Phase 5's remaining half).
 
 ## Next up (roughly this order)
 
@@ -45,13 +46,46 @@ Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day
    restricted to Checkout/Customers/Subscriptions/Webhooks. **Human-only,
    asked explicitly**: do not rotate/swap this live credential without the
    human present, even when otherwise told to keep working autonomously.
-2. **TSM/Auctionator buylist export** (see "Future work" below) — no design done.
-3. **A residual pricing-model edge case**, documented not fixed: a
+2. **Email verification for new registrations** (scoped 2026-07-26, not
+   started) — goal: require a verified email before an account reaches any
+   `current_active_user`-gated route (`/api/me`, `/api/snipes`,
+   `/api/realms`, `/api/status`), so a spam/throwaway registration can't
+   consume free-tier resources (server-side snipe queries, a realm-lock
+   slot). Current state: `db.py`'s `User` model already has an
+   `is_verified` column (inherited from FastAPI-Users' base table from day
+   one) but it's never read or written anywhere — no new migration needed
+   for the column itself. **No email-sending capability exists in this
+   project at all** (no SMTP config, no provider SDK, nothing in
+   `.env.example`) — that's the real gap. `auth.py`'s `UserManager` has no
+   `on_after_register`/`on_after_request_verify` hooks, and `dashboard.py`
+   never mounts `fastapi_users.get_verify_router(...)`. Open decisions
+   before this can be built:
+   - **Email provider** — picking one (Resend/SendGrid/Postmark/SMTP)
+     means creating a third-party account, a human-only step (same pattern
+     as the Battle.net API client below). Resend was the lightweight
+     recommendation (single REST POST via the `httpx` dependency already
+     present, no new library) but not decided.
+   - **Existing-account backfill** — production already has real accounts
+     (the founder/superuser account, any current subscribers) with
+     `is_verified=False` by default. Flipping the gate on without a
+     one-time backfill (mark every pre-existing account verified) would
+     lock all of them out on deploy.
+   - UX not yet designed: `register.html`'s post-registration messaging
+     (currently silently redirects to `/login`, no "check your email"
+     state), a `/verify?token=...` landing page, a "resend verification
+     email" affordance.
+   - `tests/test_auth.py` already exercises register/login/route-gating
+     end-to-end against a real throwaway SQLite DB — extending it (an
+     unverified-account-blocked case, updating the existing tests that
+     assume register+login alone reaches `/api/snipes`/`/api/status`) is
+     part of this work, not an afterthought.
+3. **TSM/Auctionator buylist export** (see "Future work" below) — no design done.
+4. **A residual pricing-model edge case**, documented not fixed: a
    genuinely live troll/decoy current listing can still become a market's
    reference price (inherent to the current-cheapest-listing design, not a
    bug in it) — see `HISTORY.md`'s "Pricing model replaced" entry for the
    item 13051 case that surfaced this.
-4. Phase 2 (commodities feed) — explicitly out of scope, not being pursued.
+5. Phase 2 (commodities feed) — explicitly out of scope, not being pursued.
 
 ## Future work (ideas, not scheduled)
 

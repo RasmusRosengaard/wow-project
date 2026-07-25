@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="AH Snipe Dashboard", lifespan=lifespan)
+app = FastAPI(title="Realm Arbitrage", lifespan=lifespan)
 
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
