@@ -142,6 +142,43 @@ def test_prune_old_snapshots_never_drops_below_two(env):
     assert len(list(snap_dir.glob("*.parquet"))) == 2
 
 
+def test_effective_retention_days_returns_target_under_budget():
+    """Well under SAFETY_BYTES -- no tightening at all, the target stands."""
+    assert collect_all._effective_retention_days(
+        total_bytes=1 * 1024 ** 3, target_days=14, safety_bytes=4.5 * 1024 ** 3) == 14
+
+
+def test_effective_retention_days_scales_down_proportionally_over_budget():
+    """2x over budget -> roughly half the target days, per the documented
+    linear-correction rule."""
+    days = collect_all._effective_retention_days(
+        total_bytes=9 * 1024 ** 3, target_days=14, safety_bytes=4.5 * 1024 ** 3)
+    assert days == 7
+
+
+def test_effective_retention_days_never_drops_below_floor():
+    """Wildly over budget must still floor at min_days -- never prune harder
+    than prune_old_snapshots()'s own always-keep-2 floor."""
+    days = collect_all._effective_retention_days(
+        total_bytes=100 * 1024 ** 3, target_days=14, safety_bytes=4.5 * 1024 ** 3, min_days=2)
+    assert days == 2
+
+
+def test_total_snapshot_bytes_sums_across_realms(env):
+    for cr, ts in ((1403, 1_700_000_000), (1096, 1_700_000_100)):
+        snap_dir = env / "snapshots" / str(cr)
+        snap_dir.mkdir(parents=True)
+        pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
+                       snap_dir / f"{ts}.parquet")
+    total = collect_all._total_snapshot_bytes()
+    real_total = sum(p.stat().st_size for p in (env / "snapshots").glob("*/*.parquet"))
+    assert total == real_total > 0
+
+
+def test_total_snapshot_bytes_zero_when_nothing_collected_yet(env):
+    assert collect_all._total_snapshot_bytes() == 0
+
+
 def test_collect_all_only_deep_collects_high_pop_but_sweeps_everyone(env, monkeypatch):
     monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR, LOW_POP_CR])
     pop = {FULL_POP_CR: "FULL", LOW_POP_CR: "LOW"}
@@ -284,3 +321,42 @@ def test_collect_all_includes_prewarm_count_in_summary(env, monkeypatch):
 
     summary = collect_all.collect_all()
     assert summary["base_level_candidates"] == 0  # no listings swept -- nothing to prewarm
+    assert summary["snapshot_gb"] == 0.0  # nothing collected in this test yet
+    assert summary["effective_retention_days"] == collect_all.RETENTION_DAYS  # well under budget
+
+
+def test_collect_all_tightens_retention_when_over_budget(env, monkeypatch):
+    """A live realm's pruning must actually receive the tightened
+    effective_retention_days, not the flat RETENTION_DAYS target, once
+    total snapshot usage exceeds SAFETY_BYTES."""
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
+    # _effective_retention_days()'s safety_bytes default is bound at def
+    # time, so monkeypatching the module-level SAFETY_BYTES constant
+    # wouldn't reach it -- force "way over budget" via the one thing
+    # collect_all() actually calls dynamically each cycle instead.
+    monkeypatch.setattr(collect_all, "_total_snapshot_bytes", lambda: 100 * 1024 ** 3)
+
+    snap_dir = env / "snapshots" / str(FULL_POP_CR)
+    snap_dir.mkdir(parents=True)
+    now = int(time.time())
+    for ts in (now - 3600, now):
+        pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
+                       snap_dir / f"{ts}.parquet")
+
+    captured = {}
+    real_prune = collect_all.prune_old_snapshots
+
+    def spy(cr, retention_days=collect_all.RETENTION_DAYS):
+        captured["retention_days"] = retention_days
+        return real_prune(cr, retention_days=retention_days)
+    monkeypatch.setattr(collect_all, "prune_old_snapshots", spy)
+
+    # Force the diff/prune branch to run even though fetch_once() returned
+    # None this cycle (no *new* snapshot) -- 2 snapshots already exist.
+    monkeypatch.setattr(collect_all, "_diff", lambda cr: None)
+    monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: 1)  # pretend a new snapshot arrived
+
+    collect_all.collect_all()
+    assert captured["retention_days"] == collect_all.MIN_RETENTION_DAYS

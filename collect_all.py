@@ -51,6 +51,18 @@ log = logging.getLogger("collect_all")
 RETENTION_DAYS = 14
 DEEP_COLLECT_POPULATION_TIERS = {"FULL", "HIGH"}
 
+# Investigated 2026-07-25 (see CLAUDE.md's "Disk usage / retention"):
+# extrapolating early growth at RETENTION_DAYS=14 projected to ~8.7GB,
+# over the Railway volume's ~4.9GB practical cap. Human confirmed via
+# AskUserQuestion: keep the existing day-based retention mechanism (not a
+# different one, e.g. row/size-based or compaction), target 14 days by
+# default, but budget "up to 4-5GB" -- SAFETY_BYTES is that budget.
+SAFETY_BYTES = int(4.5 * 1024 ** 3)
+# prune_old_snapshots() already never drops below the 2 most recent
+# snapshots (diff_snapshots needs 2+ to produce anything) -- this is the
+# same floor, expressed in days, for the *target* retention itself.
+MIN_RETENTION_DAYS = 2
+
 # How many not-yet-cached items to resolve per cycle -- see
 # _prewarm_item_base_levels() below. This runs in the background (no user
 # waiting on it), so it can afford more per-call work than
@@ -89,6 +101,37 @@ def _diff(cr: int) -> None:
         diff_snapshots.main()
     finally:
         sys.argv = orig_argv
+
+
+def _total_snapshot_bytes() -> int:
+    """Total on-disk size of every deep-collected realm's snapshot history
+    combined -- what _effective_retention_days() below measures against
+    SAFETY_BYTES."""
+    snap_root = DATA / "snapshots"
+    if not snap_root.exists():
+        return 0
+    return sum(p.stat().st_size for p in snap_root.glob("*/*.parquet"))
+
+
+def _effective_retention_days(total_bytes: int, target_days: int = RETENTION_DAYS,
+                              safety_bytes: int = SAFETY_BYTES,
+                              min_days: int = MIN_RETENTION_DAYS) -> int:
+    """RETENTION_DAYS is a target, not a guarantee. Below safety_bytes,
+    prune at the full target as before. Above it, shrink the effective day
+    count proportionally to how far over budget usage is -- e.g. at 2x the
+    safety budget, retain roughly half as many days -- rather than
+    switching to a different pruning mechanism (row/size-based,
+    compaction), per the human's confirmed direction (see SAFETY_BYTES'
+    comment). Usage scales roughly linearly with days of history kept for
+    a fixed set of realms at a fixed collection cadence, so this linear
+    correction is a reasonable first cut. Floored at min_days -- never
+    prune harder than prune_old_snapshots()'s own always-keep-2 floor,
+    regardless of how far over budget usage is; if that's still not
+    enough, more realms or slower growth is the real fix, not more
+    aggressive pruning of a window that's already at its floor."""
+    if total_bytes <= safety_bytes:
+        return target_days
+    return max(min_days, int(target_days * safety_bytes / total_bytes))
 
 
 def prune_old_snapshots(cr: int, retention_days: int = RETENTION_DAYS) -> int:
@@ -163,6 +206,16 @@ def collect_all() -> dict:
     polled = diffed = pruned = 0
     failed: list[int] = []
 
+    # Measured once per cycle, applied to every realm pruned this cycle --
+    # see _effective_retention_days()'s docstring. Recomputed fresh next
+    # cycle as usage changes, not tracked incrementally mid-cycle.
+    total_bytes = _total_snapshot_bytes()
+    effective_retention_days = _effective_retention_days(total_bytes)
+    if effective_retention_days < RETENTION_DAYS:
+        log.warning("collect_all: snapshot usage %.2fGB over SAFETY_BYTES budget -- "
+                    "retention tightened to %s days (target %s)",
+                    total_bytes / 1024 ** 3, effective_retention_days, RETENTION_DAYS)
+
     for cr in realm_ids:
         try:
             got_new_snapshot = fetch_snapshot.fetch_once(cr) is not None
@@ -172,7 +225,7 @@ def collect_all() -> dict:
                 if n_snaps >= 2:
                     _diff(cr)
                     diffed += 1
-                    pruned += prune_old_snapshots(cr)
+                    pruned += prune_old_snapshots(cr, retention_days=effective_retention_days)
         except Exception:
             log.exception("collect_all: realm %s failed", cr)
             failed.append(cr)
@@ -190,7 +243,9 @@ def collect_all() -> dict:
 
     summary = {"realms": len(realm_ids), "polled": polled, "diffed": diffed,
               "pruned_snapshots": pruned, "failed": failed,
-              "base_level_candidates": prewarmed}
+              "base_level_candidates": prewarmed,
+              "snapshot_gb": round(total_bytes / 1024 ** 3, 2),
+              "effective_retention_days": effective_retention_days}
     log.info("collect_all: %s", summary)
     return summary
 
