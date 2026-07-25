@@ -1,7 +1,6 @@
 """Tests for the region scanner's pure functions (rows) and sweep robustness —
 no network involved."""
 import pyarrow.parquet as pq
-import pytest
 
 import scan_region
 from scan_region import rows
@@ -60,6 +59,49 @@ def test_scan_one_writes_listings(monkeypatch, tmp_path):
     table = pq.read_table(tmp_path / "listings" / "1403.parquet")
     assert table.schema.equals(scan_region.LISTING_SCHEMA)
     assert table.num_rows == 1
+
+
+def test_scan_one_leaves_no_temp_file_behind(monkeypatch, tmp_path):
+    """scan_one() writes to a temp file then atomically renames it over the
+    final path (2026-07-25, after a real production crash: a reader could
+    open the final path mid-write and get a truncated parquet file). A
+    successful write must leave the listings dir with only the final file,
+    no leftover .parquet.tmp."""
+    payload = {"auctions": [{"id": 1, "item": {"id": 2}, "buyout": 100,
+                             "quantity": 1, "time_left": "LONG"}]}
+    monkeypatch.setattr(scan_region, "DATA", tmp_path)
+    monkeypatch.setattr(scan_region, "get_auctions_with_backoff",
+                        lambda *a, **k: FakeResponse(200, payload=payload))
+
+    scan_region.scan_one(1403, ts=1_700_000_000)
+    listings_dir = tmp_path / "listings"
+    assert sorted(p.name for p in listings_dir.iterdir()) == ["1403.parquet"]
+
+
+def test_scan_one_overwrite_is_atomic_rename(monkeypatch, tmp_path):
+    """A second sweep overwriting an existing listings file must go through
+    the same temp-file-then-rename path, not a direct in-place write."""
+    payload_a = {"auctions": [{"id": 1, "item": {"id": 2}, "buyout": 100,
+                               "quantity": 1, "time_left": "LONG"}]}
+    payload_b = {"auctions": [{"id": 1, "item": {"id": 2}, "buyout": 100,
+                               "quantity": 1, "time_left": "LONG"},
+                              {"id": 2, "item": {"id": 3}, "buyout": 200,
+                               "quantity": 1, "time_left": "LONG"}]}
+    monkeypatch.setattr(scan_region, "DATA", tmp_path)
+
+    monkeypatch.setattr(scan_region, "get_auctions_with_backoff",
+                        lambda *a, **k: FakeResponse(200, payload=payload_a))
+    scan_region.scan_one(1403, ts=1_700_000_000)
+
+    monkeypatch.setattr(scan_region, "get_auctions_with_backoff",
+                        lambda *a, **k: FakeResponse(200, payload=payload_b))
+    n = scan_region.scan_one(1403, ts=1_700_000_100)
+
+    assert n == 2
+    listings_dir = tmp_path / "listings"
+    assert sorted(p.name for p in listings_dir.iterdir()) == ["1403.parquet"]
+    table = pq.read_table(listings_dir / "1403.parquet")
+    assert table.num_rows == 2
 
 
 def test_scan_one_skips_malformed_json(monkeypatch, tmp_path):

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import logging
 import logging.handlers
+import os
 import time
 from pathlib import Path
 
@@ -92,7 +93,18 @@ def scan_one(cr: int, ts: int) -> int:
     table = pa.Table.from_pylist(rows(payload, cr, ts), schema=LISTING_SCHEMA)
     out_dir = DATA / "listings"
     out_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, out_dir / f"{cr}.parquet", compression="zstd")
+    final_path = out_dir / f"{cr}.parquet"
+    # Write to a temp file in the same directory first, then atomically
+    # rename over the final path -- writing directly to final_path left a
+    # window where a concurrent reader (e.g. find_snipes() running in
+    # another request/thread while collect_all()'s background loop sweeps)
+    # could open a truncated/partially-written parquet file and crash with
+    # a hard DuckDB read error. Hit live by accident 2026-07-25 while
+    # verifying an unrelated fix. Same directory is required for
+    # os.replace() to be atomic (a cross-filesystem rename isn't).
+    tmp_path = out_dir / f"{cr}.parquet.tmp"
+    pq.write_table(table, tmp_path, compression="zstd")
+    os.replace(tmp_path, final_path)
     return table.num_rows
 
 
