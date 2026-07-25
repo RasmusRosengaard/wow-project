@@ -150,7 +150,7 @@ class NameCache:
         """Batch version of _ensure_item_details(): resolves every not-yet-
         cached id concurrently via a thread pool instead of one sequential
         Blizzard API call per item. Added 2026-07-25 after a superuser's
-        region-wide, largely-uncached query (snipe_check._populate_base_levels,
+        region-wide, largely-uncached query (snipe_check._populate_market_keys,
         which has no --items filter to narrow its candidate set) took 30-175s
         per /api/snipes call doing this one item at a time -- real production
         pain, not a hypothetical (a stuck "Loading" dashboard, greyed-out
@@ -159,7 +159,7 @@ class NameCache:
         limit (added same day, once concurrency alone turned out not to be
         enough): caps how many NOT-yet-cached items this call will actually
         resolve, in the priority order item_ids was given. Live-confirmed
-        the candidate set _populate_base_levels() gathers can be 15,000+
+        the candidate set _populate_market_keys() gathers can be 15,000+
         items on just one sell realm -- type-28 modifiers turn out to be
         ubiquitous on modern ilvl-scaling gear, not the rare old-BoE-item
         case this was first built for. Blizzard's rate limit (100 req/s) is

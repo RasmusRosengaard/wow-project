@@ -313,7 +313,8 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
                                        top=top, sort=sort)
 
     # find_snipes() can now make blocking Blizzard API calls mid-query
-    # (_populate_base_levels(), added 2026-07-25 for type-28 ilvl pooling --
+    # (_populate_market_keys(), added 2026-07-25 for type-28 ilvl pooling,
+    # renamed same day once it also took on noise-bonus-id detection --
     # see snipe_check.py) on top of its own DuckDB work. Both are
     # synchronous/blocking; running them directly in this async route body
     # would freeze the *entire* single-process server for every other

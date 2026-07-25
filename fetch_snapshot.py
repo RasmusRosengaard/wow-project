@@ -135,7 +135,33 @@ def ilvl_plausible(claimed: int, base_level: int | None) -> bool:
             and claimed <= ILVL_ABSOLUTE_MAX)
 
 
-def market_key(bk: str, base_level: int | None = None) -> str:
+# Thresholds for snipe_check._populate_market_keys()'s per-item noise-bonus-
+# id detection (see market_key()'s noise_bonus_ids docstring). Calibrated
+# against real live data 2026-07-25 across three items:
+#   - 36507 (Iron-Molded Fist, the reported bug): the per-craft noise value
+#     appeared in at most 7/48 listings (0.15) for any single value, and
+#     14/18 distinct values appeared only once; the one real dimension
+#     (6655/3870/3871) appeared in 43-90/48 listings (0.90).
+#   - 109168 (Shrediron's Shredder): real dimensions ranged 14%-100%
+#     document frequency (a base tag at ~100%, a binary quality flag at
+#     ~46%/54%, paired gem bonuses at ~16%); the noise tail was ~170
+#     distinct values each appearing in 1-6 of 309 listings (<=2%).
+#   - 114813 (Hexweave Robe): same shape, real dimensions at 14%-100%,
+#     noise tail at <=2%.
+# 5% sits comfortably below every real dimension observed (smallest: 14%)
+# and comfortably above where per-craft noise clusters (largest single
+# noise value: 15%, but that was on a small 48-listing sample -- see
+# BONUS_NOISE_MIN_SAMPLES). MIN_SAMPLES=20 exists so a thin sample can't
+# make a genuinely rare-but-real value (e.g. a real variant only 2 sellers
+# have ever listed) look like noise by chance -- below that floor, nothing
+# is stripped at all (same "not enough data means don't strip" principle as
+# an unknown base_level).
+BONUS_NOISE_MAX_FREQUENCY = 0.05
+BONUS_NOISE_MIN_SAMPLES = 20
+
+
+def market_key(bk: str, base_level: int | None = None,
+               noise_bonus_ids: frozenset[int] | None = None) -> str:
     """Coarser version of bonus_key for MATCHING/GROUPING only -- sold-price
     percentiles, the current-lowest-listing cap, relist detection, and the
     buy/sell join in snipe_check.py -- so near-identical crafted items pool
@@ -160,6 +186,28 @@ def market_key(bk: str, base_level: int | None = None) -> str:
     junk," since a wrong strip could incorrectly merge two items that really
     do have different, price-relevant item levels.
 
+    noise_bonus_ids (added same day, once base_level's conditional-pooling
+    pattern turned out not to be enough): a per-item set of `b:` bonus_lists
+    ids to also strip. Real case that motivated this: item 36507
+    (Iron-Molded Fist) had listings like `b:1706,6655|m:9=80,28=1099` vs
+    `b:1681,6655|m:9=68,28=1747` -- a genuinely cheap 5,400g listing never
+    matched the sell realm's own sales because every listing's *first*
+    bonus_lists value (1677-1709, a different one almost every time) is
+    per-craft instance noise, the exact same shape as the already-handled
+    m:42/44, just expressed as a bonus_lists id instead of a modifier. This
+    can't be a fixed global ignore-list like MARKET_IGNORE_MODIFIER_TYPES,
+    though: a raw bonus id is just a number, not a typed field, so the same
+    id could mean something completely different on a different item (see
+    snipe_check._populate_market_keys() for how this set is determined --
+    document-frequency based, per item: a value that repeats across a large
+    fraction of an item's own listings is almost certainly a real,
+    price-relevant dimension -- socket count, a quality-tier flag, a gem
+    choice -- and MUST NOT be stripped; a value that shows up in only a
+    handful out of hundreds is almost certainly per-craft noise). None
+    (default, and every caller without item-specific frequency data handy)
+    means "don't strip anything from the b: segment" -- same "unknown means
+    don't strip" principle as base_level.
+
     Mirrored as a SQL macro in analyze.connect() for DuckDB-side grouping
     (sold-price/current-lowest queries) rather than shared as a single
     Python UDF -- this duckdb version's Python UDF support requires numpy,
@@ -167,7 +215,10 @@ def market_key(bk: str, base_level: int | None = None) -> str:
     deps" convention) and is disproportionate weight for one string
     transform. The two implementations are kept honest by
     tests/test_market_key.py, which runs the same vectors through both and
-    asserts identical results."""
+    asserts identical results -- **except** noise_bonus_ids, which is
+    Python-only (see snipe_check.py's "why Python, not SQL" note): the SQL
+    macro only ever receives base_level, matching its pre-existing 2-arg
+    signature."""
     if not bk:
         return bk
     ignore_types = set(MARKET_IGNORE_MODIFIER_TYPES)
@@ -180,6 +231,14 @@ def market_key(bk: str, base_level: int | None = None) -> str:
                         ignore_types.add(28)
     parts = []
     for part in bk.split("|"):
+        if part.startswith("b:"):
+            if noise_bonus_ids:
+                ids = [x for x in part[2:].split(",") if int(x) not in noise_bonus_ids]
+                if ids:
+                    parts.append("b:" + ",".join(ids))
+                continue
+            parts.append(part)
+            continue
         if not part.startswith("m:"):
             parts.append(part)
             continue

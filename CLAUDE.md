@@ -1153,6 +1153,109 @@ only *moving the bulk of the work to the background* makes the cache
 converge without depending on user traffic. Worth checking real scale
 before assuming a fix's shape, not just its direction, is right.
 
+### Second market-fragmentation bug: `b:` bonus-list noise, not just `m:` modifiers (2026-07-25)
+
+Human reported a real snipe miss: item 36507 (Iron-Molded Fist) on
+Nethersturm (buy realm) showed a 66,666g "deal," but a genuinely cheap
+5,400g listing existed on Blackrock and never surfaced at all. Traced live
+(`railway ssh` + custom DuckDB queries against `data/listings/*.parquet`):
+the cheap listing was real, sitting right in the data (48 total region-wide
+listings for the item), but its exact `bonus_key` never matched anything in
+the sell realm's own sales/snapshots. Root cause: every listing's `b:`
+bonus_lists segment carries one *stable* id shared across most listings
+(6655 for this item) plus one id that's different almost every time
+(1677-1709, one value per craft) -- the same fragmentation shape as the
+already-handled `m:42`/`m:44` crafted-roll problem, just expressed via
+`bonus_lists` instead of `modifiers`. Corroborating evidence: five listings
+on the *same* realm, with five different varying-id values, all priced at
+the exact same 6,997.55g -- strong evidence the varying id carries no price
+information at all.
+
+**This is a genuinely different kind of fix than 9/42/44/28, not just a
+bigger version of it.** Those are modifier *types* -- a small, enumerable,
+Blizzard-defined field -- so "ignore type 42 everywhere" or "ignore type 28
+when implausible" are safe, targeted rules. A `b:` bonus_lists id has no
+such type field; it's just a number, and the same number can mean something
+completely different on a different item. A static global ignore-list (or
+even a "drop the smallest value" heuristic, tried and rejected after live
+data showed it) isn't safe here.
+
+**Investigated at scale before deciding on an approach**: a naive "does
+dropping the smallest `b:` value collapse variants" scan across all
+region-wide listings found **6,640 items** showing the pattern (one item,
+109168/Shrediron's Shredder, had 262 distinct `b:` combinations collapsing
+to 24) -- but inspecting the actual values for 109168/114813 showed most of
+their bonus-list dimensions are **real, price-relevant features**: a base
+tag at ~100% document frequency, a binary quality-tier flag at ~46%/54%,
+paired gem/socket bonuses at ~14-17% -- interspersed with a genuine noise
+tail (100+ near-unique low values). "Drop the smallest" would have silently
+merged genuinely different, differently-priced items for these -- exactly
+the failure mode this project's "unknown means don't strip" principle
+exists to prevent.
+
+**Fix: per-item document-frequency detection, not a static list.**
+`snipe_check._populate_market_keys()` (renamed from `_populate_base_levels`,
+which is now folded into it) computes, per item, what fraction of that
+item's own observed listings (sales + latest snapshot + region-wide
+listings, combined) contain each `b:` value. A value appearing in fewer
+than `BONUS_NOISE_MAX_FREQUENCY` (5%) of an item's own listings -- with at
+least `BONUS_NOISE_MIN_SAMPLES` (20) total samples, else nothing is
+stripped at all -- is treated as per-craft noise. Live-validated against
+three real items: 36507's noise values topped out at 15% (small sample,
+48 listings) while its real dimension sat at 90%; 109168/114813's real
+dimensions ranged 14-100% while their noise tails sat at ≤2%. 5% sits
+comfortably in the gap between those two clusters. `market_key()` gained a
+third optional arg, `noise_bonus_ids: frozenset[int] | None` -- same
+"`None` means don't strip anything" safety default as `base_level`.
+
+**Why this moved market_key() computation out of SQL macros entirely, not
+just into a bigger macro**: a per-item variable-length "strip these
+specific ids" set doesn't fit DuckDB's macro model the way a single scalar
+`base_level` does. `_populate_market_keys()` now computes the noise-id
+detection in SQL (DuckDB handles the `UNNEST`+`GROUP BY` this needs
+efficiently -- live-timed 0.24s across a full sell realm's data), then
+computes the final `market_key()` string once in Python for every distinct
+`(item_id, bonus_key)` pair the query will touch (~699k pairs on Draenor,
+live-timed), and bulk-loads the result into a new `bonus_key_market_keys`
+temp table that `sell_now`/`sell_stats`/`buy` all `JOIN` on `(item_id,
+bonus_key)` instead of calling a SQL macro inline. `analyze.
+MARKET_KEY_MACRO_SQL` is **unchanged and still SQL-macro-only for the
+2-arg `(bk, base_level)` signature** -- `noise_bonus_ids` is Python-only,
+not mirrored in SQL, since `find_snipes()` is its only caller and it no
+longer calls the macro at all. `tests/test_market_key.py`'s existing
+SQL/Python parity test is unaffected (still covers exactly what it always
+covered).
+
+**A real, separate performance trap found and avoided while building
+this**: the first implementation bulk-loaded the ~699k precomputed rows via
+`con.executemany()` -- live-tested, this did not return within 90 seconds.
+Registering a `pyarrow.Table` and `CREATE TABLE AS SELECT` from it instead
+(DuckDB ingests Arrow natively) loaded the same 699k rows in 0.23s. Full
+precompute (noise detection + pair fetch + market_key computation + bulk
+load): ~1.3s total, live-verified -- this is why `_populate_market_keys()`
+uses `pa.table()` + `con.register()`, not the row-by-row insert pattern
+`_populate_base_levels()` used to use for the much smaller `item_base_levels`
+table.
+
+**Confidence level, stated plainly**: unlike modifier type 9 (explicitly
+human-confirmed not to affect transmog before being pooled, 2026-07-24),
+this fix relies on document-frequency evidence from live data alone, not a
+human-confirmed semantic check of what these specific bonus ids mean. The
+approach is more conservative by construction than a global ignore-list --
+per-item, threshold-gated, requires a real sample size -- but it's still
+inference, not a confirmed fact about what Blizzard's bonus ids encode.
+
+**Tests**: `tests/test_market_key.py` gained direct coverage of
+`noise_bonus_ids` (stripping, `None`/empty-set safety, only-strips-what's-
+in-the-set). `tests/test_snipe_check.py` gained
+`test_find_snipes_pools_near_identical_bonus_list_noise`, a full
+`find_snipes()` integration test reproducing item 36507's real shape (22
+distinct per-craft rolls, none individually meeting `min_sales=2`, correctly
+pooling to one market and matching a buy-side listing whose exact roll never
+appeared in the sell realm's own history at all -- the actual reported bug).
+`pytest -q`: 242 passing (up from 235), `env -u DATABASE_URL pytest -q`
+matching.
+
 ### Disk usage / retention (investigated 2026-07-25, not yet built)
 
 Human asked whether Railway's disk usage had been checked, worried about

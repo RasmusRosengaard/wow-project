@@ -380,6 +380,61 @@ def test_find_snipes_pools_near_identical_crafted_rolls(tmp_path, monkeypatch):
     assert r["sell_now_g"] == pytest.approx(2.1)  # pooled current listing (roll_d) caps it
 
 
+def test_find_snipes_pools_near_identical_bonus_list_noise(tmp_path, monkeypatch):
+    """Reproduces the real production case (item 36507, Iron-Molded Fist,
+    reported 2026-07-25): a genuinely cheap listing on another realm never
+    matched the sell realm's own sales because every listing carried a
+    different per-craft "instance" bonus_lists id alongside one shared,
+    stable id -- the same fragmentation shape as the already-handled
+    m:42/44 crafted-roll case, just expressed via `b:` instead of `m:`.
+    market_key()'s static ignore-list can't fix this (a raw bonus id isn't
+    a typed field the way a modifier type is); _populate_market_keys()'s
+    document-frequency detection has to recognize the varying id as noise
+    from the data itself. Needs BONUS_NOISE_MIN_SAMPLES (20) real samples
+    for the detection to trigger at all -- below that floor nothing would
+    be stripped, matching the "not enough data means don't strip" default
+    for base_level."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    STABLE_ID = 9000
+    N = 22  # >= BONUS_NOISE_MIN_SAMPLES; each noise id then appears 1/22 (~4.5%) < 5%
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [
+        snap_row(i, T0, item_id=600, bonus_key=f"b:{7000 + i},{STABLE_ID}", buyout=20_000)
+        for i in range(N)
+    ] + [snap_row(9999, T0, item_id=103)]  # survives -> no event
+    curr = [snap_row(9999, T1, item_id=103)]  # every roll above vanished -> inferred_sale
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    # Buy-side listing's exact roll never appeared in the sell realm's own
+    # history at all -- the real reported shape (Blackrock's 5,400g listing
+    # vs Draenor's own sales/snapshots, no exact bonus_key overlap).
+    buy_rows = [listing_row(BUY_CR_A, item_id=600, buyout=5_000, auction_id=100,
+                            bonus_key=f"b:8500,{STABLE_ID}")]
+    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
+                   listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+
+    # None of the N sold rolls has 2 sales alone (each is unique) -- pooling
+    # via the detected noise id is what lets this clear min_sales=2 at all.
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, min_per_day=0.1)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["item_id"] == 600
+    assert r["bonus_key"] == f"b:8500,{STABLE_ID}"   # exact listing roll still shown for display
+    assert r["market_key"] == f"b:{STABLE_ID}"        # noise id stripped, stable id kept
+    assert r["sell_p_g"] == pytest.approx(2.0)         # pooled sold price (20_000 copper)
+
+
 def test_find_snipes_respects_min_gold(data_dir, monkeypatch):
     """The only listing cheap enough to qualify (10_000 copper = 1g) is
     excluded once min_gold asks for at least 2g."""

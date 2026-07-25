@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed same session; disk/retention investigated; a follow-up per-request latency bug in the same code path, fixed same day).
+Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed same session; disk/retention investigated; a follow-up per-request latency bug in the same code path, fixed same day; a second market-fragmentation bug via `b:` bonus-list ids, also fixed same day).
 
 ## Status at a glance
 
@@ -67,6 +67,26 @@ guard in `dashboard.html` stops overlapping auto-refresh requests from
 piling on top of each other. See `CLAUDE.md`'s "Per-request latency fix"
 section for the full trace, both fix passes, and verification. `pytest -q`:
 235 passing.
+
+**New this session (2026-07-25, continued yet again, part 2)**: a second
+real snipe-matching bug, reported right after the latency fix above — item
+36507 (Iron-Molded Fist) showed a 66,666g "deal" while a genuine 5,400g
+listing on another realm never surfaced. Root cause: a per-craft "instance"
+id living in the `b:` bonus-lists segment (not the `m:` modifiers segment
+the earlier type-9/42/44/28 fixes covered), varying almost per-listing
+alongside one stable, real id. Investigated at scale first (6,640 items
+show a similar collapsible pattern region-wide) before choosing a fix —
+document-frequency detection per item, not a blanket rule, since inspecting
+two of those items showed most of their bonus-list dimensions are real,
+price-relevant features (quality tiers, socket/gem choices) that must NOT
+be pooled. `market_key()` gained a third `noise_bonus_ids` arg;
+`_populate_base_levels()` was renamed to `_populate_market_keys()` and now
+also does this detection + precomputes market_key in Python for every
+distinct (item_id, bonus_key) pair, bulk-loaded via Arrow (executemany()
+tested unusably slow at this row count — 699k pairs — live). See
+`CLAUDE.md`'s matching section for the full trace, the "why not a static
+list" reasoning, and the confidence-level caveat (data-driven, not
+human-confirmed like type 9). `pytest -q`: 242 passing.
 
 **New this session (2026-07-25, continued again)**: a real snipe-matching
 bug (item 164353, cheap Auchindoun listing not surfacing as a snipe) traced

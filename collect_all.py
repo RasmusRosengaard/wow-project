@@ -111,7 +111,7 @@ def prune_old_snapshots(cr: int, retention_days: int = RETENTION_DAYS) -> int:
 def _prewarm_item_base_levels(cap: int = PREWARM_BASE_LEVEL_CAP) -> int:
     """Resolves item catalog levels (item_names.NameCache.ensure_many())
     for a batch of items carrying a type-28 modifier, in the background,
-    so snipe_check._populate_base_levels() finds them already cached by
+    so snipe_check._populate_market_keys() finds them already cached by
     the time a real /api/snipes request needs them. Added 2026-07-25 after
     a live incident: that per-request lookup turned out to have a
     candidate set of 15,000+ distinct items on just one sell realm (type

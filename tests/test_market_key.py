@@ -143,6 +143,55 @@ def test_empty_bonus_key_is_unchanged():
     assert market_key("") == ""
 
 
+def test_noise_bonus_ids_strips_matching_b_values():
+    """Real production case: item 36507 (Iron-Molded Fist) had listings
+    like b:1706,6655|m:9=80,28=1099 vs b:1681,6655|m:9=68,28=1747 -- a
+    genuinely cheap listing never matched the sell realm's own sales
+    because every listing's first bonus_lists id was a different per-craft
+    instance tag. Given the per-item noise set (determined externally by
+    document frequency -- see snipe_check._populate_market_keys()), those
+    ids must strip out of the b: segment, leaving the real, stable id."""
+    a = "b:1706,6655|m:9=80,28=1099"
+    b = "b:1681,6655|m:9=68,28=1099"
+    noise = frozenset({1706, 1681})
+    assert market_key(a, noise_bonus_ids=noise) == market_key(b, noise_bonus_ids=noise) == "b:6655|m:28=1099"
+
+
+def test_noise_bonus_ids_does_not_touch_m_segment():
+    bk = "b:1706,6655|m:9=80,28=1099"
+    noise = frozenset({1706})
+    # m:9 still unconditionally stripped, m:28 untouched (no base_level given)
+    assert market_key(bk, noise_bonus_ids=noise) == "b:6655|m:28=1099"
+
+
+def test_noise_bonus_ids_dropping_every_b_value_removes_the_segment_entirely():
+    bk = "b:1706|m:9=80"
+    assert market_key(bk, noise_bonus_ids=frozenset({1706})) == ""
+
+
+def test_none_noise_bonus_ids_never_strips_b_segment():
+    """Default/unknown noise set (None, every caller before 2026-07-25's
+    second fix) must never touch the b: segment -- same 'unknown means
+    don't strip' principle as base_level."""
+    bk = "b:1706,6655|m:9=80"
+    assert market_key(bk) == market_key(bk, noise_bonus_ids=None) == "b:1706,6655"
+
+
+def test_empty_noise_bonus_ids_set_never_strips_b_segment():
+    """An empty set (item didn't qualify for any noise ids, e.g. too few
+    samples) behaves the same as None -- falsy, not 'strip everything'."""
+    bk = "b:1706,6655|m:9=80"
+    assert market_key(bk, noise_bonus_ids=frozenset()) == "b:1706,6655"
+
+
+def test_noise_bonus_ids_only_strips_ids_actually_in_the_set():
+    """A real, stable dimension (6655) must survive even when it's in the
+    same segment as noise -- only ids explicitly in noise_bonus_ids go."""
+    bk = "b:1706,6655"
+    assert market_key(bk, noise_bonus_ids=frozenset({1706})) == "b:6655"
+    assert market_key(bk, noise_bonus_ids=frozenset({6655})) == "b:1706"
+
+
 def test_market_key_of_real_bonus_key_output_is_stable():
     """bonus_key() output should always be safely round-trippable through
     market_key() without error, for arbitrary modifier combos."""

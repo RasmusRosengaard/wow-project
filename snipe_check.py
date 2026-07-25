@@ -26,9 +26,12 @@ import argparse
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
 
 import analyze
 from appearance import AppearanceCache
+from fetch_snapshot import BONUS_NOISE_MAX_FREQUENCY, BONUS_NOISE_MIN_SAMPLES
+from fetch_snapshot import market_key as _market_key
 from item_names import NameCache
 
 ROOT = Path(__file__).resolve().parent
@@ -62,49 +65,107 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
 # applied to them -- excluded from max_appearance_sources results below.
 NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
 
-# Bounds a single _populate_base_levels() call's worst-case latency -- see
-# its docstring. At max_workers=24 (comfortably under Blizzard's 100 req/s
-# ceiling), 500 items resolves in single-digit seconds even fully cold,
-# versus the 30-175s+ an unbounded, largely-uncached region-wide gather
-# produced live 2026-07-25.
+# Bounds the base_level half of a single _populate_market_keys() call's
+# worst-case latency -- see its docstring. At max_workers=24 (comfortably
+# under Blizzard's 100 req/s ceiling), 500 items resolves in single-digit
+# seconds even fully cold, versus the 30-175s+ an unbounded, largely-
+# uncached region-wide gather produced live 2026-07-25.
 MAX_BASE_LEVEL_LOOKUPS_PER_CALL = 500
 
 
-def _populate_base_levels(con: duckdb.DuckDBPyConnection) -> None:
-    """market_key()'s type-28 pooling (added 2026-07-25, see
-    fetch_snapshot.py) needs each candidate item's catalog base level to
-    decide whether a claimed ilvl is plausible -- DuckDB can't make an HTTP
-    call mid-query, so this runs first, gathering every distinct item_id
-    that could possibly need one and populating a temp table the main query
-    joins against. Prefiltered to bonus_keys that actually contain a type-28
-    modifier at all (LIKE '%28=%', deliberately over-inclusive -- e.g. it'd
-    also match a hypothetical "128=" that isn't a real type -- since this is
-    just a candidate-narrowing prefilter, not the authoritative check;
-    market_key()'s own anchored regex is what actually decides). Most items
-    have no type-28 modifier and never need a lookup at all. Deliberately
-    ignores item_filter/--items -- sell_now's own CTE is unfiltered by
-    design (the current-lowest-listing cap applies across every item on the
-    sell realm, not just a narrowed watchlist), so restricting the base-
-    level gather to a watchlist could leave sell_now's items without one;
-    the cost of gathering a few extra items unfiltered is small.
+def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
+    """Precomputes market_key() in Python for every distinct (item_id,
+    bonus_key) pair the query will touch, then bulk-loads the results into
+    a `bonus_key_market_keys` temp table the main query JOINs against on
+    (item_id, bonus_key) -- replacing the old inline SQL macro calls
+    (`market_key(bonus_key, base_level)`) entirely for this query. Renamed
+    from `_populate_base_levels` (2026-07-25, same day) once a second
+    pooling problem needed a capability the SQL macro can't express without
+    real complexity -- see below.
 
-    NameCache resolves+caches each lazily (data/item_names.json), same cost
-    profile as every other names=true lookup elsewhere in this project -- a
-    one-time Blizzard API call per never-before-seen item, free on every
-    call after. This is the one place find_snipes() can now make a network
-    call where it previously never did (see CLAUDE.md for the tradeoff
-    this was weighed against).
+    Two things get folded in here:
 
-    sell_ids (sales+snaps, this sell realm only) is queried and prioritized
-    separately from listings_ids (region-wide, every scanned realm) -- see
-    ensure_many()'s `limit` below. Live-confirmed 2026-07-25 the type-28
-    prefilter's candidate set is not the small "occasional old BoE item"
-    case this was designed around: 15,000+ distinct items on a single sell
-    realm alone, since type 28 is ubiquitous on modern ilvl-scaling gear,
-    not rare. sell_ids drives THIS query's own sold-price grouping, so it
-    gets priority within the per-call budget; listings_ids only matters for
-    the buy-side join and can lag further behind without affecting pricing
-    correctness on the sell realm itself."""
+    1. **base_level** (unchanged from the original `_populate_base_levels`):
+       market_key()'s type-28 ilvl-plausibility pooling needs each
+       candidate item's catalog base level, which requires a Blizzard API
+       call DuckDB can't make mid-query. `NameCache.ensure_many()` resolves
+       these concurrently, capped at MAX_BASE_LEVEL_LOOKUPS_PER_CALL --
+       live-confirmed 2026-07-25 the type-28 prefilter's candidate set can
+       be 15,000+ items on a single sell realm (type 28 is ubiquitous on
+       modern ilvl-scaling gear, not rare), so an unbounded gather made a
+       single request take 30-175s+ even off the event loop (see
+       CLAUDE.md's "Per-request latency fix" for the full incident).
+       sell_ids (sales+snaps, this realm) is prioritized over listings_ids
+       (region-wide) within the budget since it drives this query's own
+       sold-price grouping. Items beyond the cap simply get no base_level
+       this call -- market_key() treats an unknown base_level as "don't
+       strip, never assume junk," so this degrades gracefully, not
+       incorrectly. collect_all.py additionally pre-warms this cache in
+       the background so convergence doesn't depend on user traffic.
+
+    2. **noise_bonus_ids** (new, same day, a real user-reported bug: item
+       36507/Iron-Molded Fist, a genuinely cheap 5,400g listing never
+       matched the sell realm's own sales because every listing's bonus
+       list carried a different per-craft "instance" id, the same
+       fragmentation shape as the already-handled m:42/44, just expressed
+       via `b:` bonus_lists instead of a modifier). Unlike base_level, this
+       can't be a fixed global ignore-list: a raw bonus id is just a
+       number, not a typed field, so the same id can mean something
+       completely different on a different item. Determined per item via
+       document frequency -- computed entirely in SQL (DuckDB handles the
+       UNNEST + GROUP BY efficiently, live-timed at 0.24s across a full
+       sell realm's sales/snaps/listings): a bonus id appearing in fewer
+       than BONUS_NOISE_MAX_FREQUENCY of an item's own observed listings
+       (with at least BONUS_NOISE_MIN_SAMPLES total, else nothing is
+       stripped -- not enough data to trust the ratio) is treated as
+       per-craft noise. See fetch_snapshot.py's BONUS_NOISE_* constants for
+       the full real-data calibration (items 36507/109168/114813).
+
+    **Why Python, not a bigger SQL macro**: a per-item variable-length
+    "strip these specific ids" set doesn't fit DuckDB's macro model as
+    cleanly as a single scalar base_level does. Computing the final
+    market_key string once per distinct (item_id, bonus_key) pair in
+    Python and joining on the result keeps both capabilities (base_level
+    AND noise_bonus_ids) in one code path instead of two SQL macros
+    growing in parallel with tests/test_market_key.py's parity check.
+
+    **Why a bulk Arrow load, not executemany()**: live-timed 2026-07-25 --
+    ~700k distinct (item_id, bonus_key) pairs is a realistic real-world
+    count (Draenor). `executemany()` inserting them row-by-row did not
+    return within 90s. Registering a pyarrow Table and `CREATE TABLE AS
+    SELECT` from it ingests natively; the same 700k rows loaded in 0.23s.
+    Noise detection + pair fetch + market_key computation + bulk load
+    together: ~1.3s total, live-verified."""
+    # --- noise-bonus-id detection: SQL, no network, fast ---
+    noise_rows = con.execute(f"""
+        WITH all_bonus AS (
+            SELECT item_id, bonus_key FROM sales
+            UNION ALL
+            SELECT item_id, bonus_key FROM snaps
+            WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps) AND buyout IS NOT NULL
+            UNION ALL
+            SELECT item_id, bonus_key FROM listings
+        ),
+        item_totals AS (
+            SELECT item_id, count(*) AS n FROM all_bonus WHERE bonus_key LIKE 'b:%' GROUP BY item_id
+        ),
+        bonus_values AS (
+            SELECT ab.item_id, CAST(t.v AS BIGINT) AS bonus_id
+            FROM all_bonus ab,
+                 UNNEST(string_split(regexp_extract(ab.bonus_key, '^b:([0-9,]+)', 1), ',')) AS t(v)
+            WHERE ab.bonus_key LIKE 'b:%' AND length(t.v) > 0
+        )
+        SELECT bv.item_id, bv.bonus_id
+        FROM bonus_values bv
+        JOIN item_totals it ON bv.item_id = it.item_id
+        GROUP BY bv.item_id, bv.bonus_id, it.n
+        HAVING it.n >= {BONUS_NOISE_MIN_SAMPLES} AND count(*) * 1.0 / it.n < {BONUS_NOISE_MAX_FREQUENCY}
+    """).fetchall()
+    noise_by_item: dict[int, set[int]] = {}
+    for item_id, bonus_id in noise_rows:
+        noise_by_item.setdefault(item_id, set()).add(bonus_id)
+
+    # --- base_level resolution: Python, needs Blizzard API, capped ---
     sell_ids = [item_id for (item_id,) in con.execute(r"""
         SELECT DISTINCT item_id FROM sales WHERE bonus_key LIKE '%28=%'
         UNION
@@ -115,27 +176,32 @@ def _populate_base_levels(con: duckdb.DuckDBPyConnection) -> None:
     listings_ids = [item_id for (item_id,) in con.execute(
         "SELECT DISTINCT item_id FROM listings WHERE bonus_key LIKE '%28=%'"
     ).fetchall()]
-    all_ids = list(dict.fromkeys(sell_ids + listings_ids))  # dedup, sell_ids first
-
-    # ensure_many() resolves not-yet-cached ids concurrently (thread pool in
-    # item_names.py), capped to MAX_BASE_LEVEL_LOOKUPS_PER_CALL so one
-    # request can never again take minutes (see its own docstring for the
-    # full incident history: sequential-at-a-time made this 30-175s per
-    # request even off the event loop, and even full concurrency can't beat
-    # Blizzard's 100 req/s ceiling against a 15,000+-item candidate set).
-    # Items beyond the cap simply get no base_level this call --
-    # market_key() already treats an unknown base_level as "don't strip,"
-    # never "assume junk," so this degrades to the pre-2026-07-25 behavior
-    # for whatever wasn't reached yet, not an incorrect price. The cache
-    # converges across many calls; collect_all.py additionally pre-warms it
-    # in the background so convergence doesn't depend on user traffic.
+    type28_ids = list(dict.fromkeys(sell_ids + listings_ids))  # dedup, sell_ids first
     names = NameCache()
-    names.ensure_many(all_ids, max_workers=24, limit=MAX_BASE_LEVEL_LOOKUPS_PER_CALL)
-    rows = [(item_id, names.base_level(item_id)) for item_id in all_ids]
+    names.ensure_many(type28_ids, max_workers=24, limit=MAX_BASE_LEVEL_LOOKUPS_PER_CALL)
+    base_levels = {item_id: names.base_level(item_id) for item_id in type28_ids}
 
-    con.execute("CREATE OR REPLACE TEMP TABLE item_base_levels (bl_item_id BIGINT, base_level BIGINT)")
-    if rows:
-        con.executemany("INSERT INTO item_base_levels VALUES (?, ?)", rows)
+    # --- compute market_key() for every distinct (item_id, bonus_key) pair ---
+    pairs = con.execute("""
+        SELECT DISTINCT item_id, bonus_key FROM sales
+        UNION
+        SELECT DISTINCT item_id, bonus_key FROM snaps
+        WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps) AND buyout IS NOT NULL
+        UNION
+        SELECT DISTINCT item_id, bonus_key FROM listings
+    """).fetchall()
+    item_ids = [p[0] for p in pairs]
+    bonus_keys = [p[1] for p in pairs]
+    market_keys = [
+        _market_key(bk, base_levels.get(iid),
+                    frozenset(noise_by_item[iid]) if iid in noise_by_item else None)
+        for iid, bk in pairs
+    ]
+
+    tbl = pa.table({"bkm_item_id": item_ids, "bkm_bonus_key": bonus_keys, "bkm_market_key": market_keys})
+    con.register("_bkm_source", tbl)
+    con.execute("CREATE OR REPLACE TEMP TABLE bonus_key_market_keys AS SELECT * FROM _bkm_source")
+    con.unregister("_bkm_source")
 
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
@@ -259,28 +325,30 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         SELECT * FROM read_parquet('{(DATA / "listings" / "*.parquet").as_posix()}')
         WHERE cr_id != {int(sell_cr)} AND buyout IS NOT NULL
     """)
-    _populate_base_levels(con)
+    _populate_market_keys(con)
     res = con.execute(f"""
         WITH sell_now AS (
-            SELECT s.item_id, market_key(s.bonus_key, bl.base_level) AS market_key,
+            SELECT s.item_id, bkm.bkm_market_key AS market_key,
                    s.pet_species_id, s.pet_quality_id,
                    min(s.buyout * 1.0 / s.quantity) AS cheapest_now
             FROM snaps s
-            LEFT JOIN item_base_levels bl ON s.item_id = bl.bl_item_id
+            LEFT JOIN bonus_key_market_keys bkm
+              ON s.item_id = bkm.bkm_item_id AND s.bonus_key = bkm.bkm_bonus_key
             WHERE s.snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
               AND s.buyout IS NOT NULL
-            GROUP BY s.item_id, market_key(s.bonus_key, bl.base_level), s.pet_species_id, s.pet_quality_id
+            GROUP BY s.item_id, bkm.bkm_market_key, s.pet_species_id, s.pet_quality_id
         ),
         sell_stats AS (
-            SELECT sa.item_id, market_key(sa.bonus_key, bl.base_level) AS market_key,
+            SELECT sa.item_id, bkm.bkm_market_key AS market_key,
                    sa.pet_species_id, sa.pet_quality_id,
                    count(*)                                            AS sales,
                    round(count(*) / (SELECT days FROM span), 2)        AS per_day,
                    quantile_cont(sa.unit_price, {float(sell_percentile)}) AS sell_price
             FROM sales sa
-            LEFT JOIN item_base_levels bl ON sa.item_id = bl.bl_item_id
+            LEFT JOIN bonus_key_market_keys bkm
+              ON sa.item_id = bkm.bkm_item_id AND sa.bonus_key = bkm.bkm_bonus_key
             WHERE 1=1 {item_filter}
-            GROUP BY sa.item_id, market_key(sa.bonus_key, bl.base_level), sa.pet_species_id, sa.pet_quality_id
+            GROUP BY sa.item_id, bkm.bkm_market_key, sa.pet_species_id, sa.pet_quality_id
             HAVING per_day >= {float(min_per_day)} AND sales >= {int(min_sales)}
         ),
         sell_eff AS (
@@ -297,11 +365,12 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         ),
         buy AS (
             SELECT l.cr_id, l.item_id, l.bonus_key,
-                   market_key(l.bonus_key, bl.base_level) AS market_key,
+                   bkm.bkm_market_key AS market_key,
                    l.pet_species_id, l.pet_quality_id, l.auction_id,
                    l.buyout * 1.0 / l.quantity AS buy_unit_price
             FROM listings l
-            LEFT JOIN item_base_levels bl ON l.item_id = bl.bl_item_id
+            LEFT JOIN bonus_key_market_keys bkm
+              ON l.item_id = bkm.bkm_item_id AND l.bonus_key = bkm.bkm_bonus_key
             WHERE 1=1 {item_filter}
         ),
         matches AS (
