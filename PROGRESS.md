@@ -182,6 +182,26 @@ aren't lost.
   client-side export button (no backend change likely needed — this is
   formatting already-fetched row data, not new data).
 
+- **TSM public pricing data as a cross-check, not a replacement** (human
+  idea, 2026-07-25). Investigated: `public-data.tradeskillmaster.com`
+  serves free, unauthenticated, per-realm CSVs (`.../retail/{region}/realm/
+  {slug}/items.csv`, no key/rate-limit); a separate authenticated TSM Web
+  API exists too. Both are ultimately derived from the same Blizzard AH
+  dumps this project already pulls directly, run through TSM's own
+  closed-source aggregation — not an independent or deeper ground truth
+  (their own "historical price" is only a 60-day rolling average, same
+  order of magnitude as what this project could accumulate itself). The
+  actual `tradeskillmaster.com`/`support.tradeskillmaster.com` pages
+  (including their terms of use — not yet read, would need to be before
+  building anything on this) block automated fetches, so this was pieced
+  together from search results and a third-party GitHub repo, not
+  confirmed firsthand. Best-scoped use if revisited: a periodic sanity-
+  check of this project's own `per_day`/sold-price percentiles against
+  TSM's regional numbers — literally the Phase 0 validation step
+  `README.md`'s verification protocol has called for since the start and
+  never run — not a replacement for the live Blizzard-API-driven snipe
+  detection. Parked, no design work done, not scheduled.
+
 **Remember**: if a custom domain ever replaces the `railway.app` subdomain, the Stripe webhook endpoint URL (Stripe Dashboard → Developers → Webhooks) needs updating to match by hand — it won't happen automatically.
 
 ## Hosted SaaS pivot — stage by stage
