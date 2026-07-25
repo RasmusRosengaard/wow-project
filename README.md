@@ -177,12 +177,13 @@ wand once showed "ilvl 1112" against a real level of ~35). This smarter
 display is dashboard-only — `snipe_check.py`'s terminal output (still usable
 for local debugging) keeps printing the raw variant string.
 
-Access requires an account (register/login) **and** an active €4.99/mo
-Stripe subscription (`/subscribe` — `billing.py`) — logged-in-but-unsubscribed
-gets redirected there automatically, distinct from logged-out going to
-`/login`. See `CLAUDE.md`/`PROGRESS.md` for current status; the pricing page
-itself is still a bare feature list, not a real pitch, and there's no
-sell-realm picker yet (free-typed realm id for now).
+Access requires only an account (register/login) — a free tier (added
+2026-07-25) lets any logged-in account use the dashboard with real, capped
+data (250 rows, locked to the first sell realm queried). An active €4.99/mo
+Stripe subscription (`/subscribe` — `billing.py`) raises the cap to 2,000
+rows and unlocks switching sell realms freely; see `/pricing` for the full
+comparison. Sell realm is picked from a dropdown (`GET /api/realms`), not a
+free-typed id. See `CLAUDE.md`/`PROGRESS.md` for current status.
 
 ## Verification protocol (algorithm validation, not a setup step)
 
@@ -212,16 +213,17 @@ the classification is ever reintroduced as a liquidity signal.
 
 Cross-realm snipe engine (done) → hosted multi-tenant product with email
 auth and a live Stripe subscription gating the dashboard (**done**,
-2026-07-23) → region commodity feed (`/data/wow/auctions/commodities`) →
-appearance-scarcity layer (ItemModifiedAppearance mappings via wago.tools +
-the static item API, **groundwork started** 2026-07-23 — `appearance.py`,
-a "unique transmog" filter) → deal score with buy-realm → sell-realm
-routing → Discord webhook alerts → free companion addon. See `PROGRESS.md`
-for the current staged status and immediate next steps (a restricted
-Stripe key is the main thing ahead of the commodity feed; the UI design
-pass and dashboard QoL pass -- sell-realm picker, budget filter, grouped
-duplicates, instant client-side sorting -- are both done as of 2026-07-23,
-with a further full visual redesign proposed but not yet confirmed/built).
+2026-07-23, free tier added 2026-07-25) → region commodity feed
+(**out of scope**, not being pursued) → appearance-scarcity layer
+(ItemModifiedAppearance mappings via wago.tools + the static item API,
+**groundwork started** 2026-07-23 — `appearance.py`, a "unique transmog"
+filter) → deal score with buy-realm → sell-realm routing → Discord webhook
+alerts → free companion addon. See `PROGRESS.md`/`CLAUDE.md` for current
+staged status and immediate next steps (a restricted Stripe key is the main
+thing ahead, human-only to change). The full visual redesign (light "assay
+ledger" theme, dark-mode toggle) and dashboard QoL pass (sell-realm picker,
+budget filter, grouped duplicates, client-side filtering/sorting) are both
+done, across all six pages.
 
 A public, no-login `/log` page (added 2026-07-23) shows every timestamp new
 auction-house data was actually retrieved per realm, for anyone to verify
