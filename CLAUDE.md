@@ -1069,7 +1069,7 @@ whether it's individually fast on a warm cache. An `async def` FastAPI route
 does not protect you from this by itself -- it only helps if the actual
 blocking work is offloaded (`asyncio.to_thread`, a background job, etc.).
 
-### Per-request latency fix: parallelized `_populate_base_levels()` (2026-07-25)
+### Per-request latency fix: bounded + backgrounded `_populate_base_levels()` (2026-07-25)
 
 `asyncio.to_thread` (above) fixed *server-wide* availability during a slow
 `_populate_base_levels()` run, but not the *individual* request's own
@@ -1078,51 +1078,80 @@ with one sequential Blizzard API call at a time. Human reported the live
 dashboard stuck on "Loading…" with the table greyed out for 5+ minutes
 while logged in as superuser. Traced live via `railway logs --http --path
 /api/snipes`: three `/api/snipes` requests in that window, abandoned by the
-browser (HTTP 499) after 49s, 31s, and 175s. Root cause: a superuser's
-`top=5000` request has no `--items` filter, so `_populate_base_levels()`'s
-candidate set is drawn from the *entire* region-wide `listings` table (36
-realms) -- a large, often-partially-uncached set of items carrying a
-type-28 modifier, each needing its own real HTTP round-trip. Confirmed via
-`railway ssh` that `data/item_names.json` was genuinely still filling in
-(1818 items cached, file mtime seconds old) -- not a stuck process, just a
-slow one. **Amplifier**: `dashboard.html`'s `checkForUpdates()` (60s timer +
-page load) has no dedup -- each tick fires a fresh `fetchBatch()` regardless
-of whether a prior one is still pending, so overlapping expensive queries
-piled up during the same window rather than one finishing before the next
-started.
+browser (HTTP 499) after 49s, 31s, and 175s. **Amplifier**: `dashboard.html`'s
+`checkForUpdates()` (60s timer + page load) has no dedup -- each tick fires
+a fresh `fetchBatch()` regardless of whether a prior one is still pending,
+so overlapping expensive queries piled up during the same window rather
+than one finishing before the next started.
 
-**Fix, two parts**:
-1. `item_names.NameCache.ensure_many(item_ids, max_workers=16)` (new) --
-   resolves every not-yet-cached id concurrently via a
-   `ThreadPoolExecutor` instead of one item at a time, saving incrementally
-   every 50 completions (same crash-resilience reasoning as the old
-   per-item loop). Blizzard's rate limit (100 req/s, 36,000/h) has enormous
-   headroom over this project's steady-state usage, so a burst of 16
-   concurrent calls is safe. `_ensure_item_details()`'s merge logic was
-   factored out into `_is_complete()`/`_merge_details()` so both the
-   single-item and batch paths share it.
-   `snipe_check._populate_base_levels()` now calls `ensure_many()` once up
-   front instead of looping `base_level()` per item -- every `base_level()`
-   call in the row-building loop after that is a cache hit.
-2. `dashboard.html` gained a `fetchInFlight` guard: `fetchBatch()` is a
+**First pass (parallelization alone) turned out not to be enough** --
+worth recording because the fix genuinely needed a second round in the
+same session, not because the first was wrong. Initial assumption (from
+the type-28 fix's own docstring): this candidate set is a rare "old BoE
+item" case, so a `ThreadPoolExecutor` should make any one request fast.
+Live-verified against production (a real timed `find_snipes()` run and a
+direct count query, both via `railway ssh`) showed otherwise: **17,408**
+distinct items region-wide carry a type-28 modifier, of which **15,883**
+come from just the one sell realm's own sales+snapshots (not the region
+listings at all) -- type 28 turns out to be *ubiquitous* on modern
+ilvl-scaling gear, not rare. At Blizzard's 100 req/s ceiling, 15,000+
+sequential-ish calls can never complete in under ~150s **no matter how
+parallel the fetches are** -- concurrency alone has a hard floor here.
+
+**Full fix, three parts**:
+1. `item_names.NameCache.ensure_many(item_ids, max_workers=16, limit=None)`
+   -- resolves not-yet-cached ids concurrently via a `ThreadPoolExecutor`
+   (still valuable: makes whatever's within the cap fast), saving
+   incrementally every 50 completions. `limit` (new) caps how many NOT-yet-
+   cached items one call will actually resolve, in priority order --
+   without this, concurrency alone doesn't bound worst-case latency at all.
+   `_ensure_item_details()`'s merge logic was factored out into
+   `_is_complete()`/`_merge_details()` so both the single-item and batch
+   paths share it.
+2. `snipe_check._populate_base_levels()` now queries sell-realm-scoped ids
+   (`sales`/`snaps` -- what THIS query's own sold-price grouping depends
+   on) separately from region-wide `listings` ids, prioritizes sell-scoped
+   first, and calls `ensure_many(..., max_workers=24,
+   limit=MAX_BASE_LEVEL_LOOKUPS_PER_CALL)` (500) -- bounding any one
+   request to single-digit seconds even fully cold. Items beyond the cap
+   simply get no `base_level` this call; `market_key()` already treats an
+   unknown base_level as "don't strip, never assume junk" (see the type-28
+   writeup above), so this degrades gracefully to the pre-fix behavior for
+   whatever wasn't reached, not an incorrect price.
+3. `collect_all._prewarm_item_base_levels()` (new) -- runs every ~10-min
+   background collection cycle (already off the event loop via the
+   existing `asyncio.to_thread` wrapping `collect_all()`), reading
+   `data/listings/*.parquet` directly (realm-independent -- base level
+   doesn't depend on which sell realm asks) and resolving up to
+   `PREWARM_BASE_LEVEL_CAP` (1000) new items per cycle. This is what makes
+   the cache actually converge over time -- without it, convergence would
+   depend entirely on how many dashboard loads happen to hit still-
+   uncached items, which is slow and unpredictable. `collect_all()`'s
+   summary dict gained `base_level_candidates`.
+4. `dashboard.html` gained a `fetchInFlight` guard: `fetchBatch()` is a
    no-op if an equivalent fetch is already running, instead of piling a
-   second slow query on top of the first. Not a queue or an abort -- since
-   every caller re-fetches the same loose batch, a skip is sufficient; the
-   in-flight call will deliver fresh-enough data for both callers.
+   second slow query on top of the first -- fixes the amplifier
+   independently of the backend latency itself.
 
-**Verified**: `pytest -q` (231 passing, up from 225 -- new
-`tests/test_item_names.py` coverage for `ensure_many()`: concurrent
-resolution, dedup of repeated ids in one call, skipping already-complete
-items, tolerating a failed fetch for one id without losing the others,
-incremental disk saves, no-op on empty input) and
-`env -u DATABASE_URL pytest -q` (same count, matching CI). The frontend
-guard was verified in a real browser (throwaway local preview, mocked
-`window.fetch` with an artificial 800ms delay standing in for a slow
-`/api/snipes` call, same technique as the "localStorage batch cache"
-verification): firing two overlapping `fetchBatch()` calls produced exactly
-one real network call, the loading state cleared correctly afterward
-(`fetchInFlight` reset to `false`, button back to "Refresh"), and a
-subsequent call still went through normally -- the guard doesn't get stuck.
+**Verified**: `pytest -q` (235 passing, up from 225) and
+`env -u DATABASE_URL pytest -q` (same count, matching CI) -- new coverage
+in `tests/test_item_names.py` (`ensure_many()`: concurrency, `limit`,
+dedup, skip-if-complete, tolerating a failed fetch, incremental saves) and
+`tests/test_collect_all.py` (`_prewarm_item_base_levels()`: no-op with no
+listings yet, resolves only genuine type-28 candidates, respects its cap,
+`collect_all()`'s summary carries the count). The `fetchInFlight` guard was
+verified in a real browser (throwaway local preview, mocked `window.fetch`
+with an artificial 800ms delay, same technique as the "localStorage batch
+cache" verification): firing two overlapping `fetchBatch()` calls produced
+exactly one real network call, the loading state cleared correctly
+afterward, and a subsequent call still went through normally.
+
+**Lesson**: a live-production number (17,408, not "probably a handful")
+changed the right fix entirely -- concurrency was the *first* instinct and
+genuinely helps, but only a *cap* actually bounds worst-case latency, and
+only *moving the bulk of the work to the background* makes the cache
+converge without depending on user traffic. Worth checking real scale
+before assuming a fix's shape, not just its direction, is right.
 
 ### Disk usage / retention (investigated 2026-07-25, not yet built)
 

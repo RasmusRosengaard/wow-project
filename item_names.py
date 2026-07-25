@@ -145,7 +145,8 @@ class NameCache:
             return
         self._merge_details(item_id, details)
 
-    def ensure_many(self, item_ids: list[int], max_workers: int = 16) -> None:
+    def ensure_many(self, item_ids: list[int], max_workers: int = 16,
+                     limit: int | None = None) -> None:
         """Batch version of _ensure_item_details(): resolves every not-yet-
         cached id concurrently via a thread pool instead of one sequential
         Blizzard API call per item. Added 2026-07-25 after a superuser's
@@ -153,13 +154,24 @@ class NameCache:
         which has no --items filter to narrow its candidate set) took 30-175s
         per /api/snipes call doing this one item at a time -- real production
         pain, not a hypothetical (a stuck "Loading" dashboard, greyed-out
-        table, for minutes). Blizzard's rate limit (100 req/s, 36,000/h) has
-        enormous headroom over this project's steady-state usage (~6 req/h
-        for the deep collector), so a burst of max_workers concurrent calls
-        is safe. Saved incrementally (every 50 completions), same crash-
-        resilience reasoning as the old per-item loop in
-        _populate_base_levels -- an interrupted batch still keeps whatever it
-        resolved rather than losing all of it."""
+        table, for minutes).
+
+        limit (added same day, once concurrency alone turned out not to be
+        enough): caps how many NOT-yet-cached items this call will actually
+        resolve, in the priority order item_ids was given. Live-confirmed
+        the candidate set _populate_base_levels() gathers can be 15,000+
+        items on just one sell realm -- type-28 modifiers turn out to be
+        ubiquitous on modern ilvl-scaling gear, not the rare old-BoE-item
+        case this was first built for. Blizzard's rate limit (100 req/s) is
+        a hard ceiling regardless of thread count: 15,000 calls can never
+        complete in under ~150s no matter how parallel. Bounding a single
+        call's work is the only way to keep any one request fast; the cache
+        converges over many calls instead (see collect_all.py's periodic
+        pre-warm, which does this in the background so it doesn't depend on
+        user traffic to make progress). None (default, and every caller
+        before this) means unlimited, matching the original behavior.
+        Saved incrementally (every 50 completions) regardless -- an
+        interrupted batch still keeps whatever it resolved."""
         missing = []
         seen = set()
         for item_id in item_ids:
@@ -168,6 +180,8 @@ class NameCache:
             seen.add(item_id)
             if not self._is_complete(str(item_id)):
                 missing.append(item_id)
+                if limit is not None and len(missing) >= limit:
+                    break
         if not missing:
             return
         with ThreadPoolExecutor(max_workers=max_workers) as pool:

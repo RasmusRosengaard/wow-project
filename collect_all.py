@@ -35,9 +35,12 @@ import sys
 import time
 from pathlib import Path
 
+import duckdb
+
 import blizz
 import diff_snapshots
 import fetch_snapshot
+import item_names
 import scan_region
 
 ROOT = Path(__file__).resolve().parent
@@ -47,6 +50,13 @@ log = logging.getLogger("collect_all")
 
 RETENTION_DAYS = 14
 DEEP_COLLECT_POPULATION_TIERS = {"FULL", "HIGH"}
+
+# How many not-yet-cached items to resolve per cycle -- see
+# _prewarm_item_base_levels() below. This runs in the background (no user
+# waiting on it), so it can afford more per-call work than
+# snipe_check.MAX_BASE_LEVEL_LOOKUPS_PER_CALL, but still bounded so one
+# cycle can't run long enough to meaningfully delay the next poll.
+PREWARM_BASE_LEVEL_CAP = 1000
 
 _deep_collect_realm_ids: list[int] | None = None
 
@@ -98,6 +108,42 @@ def prune_old_snapshots(cr: int, retention_days: int = RETENTION_DAYS) -> int:
     return removed
 
 
+def _prewarm_item_base_levels(cap: int = PREWARM_BASE_LEVEL_CAP) -> int:
+    """Resolves item catalog levels (item_names.NameCache.ensure_many())
+    for a batch of items carrying a type-28 modifier, in the background,
+    so snipe_check._populate_base_levels() finds them already cached by
+    the time a real /api/snipes request needs them. Added 2026-07-25 after
+    a live incident: that per-request lookup turned out to have a
+    candidate set of 15,000+ distinct items on just one sell realm (type
+    28 is common on modern ilvl-scaling gear, not rare), which is capped
+    per-request now (MAX_BASE_LEVEL_LOOKUPS_PER_CALL in snipe_check.py) to
+    keep any one request fast -- but a cap only helps if something else
+    keeps making progress on the rest. This is that something else: it
+    runs every ~10-min cycle regardless of user traffic, so the cache
+    converges within a few hours instead of depending on how many
+    dashboard loads happen to hit still-uncached items.
+
+    Reads straight from data/listings/*.parquet (the region-wide sweep
+    collect_all() just ran) via a throwaway DuckDB connection -- doesn't
+    need analyze.connect()'s sell-realm-scoped setup, since base level is
+    realm-independent. Returns the number of candidate ids considered (not
+    necessarily all fetched -- ensure_many() itself skips anything already
+    cached and stops at `cap` new lookups)."""
+    listings_dir = DATA / "listings"
+    if not any(listings_dir.glob("*.parquet")):
+        return 0
+    con = duckdb.connect()
+    ids = [item_id for (item_id,) in con.execute(
+        f"SELECT DISTINCT item_id FROM read_parquet('{(listings_dir / '*.parquet').as_posix()}') "
+        "WHERE bonus_key LIKE '%28=%'"
+    ).fetchall()]
+    con.close()
+    if not ids:
+        return 0
+    item_names.NameCache().ensure_many(ids, max_workers=24, limit=cap)
+    return len(ids)
+
+
 def collect_all() -> dict:
     """One full pass: poll+diff+prune every FULL/HIGH-pop realm, then one
     unscoped region-wide listings sweep (every EU realm, see module
@@ -136,8 +182,15 @@ def collect_all() -> dict:
     except Exception:
         log.exception("collect_all: region sweep failed")
 
+    prewarmed = 0
+    try:
+        prewarmed = _prewarm_item_base_levels()
+    except Exception:
+        log.exception("collect_all: item base-level prewarm failed")
+
     summary = {"realms": len(realm_ids), "polled": polled, "diffed": diffed,
-              "pruned_snapshots": pruned, "failed": failed}
+              "pruned_snapshots": pruned, "failed": failed,
+              "base_level_candidates": prewarmed}
     log.info("collect_all: %s", summary)
     return summary
 

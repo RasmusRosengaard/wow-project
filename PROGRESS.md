@@ -52,13 +52,21 @@ Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed s
 live dashboard stuck on "Loading…" for 5+ minutes while logged in as
 superuser. Traced to `_populate_base_levels()` (the type-28 fix's own
 helper) resolving each not-yet-cached item's base level one sequential
-Blizzard API call at a time — a superuser's unfiltered, region-wide
-`top=5000` query has the largest possible candidate set of any tier, and
-`dashboard.html`'s auto-refresh had no dedup, so overlapping slow requests
-piled up. Fixed with `item_names.NameCache.ensure_many()` (parallelized via
-a thread pool) and a `fetchInFlight` guard in `dashboard.html`. See
-`CLAUDE.md`'s "Per-request latency fix" section for the full trace and
-verification. `pytest -q`: 231 passing.
+Blizzard API call at a time. A first fix (parallelizing via a thread pool)
+turned out insufficient once live numbers came in: **17,408** distinct
+items region-wide carry a type-28 modifier, **15,883** from one sell realm
+alone — type 28 is common on modern gear, not rare, so no amount of
+concurrency beats Blizzard's 100 req/s ceiling against a set that size.
+Real fix: `_populate_base_levels()` now caps how many new items it
+resolves per call (500, prioritizing the sell realm's own items) so no
+request can hang again, plus a new background pre-warm step in
+`collect_all.py` (runs every ~10-min cycle, resolves up to 1000 more items
+regardless of user traffic) so the cache actually converges over a few
+hours instead of depending on dashboard loads. Also: a `fetchInFlight`
+guard in `dashboard.html` stops overlapping auto-refresh requests from
+piling on top of each other. See `CLAUDE.md`'s "Per-request latency fix"
+section for the full trace, both fix passes, and verification. `pytest -q`:
+235 passing.
 
 **New this session (2026-07-25, continued again)**: a real snipe-matching
 bug (item 164353, cheap Auchindoun listing not surfacing as a snipe) traced

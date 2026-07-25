@@ -12,8 +12,10 @@ import blizz
 import collect_all
 import diff_snapshots
 import fetch_snapshot
+import item_names
 import scan_region
 from fetch_snapshot import SCHEMA
+from scan_region import LISTING_SCHEMA
 
 FULL_POP_CR = 1403   # e.g. Draenor
 HIGH_POP_CR = 1096
@@ -206,3 +208,79 @@ def test_collect_all_survives_one_realm_failing(env, monkeypatch):
     summary = collect_all.collect_all()
     assert summary["failed"] == [bad_cr]
     assert summary["realms"] == 2
+
+
+def listing_row(cr, item_id, bonus_key=""):
+    return {
+        "cr_id": cr, "fetched_ts": int(time.time()), "auction_id": item_id, "item_id": item_id,
+        "bonus_key": bonus_key, "pet_species_id": None, "pet_quality_id": None,
+        "pet_level": None, "buyout": 20_000, "bid": None, "quantity": 1,
+        "time_left": "VERY_LONG",
+    }
+
+
+def test_prewarm_item_base_levels_noop_when_no_listings(env):
+    """No data/listings/*.parquet yet (e.g. before the first sweep ever
+    ran) -- must return 0 without erroring, not assume the directory/files
+    exist."""
+    assert collect_all._prewarm_item_base_levels() == 0
+
+
+def test_prewarm_item_base_levels_resolves_only_type28_candidates(env, monkeypatch):
+    """Added 2026-07-25 alongside snipe_check.MAX_BASE_LEVEL_LOOKUPS_PER_CALL
+    -- this is the background half of that fix: resolving item catalog
+    levels here, off the request path, so _populate_base_levels() finds
+    them already cached. Only items whose bonus_key actually carries a
+    type-28 modifier should trigger a lookup."""
+    listings_dir = env / "listings"
+    listings_dir.mkdir(parents=True)
+    rows = [
+        listing_row(1080, 101, bonus_key="m:28=200"),
+        listing_row(1080, 102, bonus_key=""),  # no type-28 -- not a candidate
+    ]
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA),
+                    listings_dir / "1080.parquet")
+
+    monkeypatch.setattr(item_names, "CACHE_PATH", env / "item_names_test_cache.json")
+    calls = []
+
+    def fake(item_id):
+        calls.append(item_id)
+        return {"name": "Test Item", "quality": "COMMON", "level": 40,
+                "inventory_type": None, "item_class": None, "item_subclass": None}
+    monkeypatch.setattr(item_names, "_fetch_item_details", fake)
+
+    candidates = collect_all._prewarm_item_base_levels()
+    assert candidates == 1  # only item 101 has a type-28 modifier
+    assert calls == [101]
+
+
+def test_prewarm_item_base_levels_respects_cap(env, monkeypatch):
+    listings_dir = env / "listings"
+    listings_dir.mkdir(parents=True)
+    rows = [listing_row(1080, item_id, bonus_key="m:28=200") for item_id in range(101, 111)]
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA),
+                    listings_dir / "1080.parquet")
+
+    monkeypatch.setattr(item_names, "CACHE_PATH", env / "item_names_test_cache.json")
+    calls = []
+
+    def fake(item_id):
+        calls.append(item_id)
+        return {"name": "Test Item", "quality": "COMMON", "level": 40,
+                "inventory_type": None, "item_class": None, "item_subclass": None}
+    monkeypatch.setattr(item_names, "_fetch_item_details", fake)
+
+    candidates = collect_all._prewarm_item_base_levels(cap=3)
+    assert candidates == 10  # all 10 are real candidates...
+    assert len(calls) == 3   # ...but only 3 were actually fetched, per the cap
+
+
+def test_collect_all_includes_prewarm_count_in_summary(env, monkeypatch):
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
+    monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: None)
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
+
+    summary = collect_all.collect_all()
+    assert summary["base_level_candidates"] == 0  # no listings swept -- nothing to prewarm

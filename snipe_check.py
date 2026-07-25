@@ -62,6 +62,13 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
 # applied to them -- excluded from max_appearance_sources results below.
 NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
 
+# Bounds a single _populate_base_levels() call's worst-case latency -- see
+# its docstring. At max_workers=24 (comfortably under Blizzard's 100 req/s
+# ceiling), 500 items resolves in single-digit seconds even fully cold,
+# versus the 30-175s+ an unbounded, largely-uncached region-wide gather
+# produced live 2026-07-25.
+MAX_BASE_LEVEL_LOOKUPS_PER_CALL = 500
+
 
 def _populate_base_levels(con: duckdb.DuckDBPyConnection) -> None:
     """market_key()'s type-28 pooling (added 2026-07-25, see
@@ -86,33 +93,45 @@ def _populate_base_levels(con: duckdb.DuckDBPyConnection) -> None:
     one-time Blizzard API call per never-before-seen item, free on every
     call after. This is the one place find_snipes() can now make a network
     call where it previously never did (see CLAUDE.md for the tradeoff
-    this was weighed against)."""
-    ids = con.execute(r"""
+    this was weighed against).
+
+    sell_ids (sales+snaps, this sell realm only) is queried and prioritized
+    separately from listings_ids (region-wide, every scanned realm) -- see
+    ensure_many()'s `limit` below. Live-confirmed 2026-07-25 the type-28
+    prefilter's candidate set is not the small "occasional old BoE item"
+    case this was designed around: 15,000+ distinct items on a single sell
+    realm alone, since type 28 is ubiquitous on modern ilvl-scaling gear,
+    not rare. sell_ids drives THIS query's own sold-price grouping, so it
+    gets priority within the per-call budget; listings_ids only matters for
+    the buy-side join and can lag further behind without affecting pricing
+    correctness on the sell realm itself."""
+    sell_ids = [item_id for (item_id,) in con.execute(r"""
         SELECT DISTINCT item_id FROM sales WHERE bonus_key LIKE '%28=%'
         UNION
         SELECT DISTINCT item_id FROM snaps
         WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
           AND buyout IS NOT NULL AND bonus_key LIKE '%28=%'
-        UNION
-        SELECT DISTINCT item_id FROM listings WHERE bonus_key LIKE '%28=%'
-    """).fetchall()
+    """).fetchall()]
+    listings_ids = [item_id for (item_id,) in con.execute(
+        "SELECT DISTINCT item_id FROM listings WHERE bonus_key LIKE '%28=%'"
+    ).fetchall()]
+    all_ids = list(dict.fromkeys(sell_ids + listings_ids))  # dedup, sell_ids first
 
-    # ensure_many() resolves every not-yet-cached id concurrently (thread
-    # pool in item_names.py), saving incrementally every 50 completions --
-    # a cold NameCache after a fresh deploy can mean hundreds of never-
-    # before-seen items here, each a real Blizzard API round-trip. Two real
-    # incidents 2026-07-25 drove this: (1) run synchronously on the request
-    # path, this made the whole server unresponsive for several minutes on
-    # first deploy (see dashboard.py's api_snipes(), now offloaded via
-    # asyncio.to_thread); (2) even off the event loop, doing this one item
-    # at a time still made a single superuser's region-wide query take
-    # 30-175s per request (live-confirmed via Railway HTTP logs -- three
-    # /api/snipes calls abandoned by the browser at 49s/31s/175s). Fixed by
-    # parallelizing the fetches instead of the sequential loop this used to
-    # be -- base_level() below is now always a cache hit.
+    # ensure_many() resolves not-yet-cached ids concurrently (thread pool in
+    # item_names.py), capped to MAX_BASE_LEVEL_LOOKUPS_PER_CALL so one
+    # request can never again take minutes (see its own docstring for the
+    # full incident history: sequential-at-a-time made this 30-175s per
+    # request even off the event loop, and even full concurrency can't beat
+    # Blizzard's 100 req/s ceiling against a 15,000+-item candidate set).
+    # Items beyond the cap simply get no base_level this call --
+    # market_key() already treats an unknown base_level as "don't strip,"
+    # never "assume junk," so this degrades to the pre-2026-07-25 behavior
+    # for whatever wasn't reached yet, not an incorrect price. The cache
+    # converges across many calls; collect_all.py additionally pre-warms it
+    # in the background so convergence doesn't depend on user traffic.
     names = NameCache()
-    names.ensure_many([item_id for (item_id,) in ids])
-    rows = [(item_id, names.base_level(item_id)) for (item_id,) in ids]
+    names.ensure_many(all_ids, max_workers=24, limit=MAX_BASE_LEVEL_LOOKUPS_PER_CALL)
+    rows = [(item_id, names.base_level(item_id)) for item_id in all_ids]
 
     con.execute("CREATE OR REPLACE TEMP TABLE item_base_levels (bl_item_id BIGINT, base_level BIGINT)")
     if rows:
