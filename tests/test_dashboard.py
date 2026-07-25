@@ -344,6 +344,19 @@ def test_api_snipes_carries_item_class_when_names_resolved(data_dir, monkeypatch
     assert row["item_subclass"] == 7
 
 
+def test_api_snipes_carries_quality_tier_for_rarity_filter(data_dir, monkeypatch):
+    """quality (the tier name, e.g. "EPIC") backs the dashboard's rarity
+    filter -- must ride along on every row when names=true, same as
+    quality_color (the ring color derived from the same tier)."""
+    run_diff(monkeypatch)
+    stub_item_details(monkeypatch, quality="EPIC")
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "names": True})
+    row = r.json()["rows"][0]
+    assert row["quality"] == "EPIC"
+    assert row["quality_color"] == "#a335ee"
+
+
 def test_api_snipes_flags_profession_items_for_unique_transmog_toggle(data_dir, monkeypatch):
     """is_profession_item mirrors find_snipes()'s NON_TRANSMOG_INVENTORY_TYPES
     check exactly, so the dashboard's client-side "Unique transmog only"

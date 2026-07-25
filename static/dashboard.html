@@ -135,18 +135,9 @@
   button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
   .filters input[type=checkbox] { width: auto; }
   .filters .auto-label { flex-direction: row; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; }
-  #refresh {
-    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
-    border-radius: 3px; padding: 0.55rem 1rem; cursor: pointer; width: 100%;
-    font-weight: 700; text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.03em;
-    font-family: inherit;
-  }
-  #refresh:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
-
   /* ---------- Ledger table ---------- */
   .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hairline); border-radius: 6px; transition: opacity 0.15s ease; }
   .table-wrap.loading { opacity: 0.5; pointer-events: none; }
-  #refresh:disabled { opacity: 0.7; cursor: default; }
   table { border-collapse: collapse; width: 100%; font-size: 0.85rem; min-width: 640px; }
   th, td { padding: 0.55rem 0.7rem; text-align: right; border-bottom: 1px solid var(--hairline); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
@@ -178,6 +169,14 @@
     box-shadow: inset 0 0 0 3px var(--q, transparent);
   }
   .item-cell a .item-icon:hover { border-color: var(--bullion); cursor: pointer; }
+  /* Swatch next to each rarity-filter checkbox label -- same --q custom
+     property/border convention as .item-icon's ring, so the filter legend
+     stays visually tied to what the icon rings actually mean. */
+  .rarity-swatch {
+    display: inline-block; width: 0.85em; height: 0.85em; border-radius: 3px;
+    background: var(--q, transparent); border: 1px solid var(--hairline-strong);
+    vertical-align: middle; flex-shrink: 0;
+  }
   .group-toggle {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--text-dim);
     border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.68rem; cursor: pointer;
@@ -276,7 +275,17 @@
         <label class="auto-label"><input id="class_mount" type="checkbox"> Mounts</label>
       </div>
     </div>
-    <button id="refresh">Refresh</button>
+    <div>
+      <div class="filters-heading">Rarity</div>
+      <div class="item-class-filters">
+        <label class="auto-label"><input id="quality_poor" type="checkbox"> <span class="rarity-swatch" style="--q:#9d9d9d"></span> Poor</label>
+        <label class="auto-label"><input id="quality_common" type="checkbox"> <span class="rarity-swatch" style="--q:#ffffff"></span> Common</label>
+        <label class="auto-label"><input id="quality_uncommon" type="checkbox"> <span class="rarity-swatch" style="--q:#1eff00"></span> Uncommon</label>
+        <label class="auto-label"><input id="quality_rare" type="checkbox"> <span class="rarity-swatch" style="--q:#0070dd"></span> Rare</label>
+        <label class="auto-label"><input id="quality_epic" type="checkbox"> <span class="rarity-swatch" style="--q:#a335ee"></span> Epic</label>
+        <label class="auto-label"><input id="quality_legendary" type="checkbox"> <span class="rarity-swatch" style="--q:#ff8000"></span> Legendary</label>
+      </div>
+    </div>
     <label class="auto-label">
       <input id="auto" type="checkbox" checked> Auto-refresh (60s)
     </label>
@@ -321,8 +330,7 @@ let timer = null;
 // the server last returned (loosest possible thresholds, a big BATCH_TOP);
 // every filter in the rail re-slices/re-filters this in the browser, same
 // pattern the client-side sort fix already established. Only a sell-realm
-// switch, an items-csv change, the 60s auto-refresh timer, or an explicit
-// Refresh click re-fetches.
+// switch, an items-csv change, or the 60s auto-refresh timer re-fetches.
 let cachedRows = [];
 // Guards against overlapping fetchBatch() calls -- real production issue,
 // 2026-07-25: on a cold item-name cache, a single /api/snipes call could
@@ -400,6 +408,19 @@ const ITEM_CLASS_FILTERS = [
   { key: "battlepet",  label: "Battle pets",  test: r => r.item_class === 17 },
   { key: "quest",      label: "Quest items",  test: r => r.item_class === 12 },
   { key: "mount",      label: "Mounts",       test: r => r.item_class === 15 && r.item_subclass === 5 },
+];
+
+// Blizzard's quality tier names (item_names.py's quality(), same tier
+// quality_color() derives the icon ring from). Same OR-within-the-group,
+// AND-with-everything-else pattern as ITEM_CLASS_FILTERS -- no rarity
+// checked means no filtering, multiple checked means match any of them.
+const QUALITY_FILTERS = [
+  { key: "poor",      label: "Poor",      test: r => r.quality === "POOR" },
+  { key: "common",    label: "Common",    test: r => r.quality === "COMMON" },
+  { key: "uncommon",  label: "Uncommon",  test: r => r.quality === "UNCOMMON" },
+  { key: "rare",      label: "Rare",      test: r => r.quality === "RARE" },
+  { key: "epic",      label: "Epic",      test: r => r.quality === "EPIC" },
+  { key: "legendary", label: "Legendary", test: r => r.quality === "LEGENDARY" },
 ];
 
 const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "discount"]);
@@ -482,6 +503,7 @@ function applyFilters(rows) {
   const minSellNow = minSellNowRaw ? Number(minSellNowRaw) * 10000 : null;
   const uniqueOnly = $("unique_appearance").checked;
   const activeClasses = ITEM_CLASS_FILTERS.filter(c => $(`class_${c.key}`).checked);
+  const activeQualities = QUALITY_FILTERS.filter(q => $(`quality_${q.key}`).checked);
 
   return rows.filter(r => {
     if (r.discount_pct < minDiscount) return false;
@@ -500,6 +522,7 @@ function applyFilters(rows) {
     // No class checked = no class filtering (show everything); any checked
     // = row must match at least one.
     if (activeClasses.length && !activeClasses.some(c => c.test(r))) return false;
+    if (activeQualities.length && !activeQualities.some(q => q.test(r))) return false;
     return true;
   });
 }
@@ -682,12 +705,7 @@ function renderTable() {
   });
 }
 
-// Covers both the manual Refresh click and the 60s auto-refresh timer,
-// since both go through fetchBatch() -- a silent auto-refresh with no
-// feedback was as confusing as a manual click with no feedback.
 function setLoading(isLoading) {
-  $("refresh").disabled = isLoading;
-  $("refresh").textContent = isLoading ? "Loading…" : "Refresh";
   $("table-wrap").classList.toggle("loading", isLoading);
 }
 
@@ -709,10 +727,10 @@ function renderFromCache(sell, items) {
 // The only real "give me fresh data" network round-trip -- fetches one
 // loose, generously-sized batch (see batchParams()/BATCH_TOP) for the
 // current sell realm + item-id restriction, then caches it to localStorage.
-// Triggered by a realm switch, an items-csv change, an explicit Refresh
-// click, or checkForUpdates() below when it detects genuinely new data --
-// never by a filter-rail threshold changing (those call renderTable()
-// directly instead, see the listeners wired at the bottom).
+// Triggered by a realm switch, an items-csv change, or checkForUpdates()
+// below when it detects genuinely new data -- never by a filter-rail
+// threshold changing (those call renderTable() directly instead, see the
+// listeners wired at the bottom).
 async function fetchBatch() {
   const sell = $("sell").value;
   if (!sell) return;
@@ -813,8 +831,6 @@ document.querySelectorAll("th[data-sort]").forEach(th => {
   });
 });
 
-$("refresh").addEventListener("click", fetchBatch);
-
 function scheduleAuto() {
   if (timer) clearInterval(timer);
   // checkForUpdates(), not fetchBatch() directly -- most 60s ticks find
@@ -846,6 +862,10 @@ $("unique_appearance").addEventListener("change", () => {
   renderTable();
 });
 ITEM_CLASS_FILTERS.forEach(c => $(`class_${c.key}`).addEventListener("change", () => {
+  hideTooltip();
+  renderTable();
+}));
+QUALITY_FILTERS.forEach(q => $(`quality_${q.key}`).addEventListener("change", () => {
   hideTooltip();
   renderTable();
 }));

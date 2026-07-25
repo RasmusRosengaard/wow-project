@@ -196,6 +196,10 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         out["name"] = names.get(r["item_id"], r["pet_species_id"])
         out["icon"] = names.icon(r["item_id"], r["pet_species_id"])
         out["quality_color"] = names.quality_color(r["item_id"], r["pet_species_id"], r["pet_quality_id"])
+        # Tier name (e.g. "EPIC"), not just the ring color -- backs the
+        # dashboard's rarity filter (same client-side, OR'd-checkboxes
+        # pattern as the item-class filter below).
+        out["quality"] = names.quality(r["item_id"], r["pet_species_id"], r["pet_quality_id"])
         # Official Blizzard item_class/item_subclass ids (see item_names.py),
         # not the appearance_sources/max_appearance_sources filter above --
         # this backs the dashboard's item-class filter (weapon/armor/

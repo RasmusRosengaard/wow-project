@@ -71,6 +71,21 @@ def test_pet_quality_color_uses_positional_palette(cache_path, monkeypatch):
     assert nc.quality_color(PET_ITEM, pet_quality_id=99) is None  # out of range -> unknown
 
 
+def test_quality_resolves_and_caches(cache_path, monkeypatch):
+    calls = []
+    stub_details(monkeypatch, quality="EPIC", calls=calls)
+    nc = NameCache()
+    assert nc.quality(5507) == "EPIC"
+    assert nc.quality(5507) == "EPIC"
+    assert calls == [5507]
+
+
+def test_pet_quality_uses_positional_palette(cache_path, monkeypatch):
+    nc = NameCache()
+    assert nc.quality(PET_ITEM, pet_quality_id=3) == item_names.PET_QUALITY_NAMES[3]
+    assert nc.quality(PET_ITEM, pet_quality_id=99) is None  # out of range -> unknown
+
+
 def test_inventory_type_resolves_and_caches(cache_path, monkeypatch):
     calls = []
     stub_details(monkeypatch, inventory_type="PROFESSION_TOOL", calls=calls)

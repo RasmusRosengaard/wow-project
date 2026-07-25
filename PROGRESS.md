@@ -28,8 +28,10 @@ Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day
   (not an inferred sold-price percentile — see `CLAUDE.md`'s "What this
   project is" for why that changed 2026-07-25).
 - Client-side filter rail (discount%, gold range, sell-now, max-per-item,
-  unique-transmog, 8-way item-class), instant table sorting/grouping, an
-  `localStorage` batch cache so a page reload paints instantly.
+  unique-transmog, 8-way item-class, 6-way rarity), instant table
+  sorting/grouping, an `localStorage` batch cache so a page reload paints
+  instantly. Manual Refresh button removed (2026-07-25) — `checkForUpdates()`
+  already covers "is there new data" via the 60s auto-refresh timer.
 
 **Not built yet**, in priority order — see "Next up" below:
 1. Restricted Stripe key (still the full `sk_live_...` secret). Human-only, not scheduled.

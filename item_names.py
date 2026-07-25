@@ -30,6 +30,10 @@ QUALITY_COLORS = {
 # exact indexing isn't documented by Blizzard, so this assumes the same
 # 0-indexed convention as the item quality enum (0=Poor..5=Legendary).
 PET_QUALITY_COLORS = ["#9d9d9d", "#ffffff", "#1eff00", "#0070dd", "#a335ee", "#ff8000"]
+# Same Poor->Legendary order as PET_QUALITY_COLORS, as tier names instead of
+# colors -- backs quality() below, used for the rarity filter (filtering by
+# color would be fragile/unreadable; the tier name is the real identity).
+PET_QUALITY_NAMES = ["POOR", "COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY"]
 
 
 def _fetch_item_details(item_id: int) -> dict | None:
@@ -220,6 +224,18 @@ class NameCache:
             return None
         self._ensure_item_details(item_id)
         return QUALITY_COLORS.get(self._cache["item_quality"].get(str(item_id)))
+
+    def quality(self, item_id: int, pet_species_id: int | None = None,
+                pet_quality_id: int | None = None) -> str | None:
+        """Quality tier name (e.g. "EPIC"), the same tier quality_color()
+        derives its ring color from -- exposed separately so callers can
+        filter/group by tier identity, not just paint a color."""
+        if item_id == PET_CAGE_ITEM_ID and pet_quality_id is not None:
+            if 0 <= pet_quality_id < len(PET_QUALITY_NAMES):
+                return PET_QUALITY_NAMES[pet_quality_id]
+            return None
+        self._ensure_item_details(item_id)
+        return self._cache["item_quality"].get(str(item_id))
 
     def base_level(self, item_id: int) -> int | None:
         """The item's own catalog level from the static API -- used to sanity
