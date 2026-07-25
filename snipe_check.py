@@ -97,24 +97,22 @@ def _populate_base_levels(con: duckdb.DuckDBPyConnection) -> None:
         SELECT DISTINCT item_id FROM listings WHERE bonus_key LIKE '%28=%'
     """).fetchall()
 
-    # Saved incrementally (every 50 items), not just once at the end -- a
-    # cold NameCache after a fresh deploy can mean hundreds of never-before-
-    # seen items here, each a real Blizzard API round-trip; if the process
-    # gets interrupted (restart, another request racing this one) partway
-    # through, an end-only save would lose all of that work and the next
-    # call would start over from zero instead of converging. Real incident
-    # 2026-07-25: this loop, run synchronously on the request path (see
-    # dashboard.py's api_snipes(), which now offloads it via
-    # asyncio.to_thread), made the whole server unresponsive for several
-    # minutes on first deploy while it worked through a large uncached
-    # region-wide item set.
+    # ensure_many() resolves every not-yet-cached id concurrently (thread
+    # pool in item_names.py), saving incrementally every 50 completions --
+    # a cold NameCache after a fresh deploy can mean hundreds of never-
+    # before-seen items here, each a real Blizzard API round-trip. Two real
+    # incidents 2026-07-25 drove this: (1) run synchronously on the request
+    # path, this made the whole server unresponsive for several minutes on
+    # first deploy (see dashboard.py's api_snipes(), now offloaded via
+    # asyncio.to_thread); (2) even off the event loop, doing this one item
+    # at a time still made a single superuser's region-wide query take
+    # 30-175s per request (live-confirmed via Railway HTTP logs -- three
+    # /api/snipes calls abandoned by the browser at 49s/31s/175s). Fixed by
+    # parallelizing the fetches instead of the sequential loop this used to
+    # be -- base_level() below is now always a cache hit.
     names = NameCache()
-    rows = []
-    for i, (item_id,) in enumerate(ids):
-        rows.append((item_id, names.base_level(item_id)))
-        if i % 50 == 49:
-            names.save()
-    names.save()
+    names.ensure_many([item_id for (item_id,) in ids])
+    rows = [(item_id, names.base_level(item_id)) for (item_id,) in ids]
 
     con.execute("CREATE OR REPLACE TEMP TABLE item_base_levels (bl_item_id BIGINT, base_level BIGINT)")
     if rows:

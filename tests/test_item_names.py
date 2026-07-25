@@ -176,6 +176,76 @@ def test_backfills_quality_and_level_for_pre_existing_name_only_cache(cache_path
     assert calls == [5507]
 
 
+def test_ensure_many_resolves_multiple_items_concurrently(cache_path, monkeypatch):
+    """Batch path for _populate_base_levels()'s region-wide type-28 gather --
+    added after a sequential one-item-at-a-time loop there took 30-175s per
+    request for a superuser's largely-uncached candidate set (real
+    production incident, 2026-07-25)."""
+    calls = []
+
+    def fake(item_id):
+        calls.append(item_id)
+        return {"name": f"Item {item_id}", "quality": "COMMON", "level": item_id,
+                "inventory_type": None, "item_class": None, "item_subclass": None}
+    monkeypatch.setattr(item_names, "_fetch_item_details", fake)
+
+    nc = NameCache()
+    nc.ensure_many([101, 102, 103])
+    assert sorted(calls) == [101, 102, 103]
+    assert nc.base_level(101) == 101
+    assert nc.base_level(102) == 102
+    assert nc.base_level(103) == 103
+    # second call for an already-cached id -- no new fetch
+    assert sorted(calls) == [101, 102, 103]
+
+
+def test_ensure_many_dedupes_repeated_ids_in_input(cache_path, monkeypatch):
+    calls = []
+    stub_details(monkeypatch, level=636, calls=calls)
+    nc = NameCache()
+    nc.ensure_many([5507, 5507, 5507])
+    assert calls == [5507]
+
+
+def test_ensure_many_skips_already_complete_items(cache_path, monkeypatch):
+    calls = []
+    stub_details(monkeypatch, level=636, calls=calls)
+    nc = NameCache()
+    nc.ensure_many([5507])
+    assert calls == [5507]
+    nc.ensure_many([5507])  # already complete -- no second fetch
+    assert calls == [5507]
+
+
+def test_ensure_many_tolerates_fetch_failures(cache_path, monkeypatch):
+    def fake(item_id):
+        if item_id == 999999:
+            return None
+        return {"name": "Ornate Spyglass", "quality": "COMMON", "level": 35,
+                "inventory_type": None, "item_class": None, "item_subclass": None}
+    monkeypatch.setattr(item_names, "_fetch_item_details", fake)
+
+    nc = NameCache()
+    nc.ensure_many([5507, 999999])
+    assert nc.base_level(5507) == 35
+    assert nc.base_level(999999) is None
+
+
+def test_ensure_many_saves_to_disk(cache_path, monkeypatch):
+    stub_details(monkeypatch, level=636)
+    nc = NameCache()
+    nc.ensure_many([5507])
+    assert cache_path.exists()
+    saved = json.loads(cache_path.read_text())
+    assert saved["item_level"]["5507"] == 636
+
+
+def test_ensure_many_noop_on_empty_input(cache_path, monkeypatch):
+    nc = NameCache()
+    nc.ensure_many([])
+    assert not cache_path.exists()
+
+
 def test_save_only_writes_when_dirty(cache_path, monkeypatch):
     nc = NameCache()
     nc.save()

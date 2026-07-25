@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed same session; disk/retention investigated).
+Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed same session; disk/retention investigated; a follow-up per-request latency bug in the same code path, fixed same day).
 
 ## Status at a glance
 
@@ -47,6 +47,18 @@ Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed s
    Investigated 2026-07-25, proposed but not built — see "Known gaps" below.
 3. A camped-relist false-positive still slips through occasionally (separate,
    older bug from the crafted-item fragmentation fix — see "Known gaps" below).
+
+**New this session (2026-07-25, continued yet again)**: human reported the
+live dashboard stuck on "Loading…" for 5+ minutes while logged in as
+superuser. Traced to `_populate_base_levels()` (the type-28 fix's own
+helper) resolving each not-yet-cached item's base level one sequential
+Blizzard API call at a time — a superuser's unfiltered, region-wide
+`top=5000` query has the largest possible candidate set of any tier, and
+`dashboard.html`'s auto-refresh had no dedup, so overlapping slow requests
+piled up. Fixed with `item_names.NameCache.ensure_many()` (parallelized via
+a thread pool) and a `fetchInFlight` guard in `dashboard.html`. See
+`CLAUDE.md`'s "Per-request latency fix" section for the full trace and
+verification. `pytest -q`: 231 passing.
 
 **New this session (2026-07-25, continued again)**: a real snipe-matching
 bug (item 164353, cheap Auchindoun listing not surfacing as a snipe) traced

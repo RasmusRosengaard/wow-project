@@ -327,6 +327,17 @@ let timer = null;
 // switch, an items-csv change, the 60s auto-refresh timer, or an explicit
 // Refresh click re-fetches.
 let cachedRows = [];
+// Guards against overlapping fetchBatch() calls -- real production issue,
+// 2026-07-25: on a cold item-name cache, a single /api/snipes call could
+// take 30-175s (see CLAUDE.md), and checkForUpdates()'s 60s timer doesn't
+// wait for a prior invocation to settle before firing again, so a slow
+// request kept getting piled on top of by fresh ones instead of being let
+// to finish -- the dashboard read as permanently stuck loading even though
+// each individual request would eventually complete. A skip-if-busy guard
+// is enough here (not a queue/cancel) since checkForUpdates()/fetchBatch()
+// always re-fetch the *same* loose batch -- a second concurrent call for
+// the same data adds nothing a first one wasn't already going to deliver.
+let fetchInFlight = false;
 let displayRows = [];    // flattened, on-screen order (main + expanded sub-rows) -- what tooltip lookups index into
 let openGroups = new Set();  // group keys the user has expanded to see every listing for that item/variant
 let currentRegion = null;
@@ -724,8 +735,10 @@ function renderFromCache(sell, items) {
 async function fetchBatch() {
   const sell = $("sell").value;
   if (!sell) return;
+  if (fetchInFlight) return;  // an equivalent fetch is already running -- let it finish rather than piling another slow query on top (see fetchInFlight's declaration above)
   const items = $("items").value.trim();
   renderFromCache(sell, items);  // instant paint from last-known-good while the real fetch is in flight
+  fetchInFlight = true;
   setLoading(true);
   try {
     const r = await fetch(`/api/snipes?${batchParams().toString()}`);
@@ -758,6 +771,7 @@ async function fetchBatch() {
     }
   } finally {
     setLoading(false);
+    fetchInFlight = false;
   }
 }
 

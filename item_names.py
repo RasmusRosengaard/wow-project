@@ -8,6 +8,7 @@ Cache lives at data/item_names.json and is loaded/saved once per NameCache
 instance rather than per lookup.
 """
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from blizz import api_get
@@ -104,20 +105,13 @@ class NameCache:
         self._cache.setdefault("item_subclass", {})
         self._dirty = False
 
-    def _ensure_item_details(self, item_id: int) -> None:
-        """Fetch name+quality+level+inventory_type+class/subclass together and
-        backfill whichever cache a pre-existing entry is missing -- a cache
-        file written before a field existed has the name but not that field,
-        so don't assume a name-cache hit means everything else is cached
-        too."""
+    def _is_complete(self, key: str) -> bool:
+        return key in self._cache["items"] and key in self._cache["item_quality"] \
+            and key in self._cache["item_level"] and key in self._cache["item_inventory_type"] \
+            and key in self._cache["item_class"] and key in self._cache["item_subclass"]
+
+    def _merge_details(self, item_id: int, details: dict) -> None:
         key = str(item_id)
-        if key in self._cache["items"] and key in self._cache["item_quality"] \
-                and key in self._cache["item_level"] and key in self._cache["item_inventory_type"] \
-                and key in self._cache["item_class"] and key in self._cache["item_subclass"]:
-            return
-        details = _fetch_item_details(item_id)
-        if not details:
-            return
         if details.get("name"):
             self._cache["items"][key] = details["name"]
         if details.get("quality"):
@@ -136,6 +130,55 @@ class NameCache:
         self._cache["item_class"][key] = details.get("item_class")
         self._cache["item_subclass"][key] = details.get("item_subclass")
         self._dirty = True
+
+    def _ensure_item_details(self, item_id: int) -> None:
+        """Fetch name+quality+level+inventory_type+class/subclass together and
+        backfill whichever cache a pre-existing entry is missing -- a cache
+        file written before a field existed has the name but not that field,
+        so don't assume a name-cache hit means everything else is cached
+        too."""
+        key = str(item_id)
+        if self._is_complete(key):
+            return
+        details = _fetch_item_details(item_id)
+        if not details:
+            return
+        self._merge_details(item_id, details)
+
+    def ensure_many(self, item_ids: list[int], max_workers: int = 16) -> None:
+        """Batch version of _ensure_item_details(): resolves every not-yet-
+        cached id concurrently via a thread pool instead of one sequential
+        Blizzard API call per item. Added 2026-07-25 after a superuser's
+        region-wide, largely-uncached query (snipe_check._populate_base_levels,
+        which has no --items filter to narrow its candidate set) took 30-175s
+        per /api/snipes call doing this one item at a time -- real production
+        pain, not a hypothetical (a stuck "Loading" dashboard, greyed-out
+        table, for minutes). Blizzard's rate limit (100 req/s, 36,000/h) has
+        enormous headroom over this project's steady-state usage (~6 req/h
+        for the deep collector), so a burst of max_workers concurrent calls
+        is safe. Saved incrementally (every 50 completions), same crash-
+        resilience reasoning as the old per-item loop in
+        _populate_base_levels -- an interrupted batch still keeps whatever it
+        resolved rather than losing all of it."""
+        missing = []
+        seen = set()
+        for item_id in item_ids:
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            if not self._is_complete(str(item_id)):
+                missing.append(item_id)
+        if not missing:
+            return
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch_item_details, item_id): item_id for item_id in missing}
+            for i, future in enumerate(as_completed(futures)):
+                details = future.result()
+                if details:
+                    self._merge_details(futures[future], details)
+                if i % 50 == 49:
+                    self.save()
+        self.save()
 
     def get(self, item_id: int, pet_species_id: int | None = None) -> str:
         if item_id == PET_CAGE_ITEM_ID and pet_species_id is not None:

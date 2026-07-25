@@ -1069,6 +1069,61 @@ whether it's individually fast on a warm cache. An `async def` FastAPI route
 does not protect you from this by itself -- it only helps if the actual
 blocking work is offloaded (`asyncio.to_thread`, a background job, etc.).
 
+### Per-request latency fix: parallelized `_populate_base_levels()` (2026-07-25)
+
+`asyncio.to_thread` (above) fixed *server-wide* availability during a slow
+`_populate_base_levels()` run, but not the *individual* request's own
+latency -- it was still resolving every not-yet-cached item's base level
+with one sequential Blizzard API call at a time. Human reported the live
+dashboard stuck on "Loading…" with the table greyed out for 5+ minutes
+while logged in as superuser. Traced live via `railway logs --http --path
+/api/snipes`: three `/api/snipes` requests in that window, abandoned by the
+browser (HTTP 499) after 49s, 31s, and 175s. Root cause: a superuser's
+`top=5000` request has no `--items` filter, so `_populate_base_levels()`'s
+candidate set is drawn from the *entire* region-wide `listings` table (36
+realms) -- a large, often-partially-uncached set of items carrying a
+type-28 modifier, each needing its own real HTTP round-trip. Confirmed via
+`railway ssh` that `data/item_names.json` was genuinely still filling in
+(1818 items cached, file mtime seconds old) -- not a stuck process, just a
+slow one. **Amplifier**: `dashboard.html`'s `checkForUpdates()` (60s timer +
+page load) has no dedup -- each tick fires a fresh `fetchBatch()` regardless
+of whether a prior one is still pending, so overlapping expensive queries
+piled up during the same window rather than one finishing before the next
+started.
+
+**Fix, two parts**:
+1. `item_names.NameCache.ensure_many(item_ids, max_workers=16)` (new) --
+   resolves every not-yet-cached id concurrently via a
+   `ThreadPoolExecutor` instead of one item at a time, saving incrementally
+   every 50 completions (same crash-resilience reasoning as the old
+   per-item loop). Blizzard's rate limit (100 req/s, 36,000/h) has enormous
+   headroom over this project's steady-state usage, so a burst of 16
+   concurrent calls is safe. `_ensure_item_details()`'s merge logic was
+   factored out into `_is_complete()`/`_merge_details()` so both the
+   single-item and batch paths share it.
+   `snipe_check._populate_base_levels()` now calls `ensure_many()` once up
+   front instead of looping `base_level()` per item -- every `base_level()`
+   call in the row-building loop after that is a cache hit.
+2. `dashboard.html` gained a `fetchInFlight` guard: `fetchBatch()` is a
+   no-op if an equivalent fetch is already running, instead of piling a
+   second slow query on top of the first. Not a queue or an abort -- since
+   every caller re-fetches the same loose batch, a skip is sufficient; the
+   in-flight call will deliver fresh-enough data for both callers.
+
+**Verified**: `pytest -q` (231 passing, up from 225 -- new
+`tests/test_item_names.py` coverage for `ensure_many()`: concurrent
+resolution, dedup of repeated ids in one call, skipping already-complete
+items, tolerating a failed fetch for one id without losing the others,
+incremental disk saves, no-op on empty input) and
+`env -u DATABASE_URL pytest -q` (same count, matching CI). The frontend
+guard was verified in a real browser (throwaway local preview, mocked
+`window.fetch` with an artificial 800ms delay standing in for a slow
+`/api/snipes` call, same technique as the "localStorage batch cache"
+verification): firing two overlapping `fetchBatch()` calls produced exactly
+one real network call, the loading state cleared correctly afterward
+(`fetchInFlight` reset to `false`, button back to "Refresh"), and a
+subsequent call still went through normally -- the guard doesn't get stuck.
+
 ### Disk usage / retention (investigated 2026-07-25, not yet built)
 
 Human asked whether Railway's disk usage had been checked, worried about
