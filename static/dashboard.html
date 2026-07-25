@@ -255,10 +255,9 @@
     <label>Sell realm <select id="sell"></select></label>
     <div id="realm-lock-hint" class="realm-lock-hint" style="display:none;"></div>
     <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
-    <label>Min sales/day <input id="min_per_day" type="number" step="0.1" value="0.5"></label>
     <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
     <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
-    <label>Min sell realm low (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
+    <label>Min sell price (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
     <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
     <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
     <label class="auto-label">
@@ -292,9 +291,7 @@
           <th data-sort="item">Item <span class="dir"></span></th>
           <th data-sort="variant">Variant <span class="dir"></span></th>
           <th data-sort="buy">Buy <span class="dir"></span></th>
-          <th data-sort="gold">Sell p25 <span class="dir"></span></th>
-          <th data-sort="sell_now">Sell realm low <span class="dir"></span></th>
-          <th data-sort="per_day">Sales/day <span class="dir"></span></th>
+          <th data-sort="gold">Sell price <span class="dir"></span></th>
           <th data-sort="discount">Discount % <span class="dir"></span></th>
         </tr>
       </thead>
@@ -405,23 +402,20 @@ const ITEM_CLASS_FILTERS = [
   { key: "mount",      label: "Mounts",       test: r => r.item_class === 15 && r.item_subclass === 5 },
 ];
 
-const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "sell_now", "per_day", "discount"]);
+const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "discount"]);
 const SORT_VALUE = {
   buy_realm: r => (r.buy_realm_name || "").toLowerCase(),
   item: r => (r.name || String(r.item_id)).toLowerCase(),
   variant: r => (r.variant || "").toLowerCase(),
   buy: r => r.buy_copper,
   gold: r => r.sell_copper,
-  sell_now: r => r.sell_now_copper,
-  per_day: r => r.per_day,
   discount: r => r.discount_pct,
 };
 
 function compareRows(a, b) {
   const val = SORT_VALUE[sort];
   const va = val(a), vb = val(b);
-  // Nulls (e.g. sell_now_copper when nothing's currently listed on the sell
-  // realm) always sort last, regardless of asc/desc -- "unknown" isn't a
+  // Nulls always sort last, regardless of asc/desc -- "unknown" isn't a
   // high or low value, it's just missing.
   if (va == null && vb == null) return 0;
   if (va == null) return 1;
@@ -438,7 +432,7 @@ function compareRows(a, b) {
 // Groups on market_key (added 2026-07-24), not the exact bonus_key/
 // variant_raw -- snipe_check.find_snipes() already matches/prices listings
 // by market_key, so two listings on different realms routinely share one
-// (and, provably, the same Sell p25/Sell realm low) without ever sharing an
+// (and, provably, the same sell price) without ever sharing an
 // exact bonus_key (per-instance modifiers). Grouping by the exact string
 // was splitting an already-identically-priced market into separate table
 // rows instead of one expandable group -- caught live from a real user
@@ -477,13 +471,9 @@ function buildGroups(rows) {
 
 // All the filter-rail thresholds that used to be server-side query params --
 // now applied entirely in the browser against the cached batch (cachedRows),
-// so changing any of these never triggers a network request. min_sales stays
-// server-side always (a fixed data-quality floor, not user-adjustable; see
-// snipe_check.find_snipes' docstring on the min_sales=1 troll-listing bug
-// this guards against).
+// so changing any of these never triggers a network request.
 function applyFilters(rows) {
   const minDiscount = Number($("min_discount_pct").value) || 0;
-  const minPerDay = Number($("min_per_day").value) || 0;
   const minGoldRaw = $("min_gold").value.trim();
   const maxGoldRaw = $("max_gold").value.trim();
   const minSellNowRaw = $("min_sell_now").value.trim();
@@ -495,13 +485,13 @@ function applyFilters(rows) {
 
   return rows.filter(r => {
     if (r.discount_pct < minDiscount) return false;
-    if (r.per_day < minPerDay) return false;
     if (minGold != null && r.buy_copper < minGold) return false;
     if (maxGold != null && r.buy_copper > maxGold) return false;
-    // No current sell-realm listing (sell_now_copper == null) can't prove it
-    // clears a floor that isn't known -- excluded, same reasoning the old
-    // server-side min_sell_now filter used.
-    if (minSellNow != null && (r.sell_now_copper == null || r.sell_now_copper < minSellNow)) return false;
+    // A row with no current sell-realm listing never appears at all
+    // (sell_copper IS the sell realm's current cheapest listing, see
+    // snipe_check.find_snipes' 2026-07-25 pricing-model docstring -- there's
+    // no separate percentile fallback left), so this is just a floor.
+    if (minSellNow != null && r.sell_copper < minSellNow) return false;
     // "Unique" means no other item grants the same transmog look, excluding
     // profession tool/accessory slots (is_profession_item, see dashboard.py)
     // which aren't part of the visible paperdoll model at all -- mirrors
@@ -516,17 +506,14 @@ function applyFilters(rows) {
 
 // Only the params that actually change *which* rows are candidates at the
 // SQL/join level -- sell realm and item-id restriction. Every threshold that
-// used to narrow the SQL query (min_discount, min_per_day, min_gold/
-// max_gold, min_sell_now, max_appearance_sources, max_per_item) is
-// deliberately NOT sent here anymore; the batch is fetched as loose as
-// possible (see BATCH_TOP) and applyFilters() reproduces all of them
-// client-side instead. min_sales stays server-only at its default (2) --
-// not a display preference, see applyFilters()'s comment.
+// used to narrow the SQL query (min_discount, min_gold/max_gold,
+// min_sell_now, max_appearance_sources, max_per_item) is deliberately NOT
+// sent here anymore; the batch is fetched as loose as possible (see
+// BATCH_TOP) and applyFilters() reproduces all of them client-side instead.
 function batchParams() {
   const p = new URLSearchParams();
   p.set("sell", $("sell").value);
   p.set("min_discount", "0");
-  p.set("min_per_day", "0");
   p.set("top", String(BATCH_TOP));
   p.set("sort", "discount");
   p.set("names", "true");  // always on -- names/icons aren't worth making optional
@@ -583,11 +570,7 @@ function showTooltip(row, x, y) {
     </div>
     <div class="tt-row"><span class="lbl">Buy realm</span><span>${row.buy_realm_name}</span></div>
     <div class="tt-row"><span class="lbl">Buy price</span>${formatMoney(row.buy_copper)}</div>
-    <div class="tt-row"><span class="lbl">Sell p25</span>${formatMoney(row.sell_copper)}</div>
-    ${row.sell_now_copper != null
-      ? `<div class="tt-row"><span class="lbl">Sell realm low</span>${formatMoney(row.sell_now_copper)}</div>`
-      : ""}
-    <div class="tt-row"><span class="lbl">Sales/day</span><span>${row.per_day.toFixed(2)}</span></div>
+    <div class="tt-row"><span class="lbl">Sell price</span>${formatMoney(row.sell_copper)}</div>
     <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
     ${row.appearance_sources != null
       ? `<div class="tt-row"><span class="lbl">Appearance</span><span>${row.appearance_sources === 1 ? "unique look" : `shared by ${row.appearance_sources} items`}</span></div>`
@@ -660,8 +643,6 @@ function buildRowHtml(row, idx, group, isSub) {
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>
-      <td class="num">${row.sell_now_copper != null ? formatMoney(row.sell_now_copper) : "&mdash;"}</td>
-      <td class="num">${row.per_day.toFixed(2)}</td>
       <td class="num">${row.discount_pct.toFixed(1)}</td>
     </tr>`;
 }
@@ -854,7 +835,7 @@ $("items").addEventListener("change", fetchBatch);
 // cached batch -- see applyFilters()/renderTable(). "input" fires live as
 // the user types/adjusts, not just on blur, matching the instant feel the
 // client-side sort already established.
-const LIVE_FILTER_IDS = ["min_discount_pct", "min_per_day", "min_gold", "max_gold",
+const LIVE_FILTER_IDS = ["min_discount_pct", "min_gold", "max_gold",
                          "min_sell_now", "max_per_item"];
 LIVE_FILTER_IDS.forEach(id => $(id).addEventListener("input", () => {
   hideTooltip();

@@ -6,12 +6,32 @@ session on 2026-07-18.
 
 ## What this project is
 
-A **validation layer for WoW auction-house sniping**, not another sniper.
-Existing tools (TSM Sniper, Auctionator) flag items cheap relative to *listing*
-prices — which are fiction. The unsolved half is validation: does this item
-actually sell, at what real prices, how fast, and is its transmog appearance
-genuinely rare? We infer **actual sales** from Blizzard's hourly AH snapshots and
-(later) layer appearance scarcity on top, producing a Deal Score.
+A cross-realm WoW auction-house sniping tool: a listing on any EU realm
+priced well below your sell realm's own current cheapest listing, net of
+the 5% AH cut, is a validated snipe.
+
+**Pricing model, revised 2026-07-25 (human product decision) — read this
+before touching pricing logic.** The original framing here (kept below,
+struck through in spirit not literally, for the historical record) was
+"not another sniper... existing tools flag items cheap relative to
+*listing* prices — which are fiction... we infer **actual sales**." That
+sold-price-percentile approach was replaced after three separate live
+production bugs (a single troll "sale" becoming the entire percentile, a
+repeated troll sale dragging the estimate even past a 2-sample floor, and
+finally a camped relist misclassified as two real sales while an unrelated
+bug defeated the safety cap meant to catch exactly that) — see
+"Inference logic" below for the full incident chain. Sell price is now
+simply the sell realm's own current cheapest live listing: directly
+observable, zero classification, immune to every one of those bugs by
+construction. **The tradeoff, stated plainly**: this makes a snipe a
+listing-to-listing comparison, the same thing TSM Sniper/Auctionator
+already do — the "does this item actually sell" validation this project
+was originally built to add is no longer in the pricing path. The
+underlying sale-classification engine (`diff_snapshots.py`) still runs and
+is still real, correct work; it could back a future liquidity/confidence
+signal without being back on the pricing critical path. Not built now.
+Appearance scarcity (Phase 3) and Deal Score (Phase 4) are unaffected by
+this — they were always a separate layer.
 
 Business model (decided, don't revisit without the human): free in-game addon
 (Blizzard requires addons to be free) + paid external data service — Discord
@@ -1353,6 +1373,91 @@ multiple distinct market_keys carrying their real distinguishing values
 into one wrong blended market. The prior "kept conservative, partial fix"
 entry in `PROGRESS.md`'s "Known gaps" (accurate for the frequency-only
 version shipped earlier the same day) is resolved, not just updated.
+
+### Pricing model replaced: sold-price percentile -> current cheapest listing (2026-07-25)
+
+Human reported item 13051 (Witchfury) showing a sell price of ~667,999g on
+Draenor while the item genuinely trades around 7,999g. Traced live: the
+item's only 2 recorded `inferred_sale` events were the *same camped-relist
+troll listing* at two different joke prices (887,999g then 567,999g) --
+the relist-matching window requires an exact price match, so a troll who
+tweaks their price between relists slips through misclassified as two real
+"sales," clearing the `min_sales=2` floor with nothing genuine behind it.
+There *was* a real, cheap current listing on Draenor (7,999.99g) that
+should have rescued this via the existing current-lowest-listing safety
+cap -- but it didn't, because an unrelated bug (`ilvl_plausible()`, from
+the earlier type-28 fix) treated the troll's `28=217` as implausible junk
+(correctly stripped) while treating the real listing's `28=35` as a
+plausible, distinct item level (incorrectly kept) -- splitting the troll
+listing and the real one into two different, unmatched `market_key`
+groups, so the cap never saw the real listing at all.
+
+**Broader investigation, not just this one item**: checked how common the
+underlying pattern is -- items with a low catalog base level where at
+least one type-28 claim still passes the plausibility check. **7,548
+items** region-wide show this. Old, low-level items essentially never have
+genuine per-instance ilvl scaling (that system doesn't apply to them at
+all), so `ilvl_plausible()`'s ratio-based check was letting real noise
+through as "plausible" whenever a junk value happened to land within a
+generous multiple of a very low base level.
+
+**This was the third separate live production bug from the same
+underlying design** (troll-sale percentile poisoning: item 15138; a
+repeated troll sale dragging the median past `min_sales=2`: item 206477;
+now a camped relist defeating even the safety cap: item 13051). Each was
+individually patched when found. Discussing the fix for *this* specific
+bug, the human's call was broader: stop inferring a historical sold price
+at all, and price purely off the sell realm's own current cheapest
+listing -- confirmed explicitly via `AskUserQuestion` as a full
+replacement, not a partial one, after being told plainly what it gives up
+(see "What this project is" at the top of this file for the tradeoff
+stated in full).
+
+**What changed**:
+- `snipe_check.find_snipes()`: the `sell_stats` CTE (percentile over
+  `sales`, with `min_sales`/`min_per_day`/`sell_percentile` params) is
+  gone entirely. `sell_now` (current cheapest live listing on the sell
+  realm, already existed as a safety cap) is now the *only* price source.
+  A row with no current sell-realm listing is excluded outright -- there's
+  no fallback left to compute a price from.
+- `sell_now_g`/`sell_now_copper`/`per_day`/`sales` are gone from the
+  output; `sell_p_g`/`sell_copper` now directly mean "the sell realm's
+  current cheapest listing" (previously a percentile, capped by this same
+  number).
+- `min_sell_now` (unchanged name) now filters on the same number used for
+  pricing, not a separate percentile-vs-current-listing distinction.
+- CLI: `--min-per-day`/`--sell-percentile`/`--min-sales` removed.
+  `--sort per_day` removed (nothing left to sort by).
+- `dashboard.py`/`dashboard.html`: `/api/snipes` dropped the same params;
+  the frontend's "Sell p25" and "Sell realm low" columns (which showed two
+  numbers that were already frequently identical, since one capped the
+  other) collapsed into one "Sell price" column; "Sales/day" column,
+  filter, and sort removed.
+- `diff_snapshots.py`'s classification engine, `sales`/`ev`/`span` views,
+  and `analyze.py`'s CLI debugging commands are all **unchanged and still
+  run** -- `_populate_market_keys()` still uses `sales` as part of its
+  market_key noise-detection sample (unrelated to pricing). Only the
+  *pricing* use of sold-price inference was removed.
+
+**Tests**: `tests/test_snipe_check.py`'s `data_dir` fixture (and several
+others) redesigned around a *current* sell-realm listing instead of a
+listing that vanishes into `sales` -- pricing tests no longer need
+`diff_snapshots` to classify anything as `inferred_sale` at all, only a
+live snapshot at the latest `snapshot_ts`. Tests specifically about the
+old model (`min_sales` floor, percentile-vs-current-listing capping) were
+deleted, not adapted, since that behavior no longer exists; a new test
+(`test_find_snipes_excludes_items_with_no_current_sell_listing`) covers
+the new "no current listing means no price, excluded outright" rule.
+`tests/test_dashboard.py` needed the same fixture redesign.  `pytest -q`:
+243 passing, `env -u DATABASE_URL pytest -q` matching.
+
+**Not yet done, deferred to a dedicated follow-up cleanup pass** (human
+request, same session): trim the large amount of now-purely-historical
+prose across this file, `PROGRESS.md`, and `README.md` describing the old
+percentile model's guards (`min_sales` floor, sell-price cap, per_day
+liquidity floor) in present tense -- kept as-is for now since they're
+still historically accurate *about the incidents that happened*, just no
+longer describing current behavior. See the cleanup task for the plan.
 
 ### Disk usage / retention (investigated 2026-07-25, not yet built)
 

@@ -189,13 +189,15 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # (separate, not addressed here) pet-species grouping behavior.
         "market_key": r["market_key"],
         "buy_g": r["buy_g"],
+        # sell_p_g/sell_copper is the sell realm's current cheapest live
+        # listing (changed 2026-07-25 -- see snipe_check.find_snipes()'s
+        # docstring for why the sold-price-percentile model was dropped).
+        # No longer a separate "sell_now" field distinct from this -- they
+        # were made the same number, so only one is kept.
         "sell_p_g": r["sell_p_g"],
-        "sell_now_g": r["sell_now_g"],
-        "sell_now_copper": r["sell_now_copper"],
         "appearance_sources": r["appearance_sources"],
         "buy_copper": r["buy_copper"],
         "sell_copper": r["sell_copper"],
-        "per_day": r["per_day"],
         "discount_pct": r["discount_pct"],
     }
     if names is not None:
@@ -282,10 +284,9 @@ async def _enforce_realm_lock(user: User, sell: int, session: AsyncSession) -> N
 
 @app.get("/api/snipes")
 async def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
-                min_per_day: float = 0.5, sell_percentile: float = 0.25,
                 min_gold: float | None = None, max_gold: float | None = None,
                 min_sell_now: float | None = None,
-                min_sales: int = 2, max_appearance_sources: int | None = None,
+                max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
                 top: int = 50, sort: str = Query("discount"), names: bool = False,
                 user: User = Depends(current_active_user),
@@ -305,9 +306,7 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
     def _run_query() -> list:
         con = analyze.connect(sell)
         return snipe_check.find_snipes(con, sell, items=item_ids, min_discount=min_discount,
-                                       min_per_day=min_per_day, sell_percentile=sell_percentile,
                                        min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
-                                       min_sales=min_sales,
                                        max_appearance_sources=max_appearance_sources,
                                        max_per_item=max_per_item,
                                        top=top, sort=sort)

@@ -151,13 +151,14 @@ def data_dir(tmp_path, monkeypatch):
 
     snap_dir = tmp_path / "snapshots" / str(SELL_CR)
     snap_dir.mkdir(parents=True)
-    # item 101 sells twice (20_000 and 22_000 copper) -> p25 sold price = 20_500
-    prev = [
-        snap_row(1, T0, item_id=101, buyout=20_000),
-        snap_row(4, T0, item_id=101, buyout=22_000),
-        snap_row(3, T0, item_id=103),   # survives -> no event
+    # item 101's sell price is its current live listing: 20_000 copper = 2g
+    # (pricing model changed 2026-07-25 -- sell price is the sell realm's
+    # current cheapest listing, not an inferred sold-price percentile).
+    prev = [snap_row(3, T0, item_id=103)]  # survives -> no event
+    curr = [
+        snap_row(3, T1, item_id=103),
+        snap_row(10, T1, item_id=101, buyout=20_000),  # current sell-realm listing: 2g
     ]
-    curr = [snap_row(3, T1, item_id=103)]
     for ts, rows_ in ((T0, prev), (T1, curr)):
         pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
 
@@ -183,7 +184,7 @@ def run_diff(monkeypatch):
 
 def test_api_snipes_returns_rows_and_caveat(data_dir, monkeypatch):
     run_diff(monkeypatch)
-    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3, "min_per_day": 0.1})
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
     assert r.status_code == 200
     body = r.json()
     assert body["caveat"] == snipe_check.CAVEAT
@@ -201,7 +202,7 @@ def test_api_snipes_rows_carry_market_key_without_names(data_dir, monkeypatch):
     dashboard.html groups rows by, unrelated to the names/icon/quality
     resolution names=true gates."""
     run_diff(monkeypatch)
-    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3, "min_per_day": 0.1})
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
     assert "market_key" in r.json()["rows"][0]
 
 
@@ -246,7 +247,7 @@ def test_api_snipes_clamps_top_to_tier_cap(data_dir, monkeypatch, is_superuser, 
         monkeypatch.setattr(dashboard.snipe_check, "find_snipes", spy)
 
         r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                              "min_per_day": 0.1, "top": 999999})
+                                              "top": 999999})
         assert r.status_code == 200
         assert captured["top"] == expected_cap
     finally:
@@ -261,12 +262,11 @@ def _write_single_ilvl_fixture(tmp_path, monkeypatch, bk):
 
     snap_dir = tmp_path / "snapshots" / str(SELL_CR)
     snap_dir.mkdir(parents=True)
-    prev = [
-        snap_row(1, T0, item_id=101, buyout=20_000, bonus_key=bk),
-        snap_row(4, T0, item_id=101, buyout=22_000, bonus_key=bk),
-        snap_row(3, T0, item_id=103),
+    prev = [snap_row(3, T0, item_id=103)]
+    curr = [
+        snap_row(3, T1, item_id=103),
+        snap_row(10, T1, item_id=101, buyout=20_000, bonus_key=bk),  # current sell-realm listing: 2g
     ]
-    curr = [snap_row(3, T1, item_id=103)]
     for ts, rows_ in ((T0, prev), (T1, curr)):
         pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
 
@@ -288,7 +288,7 @@ def test_api_snipes_variant_shows_ilvl_when_plausible(tmp_path, monkeypatch):
     stub_item_details(monkeypatch, level=600)
 
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "names": True})
+                                          "names": True})
     row = r.json()["rows"][0]
     assert row["variant"] == "ilvl 636"
     assert row["variant_raw"] == bk
@@ -304,7 +304,7 @@ def test_api_snipes_variant_falls_back_when_ilvl_implausible(tmp_path, monkeypat
     stub_item_details(monkeypatch, level=34)
 
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "names": True})
+                                          "names": True})
     row = r.json()["rows"][0]
     assert row["variant"] == "5 bonuses"
     assert "ilvl" not in row["variant"]
@@ -324,7 +324,7 @@ def test_api_snipes_variant_falls_back_when_ilvl_within_ratio_but_absurd(tmp_pat
     stub_item_details(monkeypatch, level=610)
 
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "names": True})
+                                          "names": True})
     row = r.json()["rows"][0]
     assert row["variant"] == "5 bonuses"
     assert "ilvl" not in row["variant"]
@@ -338,7 +338,7 @@ def test_api_snipes_carries_item_class_when_names_resolved(data_dir, monkeypatch
     run_diff(monkeypatch)
     stub_item_details(monkeypatch, item_class=2, item_subclass=7)  # Weapon/Sword
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "names": True})
+                                          "names": True})
     row = r.json()["rows"][0]
     assert row["item_class"] == 2
     assert row["item_subclass"] == 7
@@ -352,14 +352,14 @@ def test_api_snipes_flags_profession_items_for_unique_transmog_toggle(data_dir, 
     run_diff(monkeypatch)
     stub_item_details(monkeypatch, inventory_type="PROFESSION_TOOL")
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "names": True})
+                                          "names": True})
     row = r.json()["rows"][0]
     assert row["is_profession_item"] is True
 
 
 def test_api_snipes_omits_item_class_without_names(data_dir, monkeypatch):
     run_diff(monkeypatch)
-    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3, "min_per_day": 0.1})
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
     row = r.json()["rows"][0]
     assert "item_class" not in row
     assert "item_subclass" not in row
@@ -372,7 +372,7 @@ def test_api_snipes_variant_falls_back_without_names_resolved(tmp_path, monkeypa
     bk = "b:6652,10844|m:28=636,29=32"
     _write_single_ilvl_fixture(tmp_path, monkeypatch, bk)
 
-    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3, "min_per_day": 0.1})
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
     row = r.json()["rows"][0]
     assert row["variant"] == "2 bonuses"
 
@@ -386,12 +386,11 @@ def test_api_snipes_pet_variant_unaffected_by_ilvl_parsing(tmp_path, monkeypatch
 
     snap_dir = tmp_path / "snapshots" / str(SELL_CR)
     snap_dir.mkdir(parents=True)
-    prev = [
-        snap_row(1, T0, item_id=PET_ITEM, buyout=500_000, pet_species_id=2, pet_quality_id=1),
-        snap_row(2, T0, item_id=PET_ITEM, buyout=550_000, pet_species_id=2, pet_quality_id=1),
-        snap_row(3, T0, item_id=103),
+    prev = [snap_row(3, T0, item_id=103)]
+    curr = [
+        snap_row(3, T1, item_id=103),
+        snap_row(1, T1, item_id=PET_ITEM, buyout=500_000, pet_species_id=2, pet_quality_id=1),
     ]
-    curr = [snap_row(3, T1, item_id=103)]
     for ts, rows_ in ((T0, prev), (T1, curr)):
         pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
 
@@ -403,14 +402,14 @@ def test_api_snipes_pet_variant_unaffected_by_ilvl_parsing(tmp_path, monkeypatch
                    listings_dir / f"{BUY_CR_A}.parquet")
 
     run_diff(monkeypatch)
-    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.1, "min_per_day": 0.1})
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.1})
     row = r.json()["rows"][0]
     assert row["variant"] == "pet:2/1"
 
 
 def test_api_snipes_caveat_present_even_when_empty(data_dir, monkeypatch):
     run_diff(monkeypatch)
-    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.99, "min_per_day": 0.1})
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.99})
     assert r.status_code == 200
     body = r.json()
     assert body["rows"] == []
@@ -444,15 +443,15 @@ def test_api_snipes_respects_min_gold_and_max_gold(data_dir, monkeypatch):
     that or max_gold below it should filter it out."""
     run_diff(monkeypatch)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "min_gold": 2})
+                                          "min_gold": 2})
     assert r.json()["rows"] == []
 
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "max_gold": 0.5})
+                                          "max_gold": 0.5})
     assert r.json()["rows"] == []
 
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                          "min_per_day": 0.1, "max_gold": 5})
+                                          "max_gold": 5})
     assert r.json()["count"] == 1
 
 

@@ -1,10 +1,21 @@
 # AH Snipe Validator (EU retail)
 
-A validation layer for WoW auction-house sniping: instead of flagging items
-cheap relative to fictional *listing* prices (what every other sniper does),
-this infers **actual sales** from Blizzard's hourly auction snapshots and
-validates discounted listings against real sold-price percentiles on a
-liquid sell realm.
+A cross-realm AH sniping tool: a listing on any EU realm priced well below
+what your chosen sell realm's own current cheapest listing is, net of the
+5% AH cut, is a validated snipe.
+
+**Pricing model changed 2026-07-25** (human product decision): sell price
+is the sell realm's own current cheapest live listing for that item/
+variant — directly observable, zero inference. The original design instead
+inferred a historical sold-price percentile from Blizzard's hourly
+snapshots, which repeatedly produced wrong prices in production (a single
+troll/decoy listing becoming the entire percentile, a camped relist
+misclassified as a real sale) despite successive patches. See `CLAUDE.md`
+and `snipe_check.find_snipes()`'s docstring for the full incident history
+and the tradeoff this accepted: the tool now compares listing price to
+listing price, the same as other AH sniper tools, rather than trying to
+validate against real sales — a validated-sales signal could be
+reintroduced later as a secondary liquidity indicator, not built now.
 
 **Live at: https://wow-project-production.up.railway.app** — register, log
 in, and use the dashboard there. This project is **not meant to be run
@@ -14,12 +25,18 @@ people changing the code, not people wanting their own instance.
 ## How it works
 
 Deep-collects one or more high/full-population EU realms' auctions hourly →
-parquet snapshots → diffs consecutive snapshots → classifies every vanished
-auction (`inferred_sale`, `likely_relisted`, `ambiguous`, `likely_expired`,
-`bid_only_gone`) → sold-price percentiles + sales/day per item variant.
-Separately, a region-wide scanner sweeps *every* EU realm's current listings
-(no history needed on the buy side). A listing priced well below the sell
-realm's sold-price percentile, net of the 5% AH cut, is a validated snipe.
+parquet snapshots, giving a live view of what's currently listed on your
+sell realm. Separately, a region-wide scanner sweeps *every* EU realm's
+current listings (no history needed on the buy side). A listing on another
+realm priced well below your sell realm's own current cheapest listing for
+that item/variant, net of the 5% AH cut, is a validated snipe.
+
+The snapshot pipeline also diffs consecutive snapshots and classifies every
+vanished auction (`inferred_sale`, `likely_relisted`, `ambiguous`,
+`likely_expired`, `bid_only_gone`) — this classification engine still runs
+and is still real, useful "core IP" (see `CLAUDE.md`'s "Inference logic"),
+but as of 2026-07-25 it no longer drives the sell price shown to users; see
+above.
 
 ## Architecture
 
@@ -105,35 +122,45 @@ standalone for debugging/inspecting data — see their `--help` — but none of
 them are how the product actually runs anymore; `collect_all.py` inside the
 deployed app is.
 
-## How inference works — and its limits
+## How the classification engine works — and its limits
+
+**As of 2026-07-25 this classification does not drive the sell price shown
+to users** (see above) — it's kept as a real, working signal that could
+back a future liquidity/confidence indicator, and `analyze.py`'s CLI
+commands (`item`/`trace`/`summary`) still use it for manual debugging.
 
 - `time_left` buckets: SHORT <30m, MEDIUM 30m–2h, LONG 2–12h, VERY_LONG 12–48h.
   An auction that vanishes while LONG/VERY_LONG, within a gap shorter than the
   bucket's minimum remaining time, **cannot have expired** → sold or cancelled.
 - **Cancel–relist:** an identical (item, bonuses, buyout, qty) listing
   reappearing under a new auction id in the same interval → `likely_relisted`,
-  excluded from sales.
+  excluded from sales. The relist-matching window requires an *exact* price
+  match, so a troll who tweaks their joke price between relists can still
+  slip through misclassified as two separate "sales" — this is exactly what
+  motivated dropping sold-price inference from the pricing model (item
+  13051, see `CLAUDE.md`).
 - **Bid-only auctions** can't be insta-bought → excluded.
-- **Crafted items pool by market, not exact roll:** Blizzard attaches two
-  undocumented per-craft modifiers to crafted gear — a continuous stat roll
-  and a per-instance serial number — that otherwise make almost every craft
-  its own "variant." `market_key()` strips just those two so near-identical
-  crafted items compare against one pooled market instead of fragmenting
-  into dozens of 1-2-sale buckets (added 2026-07-23 after this hit
-  production — see `CLAUDE.md`).
+- **Crafted items pool by market, not exact roll:** Blizzard attaches
+  several undocumented per-craft identifiers to crafted/scaling gear (both
+  `m:` modifiers and `b:` bonus-list ids) that otherwise make almost every
+  listing its own "variant." `market_key()` pools these into one market
+  instead of fragmenting into dozens of near-unique buckets, using
+  structural detection (companion pairs, N-way partitions) rather than a
+  blind frequency cutoff — see `CLAUDE.md`'s "Inference logic" for the full
+  history, including two earlier, simpler approaches that were tried and
+  found insufficient before this one.
 - **Known blind spot:** a cancel *without* a relist is indistinguishable from a
-  sale. Every AH data service shares some version of this problem. Sellers
-  who cancel mostly relist (that's why they cancelled), so the hypothesis is
-  that the residual noise is small — this was never formally validated
-  against real seller behavior (Phase 0's validation gate was explicitly
-  skipped, see `CLAUDE.md`); treat sold-price percentiles with that in mind.
+  sale. Every AH data service shares some version of this problem. This was
+  never formally validated against real seller behavior (Phase 0's
+  validation gate was explicitly skipped, see `CLAUDE.md`) — one of several
+  reasons the pricing model no longer depends on this classification.
 
 ## Dashboard
 
 Sortable/filterable table styled to feel like the game itself: item names
 colored by rarity, gold/silver/copper coin icons for prices, realm *names*
 instead of raw connected-realm ids, and a mouse-hover tooltip per item
-(icon, colored name, buy/sell price, discount, sales/day). Click an item's
+(icon, colored name, buy/sell price, discount). Click an item's
 **icon** to open its page on [Undermine Exchange](https://undermine.exchange/)
 filtered to your sell realm, so you can eyeball an independent price history
 next to the inferred one — the link lives on the icon rather than inside the
@@ -176,7 +203,10 @@ items with a buyout, 48h duration, then check what the pipeline says:
 Then sanity-check scale: pick a famously liquid item and compare its
 `per_day` (via `analyze.py item`/`trace`) against TSM's regional sale rate.
 Same order of magnitude = signal is real. This was never actually run
-(Phase 0's gate was skipped by deliberate decision) — see `CLAUDE.md`.
+(Phase 0's gate was skipped by deliberate decision) — see `CLAUDE.md`. This
+protocol validates the classification engine itself, which (as of
+2026-07-25) no longer drives what price users see — still worth running if
+the classification is ever reintroduced as a liquidity signal.
 
 ## Roadmap
 

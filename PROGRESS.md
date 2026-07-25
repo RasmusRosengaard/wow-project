@@ -4,7 +4,7 @@ Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 still the authoritative brief (architecture, conventions, full roadmap,
 API facts) — this file is the scannable summary, kept in sync with it.
 
-Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed same session; disk/retention investigated; a follow-up per-request latency bug in the same code path, fixed same day; a second market-fragmentation bug via `b:` bonus-list ids, also fixed same day).
+Last updated: 2026-07-25 (type-28 fix + the production outage it caused, fixed same session; disk/retention investigated; a follow-up per-request latency bug in the same code path, fixed same day; a second market-fragmentation bug via `b:` bonus-list ids, also fixed same day; the pricing model itself replaced same day -- sold-price percentile dropped for current-cheapest-listing, see below).
 
 ## Status at a glance
 
@@ -87,6 +87,33 @@ tested unusably slow at this row count — 699k pairs — live). See
 `CLAUDE.md`'s matching section for the full trace, the "why not a static
 list" reasoning, and the confidence-level caveat (data-driven, not
 human-confirmed like type 9). `pytest -q`: 242 passing.
+
+**New this session (2026-07-25, continued yet again, part 4 — biggest
+change of the session)**: sell price is no longer an inferred sold-price
+percentile at all. Reported bug (item 13051, Witchfury, showing 667,999g
+against a real ~7,999g price) traced to a camped relist misclassified as
+two real sales *plus* an unrelated bug that defeated the safety cap meant
+to catch exactly that — the third separate live production bug from the
+same underlying design (after items 15138 and 206477 earlier this
+session). Human's call, confirmed explicitly: stop inferring a historical
+price entirely. Sell price is now simply the sell realm's own current
+cheapest live listing — directly observable, zero classification,
+immune to every one of these bugs by construction. Trade-off, stated
+plainly: this makes a snipe a listing-to-listing comparison, same as TSM
+Sniper/Auctionator, giving up the "does this item actually sell"
+validation this project was originally built around (the underlying
+`diff_snapshots.py` classification engine still runs, unaffected, and
+could back a future liquidity signal without being on the pricing path
+again). `min_sales`/`min_per_day`/`sell_percentile` removed from
+`snipe_check.find_snipes()`, the CLI, and `/api/snipes`; `sell_now_g`/
+`sell_now_copper`/`per_day`/`sales` removed from output; dashboard's
+duplicate "Sell p25"/"Sell realm low" columns collapsed into one "Sell
+price" column, "Sales/day" column/filter/sort removed. See `CLAUDE.md`'s
+"Pricing model replaced" section for the full incident chain and design
+rationale. `pytest -q`: 243 passing (extensive fixture redesign across
+`test_snipe_check.py`/`test_dashboard.py` — pricing tests now establish
+price via a current listing, not a listing that vanishes into inferred
+sales).
 
 **New this session (2026-07-25, continued yet again, part 3)**: the
 frequency-only fix from part 2 was live-checked against the full production
