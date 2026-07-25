@@ -170,6 +170,46 @@ def test_relist_requires_matching_pet_identity():
     assert got == {1: "likely_relisted", 2: "inferred_sale"}
 
 
+def test_relist_tolerates_a_nearby_price_change():
+    """A troll reposting the same listing at a different joke price should
+    still count as a relist, not a fake inferred_sale -- real production
+    case (item 13051, "Witchfury", 2026-07-25): two camped listings priced
+    647,999.98g and 667,999.98g (same bonus_key, ~3% apart) were
+    misclassified as two separate sales instead of one relist."""
+    prev = snap(auction(1, item_id=13051, buyout=6_479_999_800))  # 647,999.98g
+    curr = snap(auction(2, item_id=13051, buyout=6_679_999_800))  # 667,999.98g (~3% higher)
+    [e] = classify_pair(prev, curr, gap=GAP, ts=TS)
+    assert e["classification"] == "likely_relisted"
+
+
+def test_relist_price_tolerance_has_a_limit():
+    """A genuinely different price -- not just a troll's nearby repost --
+    must still count as a real sale, not get swallowed by the tolerance
+    band into a false relist match."""
+    prev = snap(auction(1, item_id=500, buyout=10_000))
+    curr = snap(auction(2, item_id=500, buyout=50_000))  # 5x higher, well outside tolerance
+    [e] = classify_pair(prev, curr, gap=GAP, ts=TS)
+    assert e["classification"] == "inferred_sale"
+
+
+def test_relist_tolerance_still_consumes_each_candidate_once():
+    """Two vanished listings each within tolerance of a *different* fresh
+    candidate must each get their own match, not double-match onto the
+    same fresh listing -- the tolerance band shouldn't break the existing
+    one-candidate-per-relist consumption rule (see
+    test_duplicate_vanish_single_relist)."""
+    prev = snap(
+        auction(1, item_id=700, buyout=10_000),
+        auction(2, item_id=700, buyout=10_200),
+    )
+    curr = snap(
+        auction(3, item_id=700, buyout=10_050),
+        auction(4, item_id=700, buyout=10_150),
+    )
+    got = [e["classification"] for e in classify_pair(prev, curr, gap=GAP, ts=TS)]
+    assert got == ["likely_relisted", "likely_relisted"]
+
+
 def test_missing_time_left_defaults_to_medium():
     prev = snap(auction(1, time_left=None))
     [e] = classify_pair(prev, snap(), gap=GAP, ts=TS)

@@ -5,8 +5,9 @@ The API only ever shows *listings*, never sales — so sales must be inferred:
 
   inferred_sale     gone while LONG/VERY_LONG (couldn't have expired within the
                     gap) and no identical relist appeared -> treat as sold
-  likely_relisted   an identical (item, bonuses, buyout, qty) listing reappeared
-                    under a new auction id -> cancel + repost, not a sale
+  likely_relisted   a matching (item, bonuses, qty) listing reappeared under a
+                    new auction id at a similar price (+/-15%, see
+                    RELIST_PRICE_TOLERANCE) -> cancel + repost, not a sale
   ambiguous         the time_left bucket allows expiry within the gap (MEDIUM,
                     or an oversized gap after collector downtime)
   likely_expired    gone from SHORT (<30 min left) -> almost always expired
@@ -19,7 +20,7 @@ The verification protocol in the README measures how big that noise floor is.
 Writes data/events/<cr>.parquet. Recomputed from scratch each run (idempotent).
 """
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pyarrow as pa
@@ -53,6 +54,17 @@ def load_snapshot(path: Path) -> dict[int, dict]:
     return {r["auction_id"]: r for r in pq.read_table(path).to_pylist()}
 
 
+# A troll camping a listing often reposts it at a different joke price
+# instead of the exact same buyout -- requiring an exact price match let
+# that slip through as a fake inferred_sale (real case, 2026-07-25: item
+# 13051 "Witchfury", two camped listings at 647,999.98g and 667,999.98g,
+# same bonus_key, ~3% apart -- misclassified as two separate sales instead
+# of one relist). Price is matched within this tolerance band instead of
+# exactly; deliberately loose enough to catch a same-day repost at a nearby
+# price but not so loose it swallows a genuinely different sale.
+RELIST_PRICE_TOLERANCE = 0.15
+
+
 def relist_key(r: dict) -> tuple:
     # Pet identity lives in pet_species_id/pet_quality_id, not bonus_key (which
     # is empty for caged pets) -- without it, two different pets with the same
@@ -60,16 +72,40 @@ def relist_key(r: dict) -> tuple:
     # market_key() (not the raw bonus_key) so relisting a crafted item still
     # matches even if Blizzard's undocumented per-craft modifiers (the stat
     # roll, a per-instance serial) render slightly differently on repost --
-    # see fetch_snapshot.py's MARKET_IGNORE_MODIFIER_TYPES for why.
+    # see fetch_snapshot.py's MARKET_IGNORE_MODIFIER_TYPES for why. Price is
+    # deliberately excluded from this identity -- see RELIST_PRICE_TOLERANCE
+    # above; matched separately by _find_relist_match() since it's now a
+    # band, not exact equality.
     return (r["item_id"], market_key(r["bonus_key"]), r["pet_species_id"], r["pet_quality_id"],
-            r["buyout"], r["quantity"])
+            r["quantity"])
+
+
+def _find_relist_match(buyout: int, candidates: list[int],
+                       tolerance: float = RELIST_PRICE_TOLERANCE) -> int | None:
+    """Index of the candidate buyout closest to `buyout` within +/-tolerance,
+    or None if none qualify. An exact match (the pre-2026-07-25 behavior) is
+    always within tolerance, so this is a strict superset of the old rule."""
+    best_idx, best_diff = None, None
+    for idx, cand in enumerate(candidates):
+        diff = abs(cand - buyout)
+        if diff <= buyout * tolerance and (best_diff is None or diff < best_diff):
+            best_idx, best_diff = idx, diff
+    return best_idx
 
 
 def classify_pair(prev: dict[int, dict], curr: dict[int, dict],
                   gap: int, ts: int) -> list[dict]:
     gone = [prev[i] for i in prev.keys() - curr.keys()]
-    # Multiset of brand-new listings in `curr`, used to catch cancel->repost.
-    fresh = Counter(relist_key(curr[i]) for i in curr.keys() - prev.keys())
+    # Brand-new listings in `curr`, grouped by non-price identity -- each
+    # group holds every fresh candidate buyout still unconsumed, since price
+    # matching is now a tolerance band, not an exact multiset lookup (see
+    # RELIST_PRICE_TOLERANCE). Bid-only fresh listings (buyout None) can't
+    # be a relist of a priced gone auction, so they're excluded here.
+    fresh_by_key: dict[tuple, list[int]] = defaultdict(list)
+    for i in curr.keys() - prev.keys():
+        c = curr[i]
+        if c["buyout"] is not None:
+            fresh_by_key[relist_key(c)].append(c["buyout"])
 
     events = []
     for r in gone:
@@ -79,9 +115,10 @@ def classify_pair(prev: dict[int, dict], curr: dict[int, dict],
         elif tl == "SHORT":
             cls = "likely_expired"
         else:
-            k = relist_key(r)
-            if fresh[k] > 0:
-                fresh[k] -= 1
+            candidates = fresh_by_key.get(relist_key(r), [])
+            match_idx = _find_relist_match(r["buyout"], candidates)
+            if match_idx is not None:
+                candidates.pop(match_idx)
                 cls = "likely_relisted"
             elif gap >= MIN_REMAINING.get(tl, 0):
                 cls = "ambiguous"
