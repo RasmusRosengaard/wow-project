@@ -88,6 +88,28 @@ tested unusably slow at this row count — 699k pairs — live). See
 list" reasoning, and the confidence-level caveat (data-driven, not
 human-confirmed like type 9). `pytest -q`: 242 passing.
 
+**New this session (2026-07-25, continued yet again, part 3)**: the
+frequency-only fix from part 2 was live-checked against the full production
+sample and found insufficient — item 36507's own noise reached 14%
+frequency, overlapping real dimensions on other items also observed as low
+as 14-17%. Human asked for a real fix rather than living with the gap.
+Replaced with a structural test: a bonus-list value is treated as real only
+if it has a *partner* — reliably co-occurring with another specific value
+(a companion pair, like item 109168's two-part gem bonus), or belonging to
+a small mutually-exclusive set that jointly covers most of an item's
+listings (a partition, like item 244752's real 5-value item-level-upgrade-
+track system, found during this investigation and recurring across
+multiple different items). A pure cardinality count ("few distinct values
+= real") was tried in between and also rejected — it broke on item 210108,
+which legitimately has ~10 real ambiguous-band values from several stacked
+dimensions. Validated live against 8 diverse real items (noise-heavy and
+multi-dimension-real alike) with zero misclassifications; the originally
+reported item 36507 case now resolves correctly. Also caught and fixed a
+real DuckDB correctness bug while building this: `ROW_NUMBER() OVER ()`
+inside a CTE referenced twice (once per side of a self-join) doesn't give
+stable, matching ids — fixed by materializing as a real temp table.
+`pytest -q`: 244 passing.
+
 **New this session (2026-07-25, continued again)**: a real snipe-matching
 bug (item 164353, cheap Auchindoun listing not surfacing as a snipe) traced
 to `market_key()` matching on raw, junk type-28 "ilvl" values — fixed with
@@ -880,7 +902,7 @@ instead (Linux binary, never touches that policy).
 
 ## Known gaps / risks
 
-- **`b:` bonus-list noise pooling (2026-07-25 fix) only partially resolves the item it was built for.** Live-verified against production: item 36507's own noise-value frequencies range up to 14% (not the ≤5% assumed from a smaller sample), which genuinely overlaps with real, price-relevant dimensions on other items (109168/114813's socket/gem-pair bonuses sit at 14-17%). `BONUS_NOISE_MAX_FREQUENCY` (5%) was kept conservative — confirmed with the human via `AskUserQuestion` rather than loosened — so it correctly strips the clearly-noise values (≤4%) but leaves the 6-14% band untouched on every item, real or noise alike. Consequence: item 36507's original reported case (a 5,400g Blackrock listing hidden behind a 66,666g decoy) is *not* fully fixed — some of its listings still fragment into separate, unmatched buckets. A safer fix would need a smarter per-item signal than a flat frequency cutoff (e.g. detecting complementary/paired values the way 109168's real dimensions pair up) — not built, parked as a possible follow-up. See `CLAUDE.md`'s matching-logic section for the full investigation.
+- **`b:` bonus-list noise pooling — resolved 2026-07-25, same day as the partial-fix entry this replaces.** The first attempt (a flat 5% frequency threshold) was live-confirmed insufficient: item 36507's own noise reached 14% frequency, overlapping real dimensions on other items also observed as low as 14-17%, so no single frequency band worked. Human asked for a real fix rather than accepting the gap. Replaced with a structural test — a value is real only if it has a *partner* (reliably co-occurs with another specific value, or belongs to a small mutually-exclusive set that jointly covers most of an item's listings), not if it merely clears a frequency bar. Validated live against 8 diverse real items (single-dimension noise, binary flags, N-way tier systems, multiple stacked real dimensions on one item) with zero misclassifications. See `CLAUDE.md`'s matching-logic section for the full investigation, including two earlier approaches (frequency-only, cardinality-only) that were tried and rejected before this one, and pending live re-verification once deployed.
 - **`scan_region.sweep()` writes `data/listings/{cr}.parquet` non-atomically** — found by accident 2026-07-25 while live-verifying the base-level latency fix: a query reading that file at the exact moment a background sweep is overwriting it can hit a hard DuckDB read error (`Prefetch registered for bytes outside file`), not just a slow response. Rare window (a sweep's write is fast), but real and reproducible. Not fixed this session — the fix is straightforward (write to a temp file, then atomic rename) but out of scope for the latency work in progress. Worth doing before it's hit in front of a real user.
 - Sale-inference classification (`inferred_sale` especially) has never been checked against real seller behavior. Partial mitigation added 2026-07-23: `snipe_check.find_snipes()`'s `min_sales` floor (default 2) stops a single unverified sample from becoming the whole sold-price percentile, after exactly that happened live (item 15138) — but two bad samples can still both be false positives, so this reduces rather than closes the risk.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the manual stand-in.

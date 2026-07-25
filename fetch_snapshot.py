@@ -136,28 +136,70 @@ def ilvl_plausible(claimed: int, base_level: int | None) -> bool:
 
 
 # Thresholds for snipe_check._populate_market_keys()'s per-item noise-bonus-
-# id detection (see market_key()'s noise_bonus_ids docstring). Calibrated
-# against real live data 2026-07-25 across three items:
-#   - 36507 (Iron-Molded Fist, the reported bug): the per-craft noise value
-#     appeared in at most 7/48 listings (0.15) for any single value, and
-#     14/18 distinct values appeared only once; the one real dimension
-#     (6655/3870/3871) appeared in 43-90/48 listings (0.90).
-#   - 109168 (Shrediron's Shredder): real dimensions ranged 14%-100%
-#     document frequency (a base tag at ~100%, a binary quality flag at
-#     ~46%/54%, paired gem bonuses at ~16%); the noise tail was ~170
-#     distinct values each appearing in 1-6 of 309 listings (<=2%).
-#   - 114813 (Hexweave Robe): same shape, real dimensions at 14%-100%,
-#     noise tail at <=2%.
-# 5% sits comfortably below every real dimension observed (smallest: 14%)
-# and comfortably above where per-craft noise clusters (largest single
-# noise value: 15%, but that was on a small 48-listing sample -- see
-# BONUS_NOISE_MIN_SAMPLES). MIN_SAMPLES=20 exists so a thin sample can't
-# make a genuinely rare-but-real value (e.g. a real variant only 2 sellers
-# have ever listed) look like noise by chance -- below that floor, nothing
-# is stripped at all (same "not enough data means don't strip" principle as
-# an unknown base_level).
-BONUS_NOISE_MAX_FREQUENCY = 0.05
+# id detection (see market_key()'s noise_bonus_ids docstring).
+#
+# **A single frequency threshold was tried first and shown live to be
+# insufficient (2026-07-25, same day).** A 5%-only cutoff correctly caught
+# item 36507's clearly-noise values (<=4%) but left its 6-14%-frequency
+# noise untouched, since real dimensions on OTHER items (e.g. 109168's
+# socket/gem bonuses) also sit as low as 14-17% -- no single frequency band
+# separates "real" from "noise" across every item. Confirmed live: item
+# 36507's own reported cheap listing still didn't surface as a snipe with
+# the frequency-only version deployed.
+#
+# **Replaced with a structural test**: a value's frequency alone isn't
+# enough signal; whether it has a *partner* is. Real dimensions come in
+# recognizable shapes -- a companion pair that (almost) always appears
+# together (e.g. item 109168's two-part gem/socket bonus, 9145 paired with
+# 9148), or a small set of mutually-exclusive values that jointly cover
+# most of the item's listings (e.g. a binary quality flag summing to ~100%
+# of listings, or -- found investigating this exact fix -- item 244752's
+# five-value item-level-upgrade-track system, each track mutually exclusive
+# with the others, none individually below BASE_TAG_FREQ). Per-craft noise
+# (item 36507's ~17 near-random instance ids, and several similarly-shaped
+# items found by the same live investigation: 82070, 25218, 82194, 15009)
+# has neither shape -- each value stands alone, no reliable partner.
+#
+# A pure cardinality check ("few distinct values in the ambiguous band =
+# real, many = noise") was tried and rejected before this: it correctly
+# handled every single-dimension case, but broke on item 210108, which
+# legitimately has ~10 ambiguous-band values across several real paired
+# dimensions stacked together -- a large TOTAL count driven entirely by
+# real structure, not noise. The partner-based test judges each value on
+# its own relationship to the data, so it isn't fooled by an item simply
+# having several real dimensions at once.
+#
+# BASE_TAG_FREQ: a value this frequent is unambiguously a real, load-
+# bearing tag (present on nearly every listing) -- always kept, and
+# excluded from being used as evidence for any OTHER value's pairing (an
+# ever-present tag trivially "sums to a lot" with anything, which would
+# otherwise let genuine noise falsely pass the partition check against it
+# -- caught live during calibration).
+# COMPANION_THRESHOLD: how consistently two values must co-occur in the
+# SAME bonus_key for that co-occurrence to count as a real, structured
+# pairing rather than coincidence.
+# MAX_EXCLUSIVE_GROUP / MIN_EXCLUSIVE_COVERAGE: a value's "exclusive
+# partners" (other ambiguous-band values that never co-occur with it) count
+# as a real small partition only if there are few of them (a real tier/
+# quality system, not a big per-craft pool that also happens to never
+# repeat within one listing) AND together they explain most of the item's
+# observed listings.
+# MIN_SAMPLES: below this floor there isn't enough data to trust any of the
+# above -- nothing is stripped (same "not enough data means don't strip"
+# principle as an unknown base_level).
+#
+# Validated live 2026-07-25 against every real case found so far: three
+# per-craft-noise items (36507, 82070, 25218, plus 82194/15009 sharing the
+# same shape) fully and correctly stripped down to their one real tag; six
+# real multi-value items (109168, 114813, 210108, 244752, 239675, 240947,
+# 244718, 244591 -- tier systems, quality flags, and paired gem/socket
+# bonuses) fully preserved with zero false-positive stripping.
 BONUS_NOISE_MIN_SAMPLES = 20
+BONUS_NOISE_LOW_FREQUENCY = 0.05
+BONUS_NOISE_BASE_TAG_FREQUENCY = 0.80
+BONUS_NOISE_COMPANION_THRESHOLD = 0.7
+BONUS_NOISE_MAX_EXCLUSIVE_GROUP = 8
+BONUS_NOISE_MIN_EXCLUSIVE_COVERAGE = 0.8
 
 
 def market_key(bk: str, base_level: int | None = None,

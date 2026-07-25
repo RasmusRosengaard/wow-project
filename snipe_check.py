@@ -30,7 +30,14 @@ import pyarrow as pa
 
 import analyze
 from appearance import AppearanceCache
-from fetch_snapshot import BONUS_NOISE_MAX_FREQUENCY, BONUS_NOISE_MIN_SAMPLES
+from fetch_snapshot import (
+    BONUS_NOISE_BASE_TAG_FREQUENCY,
+    BONUS_NOISE_COMPANION_THRESHOLD,
+    BONUS_NOISE_LOW_FREQUENCY,
+    BONUS_NOISE_MAX_EXCLUSIVE_GROUP,
+    BONUS_NOISE_MIN_EXCLUSIVE_COVERAGE,
+    BONUS_NOISE_MIN_SAMPLES,
+)
 from fetch_snapshot import market_key as _market_key
 from item_names import NameCache
 
@@ -111,15 +118,25 @@ def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
        via `b:` bonus_lists instead of a modifier). Unlike base_level, this
        can't be a fixed global ignore-list: a raw bonus id is just a
        number, not a typed field, so the same id can mean something
-       completely different on a different item. Determined per item via
-       document frequency -- computed entirely in SQL (DuckDB handles the
-       UNNEST + GROUP BY efficiently, live-timed at 0.24s across a full
-       sell realm's sales/snaps/listings): a bonus id appearing in fewer
-       than BONUS_NOISE_MAX_FREQUENCY of an item's own observed listings
-       (with at least BONUS_NOISE_MIN_SAMPLES total, else nothing is
-       stripped -- not enough data to trust the ratio) is treated as
-       per-craft noise. See fetch_snapshot.py's BONUS_NOISE_* constants for
-       the full real-data calibration (items 36507/109168/114813).
+       completely different on a different item.
+
+       Determined per item via a structural test, not a frequency
+       threshold alone -- **a frequency-only cutoff was tried first,
+       shipped, and live-confirmed insufficient the same day**: item
+       36507's own noise reached 14% frequency, overlapping with other
+       items' real dimensions also observed as low as 14-17%, so no single
+       band separates the two. The real distinguishing signal is whether a
+       value has a *partner*: a real dimension either reliably co-occurs
+       with another specific value in the same bonus_key (a companion
+       pair -- e.g. item 109168's two-part gem bonus), or belongs to a
+       small set of mutually-exclusive values that jointly cover most of
+       the item's listings (a partition -- e.g. a binary quality flag, or
+       item 244752's five-value item-level-upgrade track). Per-craft noise
+       has neither shape: each value stands alone. See
+       fetch_snapshot.py's BONUS_NOISE_* constants for the full
+       methodology, the rejected frequency-only and cardinality-only
+       attempts, and the real-data validation (10 real items, both noise-
+       heavy and multi-dimension-real, checked live).
 
     **Why Python, not a bigger SQL macro**: a per-item variable-length
     "strip these specific ids" set doesn't fit DuckDB's macro model as
@@ -137,29 +154,107 @@ def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
     Noise detection + pair fetch + market_key computation + bulk load
     together: ~1.3s total, live-verified."""
     # --- noise-bonus-id detection: SQL, no network, fast ---
+    # Materialized as real temp tables (occ_id assigned once), not CTEs
+    # referenced twice -- a CTE referencing row_number() OVER () and read
+    # from two places in the same query was live-confirmed to NOT give
+    # stable, matching row ids across both reads (DuckDB re-evaluated it
+    # independently each time), silently corrupting the co-occurrence
+    # computation below. A materialized table has one fixed occ_id per row,
+    # read consistently everywhere.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE all_bonus AS
+        SELECT item_id, bonus_key FROM sales
+        UNION ALL
+        SELECT item_id, bonus_key FROM snaps
+        WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps) AND buyout IS NOT NULL
+        UNION ALL
+        SELECT item_id, bonus_key FROM listings
+    """)
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE bonus_occurrences AS
+        SELECT row_number() OVER () AS occ_id, item_id, bonus_key
+        FROM all_bonus WHERE bonus_key LIKE 'b:%'
+    """)
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE noise_bonus_values AS
+        SELECT bo.occ_id, bo.item_id, CAST(t.v AS BIGINT) AS bonus_id
+        FROM bonus_occurrences bo,
+             UNNEST(string_split(regexp_extract(bo.bonus_key, '^b:([0-9,]+)', 1), ',')) AS t(v)
+        WHERE length(t.v) > 0
+    """)
     noise_rows = con.execute(f"""
-        WITH all_bonus AS (
-            SELECT item_id, bonus_key FROM sales
-            UNION ALL
-            SELECT item_id, bonus_key FROM snaps
-            WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps) AND buyout IS NOT NULL
-            UNION ALL
-            SELECT item_id, bonus_key FROM listings
+        WITH item_totals AS (
+            SELECT item_id, count(*) AS n FROM bonus_occurrences GROUP BY item_id
         ),
-        item_totals AS (
-            SELECT item_id, count(*) AS n FROM all_bonus WHERE bonus_key LIKE 'b:%' GROUP BY item_id
+        value_freq AS (
+            SELECT bv.item_id, bv.bonus_id, count(*) AS doc_count
+            FROM noise_bonus_values bv GROUP BY bv.item_id, bv.bonus_id
         ),
-        bonus_values AS (
-            SELECT ab.item_id, CAST(t.v AS BIGINT) AS bonus_id
-            FROM all_bonus ab,
-                 UNNEST(string_split(regexp_extract(ab.bonus_key, '^b:([0-9,]+)', 1), ',')) AS t(v)
-            WHERE ab.bonus_key LIKE 'b:%' AND length(t.v) > 0
+        classified AS (
+            SELECT vf.item_id, vf.bonus_id, vf.doc_count, it.n, vf.doc_count * 1.0 / it.n AS freq
+            FROM value_freq vf JOIN item_totals it ON vf.item_id = it.item_id
+            WHERE it.n >= {BONUS_NOISE_MIN_SAMPLES}
+        ),
+        -- The "ambiguous band": not rare enough to be automatic noise, not
+        -- frequent enough to be an automatic real base tag. Every value
+        -- here needs a partner (below) to be trusted as real.
+        ambiguous AS (
+            SELECT * FROM classified
+            WHERE freq >= {BONUS_NOISE_LOW_FREQUENCY} AND freq < {BONUS_NOISE_BASE_TAG_FREQUENCY}
+        ),
+        -- Pairwise co-occurrence between ambiguous-band values only (a
+        -- true base tag is deliberately excluded from ever being "the
+        -- other side" of a pairing check -- see BASE_TAG_FREQ's comment).
+        cooc AS (
+            SELECT bv1.item_id, bv1.bonus_id AS id_a, bv2.bonus_id AS id_b, count(*) AS co_count
+            FROM noise_bonus_values bv1
+            JOIN noise_bonus_values bv2
+              ON bv1.occ_id = bv2.occ_id AND bv1.bonus_id != bv2.bonus_id
+            JOIN ambiguous a1 ON bv1.item_id = a1.item_id AND bv1.bonus_id = a1.bonus_id
+            JOIN ambiguous a2 ON bv2.item_id = a2.item_id AND bv2.bonus_id = a2.bonus_id
+            GROUP BY bv1.item_id, bv1.bonus_id, bv2.bonus_id
+        ),
+        -- (a) companion: value A reliably co-occurs together WITH some
+        -- other ambiguous value B in the same bonus_key (e.g. a two-part
+        -- gem/socket bonus).
+        companions AS (
+            SELECT DISTINCT c.item_id, c.id_a AS bonus_id
+            FROM cooc c JOIN ambiguous ca ON c.item_id = ca.item_id AND c.id_a = ca.bonus_id
+            WHERE c.co_count * 1.0 / ca.doc_count >= {BONUS_NOISE_COMPANION_THRESHOLD}
+        ),
+        -- (b) partition: value A's "exclusive partners" are the other
+        -- ambiguous values that NEVER co-occur with it. If that set is
+        -- small and A plus its exclusive partners jointly explain most of
+        -- the item's listings, this is a real small enum/tier system
+        -- (e.g. a 2-way quality flag, or a 5-way item-level-upgrade
+        -- track) -- not a big per-craft pool that also happens to never
+        -- repeat within one listing.
+        exclusive_pairs AS (
+            SELECT a1.item_id, a1.bonus_id AS id_a, a2.bonus_id AS id_b, a2.doc_count
+            FROM ambiguous a1
+            JOIN ambiguous a2 ON a1.item_id = a2.item_id AND a1.bonus_id != a2.bonus_id
+            LEFT JOIN cooc c
+              ON c.item_id = a1.item_id AND c.id_a = a1.bonus_id AND c.id_b = a2.bonus_id
+            WHERE c.co_count IS NULL
+        ),
+        exclusive_groups AS (
+            SELECT ep.item_id, ep.id_a AS bonus_id, count(*) AS group_size,
+                   (a1.doc_count + sum(ep.doc_count)) * 1.0 / a1.n AS coverage
+            FROM exclusive_pairs ep
+            JOIN ambiguous a1 ON ep.item_id = a1.item_id AND ep.id_a = a1.bonus_id
+            GROUP BY ep.item_id, ep.id_a, a1.doc_count, a1.n
+        ),
+        partitions AS (
+            SELECT item_id, bonus_id FROM exclusive_groups
+            WHERE group_size <= {BONUS_NOISE_MAX_EXCLUSIVE_GROUP}
+              AND coverage >= {BONUS_NOISE_MIN_EXCLUSIVE_COVERAGE}
         )
-        SELECT bv.item_id, bv.bonus_id
-        FROM bonus_values bv
-        JOIN item_totals it ON bv.item_id = it.item_id
-        GROUP BY bv.item_id, bv.bonus_id, it.n
-        HAVING it.n >= {BONUS_NOISE_MIN_SAMPLES} AND count(*) * 1.0 / it.n < {BONUS_NOISE_MAX_FREQUENCY}
+        SELECT a.item_id, a.bonus_id FROM ambiguous a
+        LEFT JOIN companions co ON a.item_id = co.item_id AND a.bonus_id = co.bonus_id
+        LEFT JOIN partitions p ON a.item_id = p.item_id AND a.bonus_id = p.bonus_id
+        WHERE co.bonus_id IS NULL AND p.bonus_id IS NULL
+        UNION
+        SELECT item_id, bonus_id FROM classified WHERE freq < {BONUS_NOISE_LOW_FREQUENCY}
     """).fetchall()
     noise_by_item: dict[int, set[int]] = {}
     for item_id, bonus_id in noise_rows:

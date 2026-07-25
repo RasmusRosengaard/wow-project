@@ -1193,38 +1193,116 @@ merged genuinely different, differently-priced items for these -- exactly
 the failure mode this project's "unknown means don't strip" principle
 exists to prevent.
 
-**Fix: per-item document-frequency detection, not a static list.**
-`snipe_check._populate_market_keys()` (renamed from `_populate_base_levels`,
-which is now folded into it) computes, per item, what fraction of that
-item's own observed listings (sales + latest snapshot + region-wide
-listings, combined) contain each `b:` value. A value appearing in fewer
-than `BONUS_NOISE_MAX_FREQUENCY` (5%) of an item's own listings -- with at
-least `BONUS_NOISE_MIN_SAMPLES` (20) total samples, else nothing is
-stripped at all -- is treated as per-craft noise. Live-validated against
-three real items: 36507's noise values topped out at 15% (small sample,
-48 listings) while its real dimension sat at 90%; 109168/114813's real
-dimensions ranged 14-100% while their noise tails sat at ≤2%. 5% sits
-comfortably in the gap between those two clusters. `market_key()` gained a
-third optional arg, `noise_bonus_ids: frozenset[int] | None` -- same
-"`None` means don't strip anything" safety default as `base_level`.
+**First fix attempt: a flat document-frequency threshold. Shipped, then
+live-disproven the same day.** `snipe_check._populate_market_keys()`
+(renamed from `_populate_base_levels`, folded into it) computed, per item,
+what fraction of that item's own observed listings contained each `b:`
+value, stripping anything below 5% (with a 20-sample floor below which
+nothing is touched). Calibrated against 36507/109168/114813's data at the
+time and looked clean -- but checking the *full* production sample after
+deploy showed item 36507's own noise reached 14% frequency, directly
+overlapping 109168/114813's real dimensions (also as low as 14-17%). No
+single global frequency band separates "real" from "noise" across both
+real cases -- confirmed live: the reported 5,400g listing still didn't
+surface post-deploy. Human was asked via `AskUserQuestion` whether to keep
+this conservative, build something smarter, or accept the risk of a
+looser cutoff -- initially chose conservative, then asked for a real,
+complete fix once the practical impact ("every item with bonuses" not
+showing its actual cheapest listing) was clear.
+
+**Second attempt: cardinality alone. Also tried and rejected, in the same
+follow-up session, before shipping.** Reasoning: real dimensions cluster
+into a *small* set of distinct values (a quality flag, a socket count);
+noise is a *large*, near-unique-per-listing pool. Counting how many
+distinct values land in the "ambiguous" 5-80% frequency band, per item,
+and treating a small count (≤8) as real / large count as noise correctly
+classified every item checked at first -- including a genuine 5-value
+"item-level upgrade track" system (item 244752, found during this
+investigation: bonus ids 12493-12497 recur across *multiple* different
+items at real, substantial, mutually-exclusive frequencies -- almost
+certainly one of Blizzard's real itemization systems, not per-item noise).
+But a broader scale check found item 210108: ~10 ambiguous-band values,
+entirely real (several independent paired gem/socket dimensions stacked on
+one item), that a pure count would wrongly strip in bulk just because the
+*total* happened to exceed 8 -- a real item with several genuine
+dimensions looks identical, by count alone, to one noisy dimension with
+many values.
+
+**Fix that shipped: a structural (companion/partition) test, not a
+threshold on any single number.** The distinguishing signal isn't how
+*frequent* a value is or how *many* values exist -- it's whether a value
+has a *partner*. Real dimensions come in one of two recognizable shapes:
+- **Companion pair**: two values that reliably co-occur *together* in the
+  same `bonus_key` (e.g. item 109168's two-part gem bonus, 9145 paired
+  with 9148 -- confirmed via `P(9148 | 9145) >= 70%`).
+- **Partition**: a small set of values that *never* co-occur with each
+  other but jointly cover most of the item's listings (e.g. a binary
+  quality flag summing to ~100% of listings, or item 244752's 5-way
+  mutually-exclusive tier system -- no single *pair* of those 5 sums to
+  80%, so this had to be an N-way group check, not just pairwise).
+
+Per-craft noise has neither shape: each value stands alone, with no
+reliable partner. A value's frequency alone still gates which values are
+even *candidates* for this check (below `BONUS_NOISE_LOW_FREQUENCY`, 5%,
+with `BONUS_NOISE_MIN_SAMPLES`, 20 -- always noise, no partner needed;
+above `BONUS_NOISE_BASE_TAG_FREQUENCY`, 80% -- always real, and
+deliberately *excluded* from being used as evidence for any other value's
+partner check, since an ever-present tag trivially "sums to a lot" with
+anything, which live-testing caught producing false "partition" matches
+for genuine noise against item 36507's own 90%-frequency base tag).
+`market_key()` gained a third optional arg, `noise_bonus_ids:
+frozenset[int] | None` -- same "`None` means don't strip anything" safety
+default as `base_level`; only how `_populate_market_keys()` computes that
+set changed.
+
+**Validated live against every real case found across this investigation**
+(not just the original 3): three per-craft-noise items (36507 plus 82070/
+25218/82194/15009, found via a broader scale check, all sharing the same
+"one near-universal base tag + a scattered tail of near-sequential
+instance ids" shape) fully and correctly stripped down to their one real
+tag each; eight real multi-dimension items (109168, 114813, 210108, and
+the five-item "level-upgrade-track" family 244752/239675/240947/244718/
+244591) fully preserved with zero false-positive stripping. The originally
+reported case (item 36507, the 5,400g Blackrock listing) now surfaces
+correctly.
 
 **Why this moved market_key() computation out of SQL macros entirely, not
 just into a bigger macro**: a per-item variable-length "strip these
 specific ids" set doesn't fit DuckDB's macro model the way a single scalar
-`base_level` does. `_populate_market_keys()` now computes the noise-id
-detection in SQL (DuckDB handles the `UNNEST`+`GROUP BY` this needs
-efficiently -- live-timed 0.24s across a full sell realm's data), then
-computes the final `market_key()` string once in Python for every distinct
-`(item_id, bonus_key)` pair the query will touch (~699k pairs on Draenor,
-live-timed), and bulk-loads the result into a new `bonus_key_market_keys`
-temp table that `sell_now`/`sell_stats`/`buy` all `JOIN` on `(item_id,
-bonus_key)` instead of calling a SQL macro inline. `analyze.
-MARKET_KEY_MACRO_SQL` is **unchanged and still SQL-macro-only for the
-2-arg `(bk, base_level)` signature** -- `noise_bonus_ids` is Python-only,
-not mirrored in SQL, since `find_snipes()` is its only caller and it no
-longer calls the macro at all. `tests/test_market_key.py`'s existing
-SQL/Python parity test is unaffected (still covers exactly what it always
-covered).
+`base_level` does -- doubly so once the fix needed pairwise co-occurrence
+between candidate values, not just a per-value frequency lookup.
+`_populate_market_keys()` computes the noise-id detection in SQL (DuckDB
+handles the self-join + `UNNEST` + `GROUP BY` this needs efficiently --
+live-timed 0.1-0.9s across a full sell realm's data, from a handful of
+candidate items up to all ~12,000 items with a `b:` bonus list region-wide),
+then computes the final `market_key()` string once in Python for every
+distinct `(item_id, bonus_key)` pair the query will touch (~699k pairs on
+Draenor, live-timed), and bulk-loads the result into a new
+`bonus_key_market_keys` temp table that `sell_now`/`sell_stats`/`buy` all
+`JOIN` on `(item_id, bonus_key)` instead of calling a SQL macro inline.
+`analyze.MARKET_KEY_MACRO_SQL` is **unchanged and still SQL-macro-only for
+the 2-arg `(bk, base_level)` signature** -- `noise_bonus_ids` is
+Python-only, not mirrored in SQL, since `find_snipes()` is its only caller
+and it no longer calls the macro at all. `tests/test_market_key.py`'s
+existing SQL/Python parity test is unaffected (still covers exactly what
+it always covered).
+
+**A real correctness bug caught and fixed while building the pairwise
+co-occurrence check**: the first version computed a row identifier via
+`row_number() OVER ()` inside a CTE, then referenced that CTE twice (once
+per side of the self-join). Live-tested against real data, this produced
+*wrong* co-occurrence results -- DuckDB doesn't guarantee a CTE referenced
+multiple times in one query is materialized once and read consistently
+both times, so the two references' row numbers didn't line up, silently
+matching unrelated rows as if they were "the same bonus_key occurrence."
+Fixed by materializing `bonus_occurrences`/`noise_bonus_values` as real
+temp tables (`CREATE TEMP TABLE ... AS`) instead of CTEs, giving every row
+one fixed id read identically everywhere it's joined. Caught by comparing
+live output against known-correct expected values (109168's real gem pair,
+9145+9148, wasn't being detected as companions until this fix) -- not
+something the query's own successful execution would have revealed on its
+own, since a wrong-but-consistent-looking result set doesn't raise an
+error.
 
 **A real, separate performance trap found and avoided while building
 this**: the first implementation bulk-loaded the ~699k precomputed rows via
@@ -1239,48 +1317,33 @@ table.
 
 **Confidence level, stated plainly**: unlike modifier type 9 (explicitly
 human-confirmed not to affect transmog before being pooled, 2026-07-24),
-this fix relies on document-frequency evidence from live data alone, not a
-human-confirmed semantic check of what these specific bonus ids mean. The
-approach is more conservative by construction than a global ignore-list --
-per-item, threshold-gated, requires a real sample size -- but it's still
-inference, not a confirmed fact about what Blizzard's bonus ids encode.
+this fix relies on structural/statistical evidence from live data alone,
+not a human-confirmed semantic check of what any specific bonus id means.
+It's a materially stronger signal than the frequency-only or cardinality-
+only attempts that preceded it, though -- it's judged live against 8
+diverse real items spanning single-dimension noise, binary flags, N-way
+partitions, and multiple stacked real dimensions on one item, not just the
+original 3. Still inference, not a confirmed fact about what Blizzard's
+bonus ids encode.
 
 **Tests**: `tests/test_market_key.py` gained direct coverage of
 `noise_bonus_ids` (stripping, `None`/empty-set safety, only-strips-what's-
-in-the-set). `tests/test_snipe_check.py` gained
-`test_find_snipes_pools_near_identical_bonus_list_noise`, a full
-`find_snipes()` integration test reproducing item 36507's real shape (22
-distinct per-craft rolls, none individually meeting `min_sales=2`, correctly
-pooling to one market and matching a buy-side listing whose exact roll never
-appeared in the sell realm's own history at all -- the actual reported bug).
-`pytest -q`: 242 passing (up from 235), `env -u DATABASE_URL pytest -q`
-matching.
+in-the-set). `tests/test_snipe_check.py` gained three `find_snipes()`
+integration tests, each exercising a different part of the new detection
+logic with real DuckDB execution (not mocked): the original low-frequency
+floor (22 distinct per-craft rolls, none individually meeting `min_sales=2`
+alone), a companion-pair case (two low-individual-frequency values that
+always co-occur together, reproducing item 109168's real gem-bonus shape),
+and an N-way partition case (three mutually-exclusive tier values, no
+single pair of which sums close to 100%, reproducing item 244752's real
+5-tier system at a smaller scale). `pytest -q`: 244 passing, `env -u
+DATABASE_URL pytest -q` matching.
 
-**Live-verified after deploy: this is a real, but only partial, fix --
-documented as a known gap, not silently claimed as fully resolved.**
-Checking item 36507's own noise-value frequencies against the *full*
-production sample (n=50, not the smaller sample used to first calibrate
-the threshold) showed they range up to 14% -- overlapping with 109168/
-114813's real dimensions (also observed as low as 14-17%). There is no
-single global frequency threshold that cleanly separates "real dimension"
-from "per-craft noise" across both real cases. Asked the human via
-`AskUserQuestion` how to handle the ambiguous 6-14% band: keep the
-threshold conservative (never risk merging a real market), build a
-smarter per-item heuristic (e.g. detecting paired/complementary values --
-109168's real dimensions clearly co-occur in matching counts, like
-531+532 summing to exactly 100% of listings; 36507's noise values don't
-pair up this way), or loosen the threshold and accept some risk. **Human
-chose conservative** -- the 5% threshold ships as-is, correctly stripping
-clearly-noise values (≤4%) while leaving the 6-14% band untouched on every
-item alike. Consequence: item 36507's original reported case is *reduced*,
-not fully resolved -- some of its listings still fragment into separate,
-unmatched buckets (live-confirmed: the 5,400g Blackrock listing still
-doesn't surface as a snipe post-fix, though other previously-invisible
-listings for this item now correctly pool). See `PROGRESS.md`'s "Known
-gaps" for the standing entry; a paired/complementary-value heuristic is
-the most promising next step if this is revisited, not attempted this
-session given the risk of an inadequately-tested algorithm silently
-merging real markets on some other item.
+**Pending live re-verification after this deploy** (the prior "kept
+conservative, partial fix" entry in `PROGRESS.md`'s "Known gaps" was
+accurate for the *first* attempt shipped earlier the same day -- to be
+confirmed resolved, or corrected further, once this version is live and
+checked against production the same way the bug itself was traced).
 
 ### Disk usage / retention (investigated 2026-07-25, not yet built)
 
