@@ -1339,11 +1339,20 @@ single pair of which sums close to 100%, reproducing item 244752's real
 5-tier system at a smaller scale). `pytest -q`: 244 passing, `env -u
 DATABASE_URL pytest -q` matching.
 
-**Pending live re-verification after this deploy** (the prior "kept
-conservative, partial fix" entry in `PROGRESS.md`'s "Known gaps" was
-accurate for the *first* attempt shipped earlier the same day -- to be
-confirmed resolved, or corrected further, once this version is live and
-checked against production the same way the bug itself was traced).
+**Live-verified after deploy, full fix confirmed.** Re-ran the exact
+originally-reported query (`find_snipes(items=[36507], ...)`) against
+production: the 5,400.85g Blackrock listing (`cr=581`) now surfaces as the
+top-ranked row, market_key `b:6655` (correctly pooled, all 15 other
+region-wide listings for this item share the same key), matched against
+the sell realm's real ~773,768g sold-price percentile at a 99.3% discount
+-- the actual reported bug, resolved. Separately re-ran
+`_populate_market_keys()` against production and confirmed all three
+known real multi-dimension items (109168, 210108, 244752) still produce
+multiple distinct market_keys carrying their real distinguishing values
+(26, 13, and 35 distinct keys respectively) -- none of them collapsed
+into one wrong blended market. The prior "kept conservative, partial fix"
+entry in `PROGRESS.md`'s "Known gaps" (accurate for the frequency-only
+version shipped earlier the same day) is resolved, not just updated.
 
 ### Disk usage / retention (investigated 2026-07-25, not yet built)
 
