@@ -136,6 +136,20 @@ def test_find_snipes_flags_cheap_listing_and_excludes_others(data_dir, monkeypat
     assert r["discount_pct"] > 30
 
 
+def test_find_snipes_works_without_diff_ever_running(data_dir):
+    """The new normal since 2026-07-25: diff_snapshots.py is no longer run
+    automatically (see collect_all.py's module docstring), so
+    data/events/{sell}.parquet never gets created in production.
+    analyze.connect() must not error just because that file is missing,
+    and pricing (which never read history in the first place) must still
+    work correctly with zero events on disk."""
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == 101
+    assert rows[0]["sell_p_g"] == pytest.approx(2.0)
+
+
 def test_find_snipes_rows_carry_market_key(data_dir, monkeypatch):
     """market_key (added 2026-07-24, previously computed for the join but
     excluded from the output) is what dashboard.html now groups rows by
@@ -649,20 +663,22 @@ def test_parse_items_combines_flag_and_file(tmp_path):
     assert snipe_check.parse_items(None, None) is None
 
 
-def test_check_data_ready_missing_events(tmp_path, monkeypatch):
+def test_check_data_ready_missing_snapshots(tmp_path, monkeypatch):
     """Shared by the CLI (SystemExit) and dashboard.py's /api/snipes route
-    (HTTPException(400)) -- neither events nor listings exist yet."""
+    (HTTPException(400)) -- checks for a snapshot, not an events file
+    (2026-07-25 -- pricing only ever reads the latest snapshot, nothing
+    generates events automatically anymore, see collect_all.py)."""
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
     msg = snipe_check.check_data_ready(SELL_CR)
     assert msg is not None
-    assert "diff_snapshots.py" in msg
+    assert "fetch_snapshot.py" in msg
 
 
 def test_check_data_ready_missing_listings(tmp_path, monkeypatch):
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
-    events_dir = tmp_path / "events"
-    events_dir.mkdir(parents=True)
-    (events_dir / f"{SELL_CR}.parquet").write_bytes(b"")
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "1700000000.parquet").write_bytes(b"")
     msg = snipe_check.check_data_ready(SELL_CR)
     assert msg is not None
     assert "scan_region.py" in msg
@@ -670,9 +686,9 @@ def test_check_data_ready_missing_listings(tmp_path, monkeypatch):
 
 def test_check_data_ready_ok(tmp_path, monkeypatch):
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
-    events_dir = tmp_path / "events"
-    events_dir.mkdir(parents=True)
-    (events_dir / f"{SELL_CR}.parquet").write_bytes(b"")
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "1700000000.parquet").write_bytes(b"")
     listings_dir = tmp_path / "listings"
     listings_dir.mkdir(parents=True)
     (listings_dir / "1403.parquet").write_bytes(b"")

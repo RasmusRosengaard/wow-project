@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Server-side collection cycle (Stage 4): deep-collects every **FULL/HIGH
-population** EU connected realm's sale history (not literally all ~100 --
-scoped down 2026-07-23 once low-pop realms turned out to add collection
-overhead without much sniping-relevant liquidity), so any subscriber can
-pick a sell realm from a set that's actually worth trading on. Replaced the
-human's local run_cycle.py + Task Scheduler (both deleted) now that the app
-runs on Railway -- dashboard.py's startup event calls collect_all() on a
-background loop instead.
+population** EU connected realm's current auction listings (not literally
+all ~100 -- scoped down 2026-07-23 once low-pop realms turned out to add
+collection overhead without much sniping-relevant liquidity), so any
+subscriber can pick a sell realm from a set that's actually worth trading
+on. Replaced the human's local run_cycle.py + Task Scheduler (both deleted)
+now that the app runs on Railway -- dashboard.py's startup event calls
+collect_all() on a background loop instead.
 
 That loop runs every ~10 minutes, not hourly, deliberately mirroring how the
 old local collector worked (see fetch_snapshot.py): Blizzard republishes AH
@@ -16,29 +16,29 @@ real publish time by up to an hour. Polling every ~10 min keeps the lag
 after a real update small; fetch_once()'s If-Modified-Since check makes the
 no-op polls cheap (a 304, not a real download).
 
-Reuses fetch_snapshot.fetch_once()/diff_snapshots.main() the same way
-run_cycle.py used to (same sys.argv-patching pattern for diff_snapshots,
-which is only importable as a CLI module today). scan_region.sweep() stays
-**unscoped** -- every EU realm's current listings, not just FULL/HIGH pop
-ones, because the whole cross-realm thesis is cheap listings sitting on
-low-pop realms waiting to be validated against a high-pop sell realm's sold
-prices; scoping the buy side down to FULL/HIGH would defeat that.
+**Only the latest snapshot per realm is kept** (2026-07-25 -- see
+CLAUDE.md's "What this project is"): pricing (snipe_check.find_snipes())
+only ever reads the sell realm's current cheapest live listing, never
+historical sales, so there's no reason to retain multi-day history in the
+live pipeline anymore. prune_to_latest() deletes every snapshot but the
+newest immediately after a fresh one lands. diff_snapshots.py (the
+sale-inference classification engine) is no longer invoked automatically as
+a result -- it remains a real, working tool a human can run by hand against
+manually-accumulated snapshot history (e.g. via `fetch_snapshot.py --loop`
+run locally), just not part of this loop.
 
-Retention: once this runs indefinitely instead of one human's bounded local
-run, unbounded snapshot growth is a real storage cost, not just a
-someday-TODO -- prune_old_snapshots() keeps the two most recent snapshots
-per realm (diff_snapshots needs at least 2) and anything newer than
-RETENTION_DAYS, dropping the rest.
+scan_region.sweep() stays **unscoped** -- every EU realm's current
+listings, not just FULL/HIGH pop ones, because the whole cross-realm thesis
+is cheap listings sitting on low-pop realms waiting to be validated against
+a high-pop sell realm's current cheapest listing; scoping the buy side down
+to FULL/HIGH would defeat that.
 """
 import logging
-import sys
-import time
 from pathlib import Path
 
 import duckdb
 
 import blizz
-import diff_snapshots
 import fetch_snapshot
 import item_names
 import scan_region
@@ -48,20 +48,7 @@ DATA = ROOT / "data"
 
 log = logging.getLogger("collect_all")
 
-RETENTION_DAYS = 14
 DEEP_COLLECT_POPULATION_TIERS = {"FULL", "HIGH"}
-
-# Investigated 2026-07-25 (see CLAUDE.md's "Disk usage / retention"):
-# extrapolating early growth at RETENTION_DAYS=14 projected to ~8.7GB,
-# over the Railway volume's ~4.9GB practical cap. Human confirmed via
-# AskUserQuestion: keep the existing day-based retention mechanism (not a
-# different one, e.g. row/size-based or compaction), target 14 days by
-# default, but budget "up to 4-5GB" -- SAFETY_BYTES is that budget.
-SAFETY_BYTES = int(4.5 * 1024 ** 3)
-# prune_old_snapshots() already never drops below the 2 most recent
-# snapshots (diff_snapshots needs 2+ to produce anything) -- this is the
-# same floor, expressed in days, for the *target* retention itself.
-MIN_RETENTION_DAYS = 2
 
 # How many not-yet-cached items to resolve per cycle -- see
 # _prewarm_item_base_levels() below. This runs in the background (no user
@@ -74,7 +61,7 @@ _deep_collect_realm_ids: list[int] | None = None
 
 
 def deep_collect_realm_ids(force_refresh: bool = False) -> list[int]:
-    """FULL/HIGH-population realm ids, worth deep sale-inference collection.
+    """FULL/HIGH-population realm ids, worth deep collection.
     Computed once and cached in-process -- population tiers change rarely,
     and every process restart/redeploy recomputes it anyway; no need to
     re-check ~100 realms' population every hourly cycle."""
@@ -94,67 +81,24 @@ def deep_collect_realm_ids(force_refresh: bool = False) -> list[int]:
     return _deep_collect_realm_ids
 
 
-def _diff(cr: int) -> None:
-    orig_argv = sys.argv
-    sys.argv = ["diff_snapshots.py", "--cr-id", str(cr)]
-    try:
-        diff_snapshots.main()
-    finally:
-        sys.argv = orig_argv
-
-
-def _total_snapshot_bytes() -> int:
-    """Total on-disk size of every deep-collected realm's snapshot history
-    combined -- what _effective_retention_days() below measures against
-    SAFETY_BYTES."""
-    snap_root = DATA / "snapshots"
-    if not snap_root.exists():
-        return 0
-    return sum(p.stat().st_size for p in snap_root.glob("*/*.parquet"))
-
-
-def _effective_retention_days(total_bytes: int, target_days: int = RETENTION_DAYS,
-                              safety_bytes: int = SAFETY_BYTES,
-                              min_days: int = MIN_RETENTION_DAYS) -> int:
-    """RETENTION_DAYS is a target, not a guarantee. Below safety_bytes,
-    prune at the full target as before. Above it, shrink the effective day
-    count proportionally to how far over budget usage is -- e.g. at 2x the
-    safety budget, retain roughly half as many days -- rather than
-    switching to a different pruning mechanism (row/size-based,
-    compaction), per the human's confirmed direction (see SAFETY_BYTES'
-    comment). Usage scales roughly linearly with days of history kept for
-    a fixed set of realms at a fixed collection cadence, so this linear
-    correction is a reasonable first cut. Floored at min_days -- never
-    prune harder than prune_old_snapshots()'s own always-keep-2 floor,
-    regardless of how far over budget usage is; if that's still not
-    enough, more realms or slower growth is the real fix, not more
-    aggressive pruning of a window that's already at its floor."""
-    if total_bytes <= safety_bytes:
-        return target_days
-    return max(min_days, int(target_days * safety_bytes / total_bytes))
-
-
-def prune_old_snapshots(cr: int, retention_days: int = RETENTION_DAYS) -> int:
-    """Delete snapshots older than retention_days, always keeping at least
-    the 2 most recent (diff_snapshots needs 2+ to produce anything). Returns
-    the number of files removed."""
+def prune_to_latest(cr: int) -> int:
+    """Deletes every snapshot for cr except the newest -- pricing only ever
+    reads the latest one (see module docstring), and nothing else in the
+    live pipeline reads older ones anymore. Returns the number of files
+    removed."""
     snap_dir = DATA / "snapshots" / str(cr)
     paths = sorted(snap_dir.glob("*.parquet"), key=lambda p: int(p.stem))
-    if len(paths) <= 2:
-        return 0
-    cutoff = int(time.time()) - retention_days * 86400
     removed = 0
-    for p in paths[:-2]:
-        if int(p.stem) < cutoff:
-            p.unlink()
-            removed += 1
+    for p in paths[:-1]:
+        p.unlink()
+        removed += 1
     return removed
 
 
 def _prewarm_item_base_levels(cap: int = PREWARM_BASE_LEVEL_CAP) -> int:
     """Resolves item catalog levels (item_names.NameCache.ensure_many())
     for a batch of items carrying a type-28 modifier, in the background,
-    so snipe_check._populate_market_keys() finds them already cached by
+    so snipe_check._resolve_base_levels() finds them already cached by
     the time a real /api/snipes request needs them. Added 2026-07-25 after
     a live incident: that per-request lookup turned out to have a
     candidate set of 15,000+ distinct items on just one sell realm (type
@@ -188,44 +132,21 @@ def _prewarm_item_base_levels(cap: int = PREWARM_BASE_LEVEL_CAP) -> int:
 
 
 def collect_all() -> dict:
-    """One full pass: poll+diff+prune every FULL/HIGH-pop realm, then one
-    unscoped region-wide listings sweep (every EU realm, see module
+    """One full pass: poll+prune-to-latest every FULL/HIGH-pop realm, then
+    one unscoped region-wide listings sweep (every EU realm, see module
     docstring). A single realm failing never aborts the rest -- same "don't
-    let one bad realm kill the cycle" principle scan_region.sweep() follows.
-
-    Only re-diffs a realm when fetch_once() actually wrote a *new* snapshot
-    this cycle -- diff_snapshots recomputes from every snapshot on disk each
-    time (by design, always safe to rebuild), so re-running it on a cycle
-    where nothing changed would just recompute the identical output at real
-    CPU cost. This matters more now that collect_all() runs every ~10
-    minutes (matching Blizzard's own publish cadence, not a fixed hourly
-    clock that could drift out of phase with it) instead of hourly --
-    fetch_once() itself stays cheap on a no-op cycle (one If-Modified-Since
-    request, 304 response), diff_snapshots does not."""
+    let one bad realm kill the cycle" principle scan_region.sweep()
+    follows."""
     realm_ids = deep_collect_realm_ids()
-    polled = diffed = pruned = 0
+    polled = pruned = 0
     failed: list[int] = []
-
-    # Measured once per cycle, applied to every realm pruned this cycle --
-    # see _effective_retention_days()'s docstring. Recomputed fresh next
-    # cycle as usage changes, not tracked incrementally mid-cycle.
-    total_bytes = _total_snapshot_bytes()
-    effective_retention_days = _effective_retention_days(total_bytes)
-    if effective_retention_days < RETENTION_DAYS:
-        log.warning("collect_all: snapshot usage %.2fGB over SAFETY_BYTES budget -- "
-                    "retention tightened to %s days (target %s)",
-                    total_bytes / 1024 ** 3, effective_retention_days, RETENTION_DAYS)
 
     for cr in realm_ids:
         try:
             got_new_snapshot = fetch_snapshot.fetch_once(cr) is not None
             if got_new_snapshot:
                 polled += 1
-                n_snaps = len(list((DATA / "snapshots" / str(cr)).glob("*.parquet")))
-                if n_snaps >= 2:
-                    _diff(cr)
-                    diffed += 1
-                    pruned += prune_old_snapshots(cr, retention_days=effective_retention_days)
+                pruned += prune_to_latest(cr)
         except Exception:
             log.exception("collect_all: realm %s failed", cr)
             failed.append(cr)
@@ -241,11 +162,9 @@ def collect_all() -> dict:
     except Exception:
         log.exception("collect_all: item base-level prewarm failed")
 
-    summary = {"realms": len(realm_ids), "polled": polled, "diffed": diffed,
+    summary = {"realms": len(realm_ids), "polled": polled,
               "pruned_snapshots": pruned, "failed": failed,
-              "base_level_candidates": prewarmed,
-              "snapshot_gb": round(total_bytes / 1024 ** 3, 2),
-              "effective_retention_days": effective_retention_days}
+              "base_level_candidates": prewarmed}
     log.info("collect_all: %s", summary)
     return summary
 

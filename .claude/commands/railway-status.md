@@ -23,10 +23,10 @@ latest CI run, and volume usage vs cap. Steps:
    conclusion.
 4. Summarize: is `wow-project` Online (not stuck Building/Deploying/Crashed)?
    Did the latest CI run pass? What's the volume usage
-   (`wow-project-volume · X GB / 4.9 GB`) — flag it if it's trending close to
-   the cap (see CLAUDE.md's "Disk usage / retention" section: current
-   `RETENTION_DAYS = 14` was projected to exceed the cap at full history as
-   of 2026-07-25, and an adaptive-retention fix was proposed but not built).
+   (`wow-project-volume · X GB / 4.9 GB`) — should stay small and flat by
+   construction since 2026-07-25 (only the latest snapshot per realm is
+   kept, see `collect_all.py`'s module docstring); flag it if it's trending
+   upward, since that would mean something regressed.
 
 Do not take any destructive or write action (no restart, no rollback, no env
 var changes) — this command is read-only status reporting. If something

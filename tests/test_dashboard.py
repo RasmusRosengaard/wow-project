@@ -455,8 +455,11 @@ def test_api_snipes_respects_min_gold_and_max_gold(data_dir, monkeypatch):
     assert r.json()["count"] == 1
 
 
-def test_api_realms_lists_collected_realms(data_dir, monkeypatch):
-    run_diff(monkeypatch)
+def test_api_realms_lists_collected_realms(data_dir):
+    """A realm shows up from having at least one snapshot alone -- since
+    2026-07-25 nothing runs diff_snapshots.py automatically (see
+    collect_all.py), so requiring an events file would make this list
+    permanently empty."""
     r = client.get("/api/realms")
     assert r.status_code == 200
     realms = r.json()["realms"]
@@ -476,7 +479,7 @@ def test_api_status_reports_last_modified(data_dir):
     body = r.json()
     assert body["last_modified"] == "Thu, 23 Jul 2026 11:20:39 GMT"
     assert body["listings_updated"] is not None
-    assert body["events_exist"] is False  # diff not yet run in this test
+    assert body["has_data"] is True  # a snapshot exists, regardless of events
 
 
 def test_api_status_handles_unknown_realm(tmp_path, monkeypatch):
@@ -485,7 +488,7 @@ def test_api_status_handles_unknown_realm(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["last_modified"] is None
-    assert body["events_exist"] is False
+    assert body["has_data"] is False
 
 
 def _drop_auth_overrides():

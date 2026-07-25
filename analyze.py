@@ -20,6 +20,9 @@ import argparse
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
+
+from diff_snapshots import EVENT_SCHEMA
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -81,10 +84,22 @@ MARKET_KEY_MACRO_SQL = r"""
 
 def connect(cr: int) -> duckdb.DuckDBPyConnection:
     snaps = str(DATA / "snapshots" / str(cr) / "*.parquet")
-    events = str(DATA / "events" / f"{cr}.parquet")
+    events_path = DATA / "events" / f"{cr}.parquet"
     con = duckdb.connect()
     con.execute(f"CREATE VIEW snaps AS SELECT * FROM '{snaps}'")
-    con.execute(f"CREATE VIEW ev AS SELECT * FROM '{events}'")
+    if events_path.exists():
+        con.execute(f"CREATE VIEW ev AS SELECT * FROM '{events_path.as_posix()}'")
+    else:
+        # diff_snapshots.py is no longer run automatically (2026-07-25 --
+        # collect_all.py now only keeps the latest snapshot per realm,
+        # since pricing never reads history) -- ev/sales come back empty
+        # instead of erroring, so this stays a valid connection for a realm
+        # nobody has manually diffed. A human who runs diff_snapshots.py by
+        # hand still gets the real file via the branch above.
+        empty = pa.Table.from_pylist([], schema=EVENT_SCHEMA)
+        con.register("_empty_events", empty)
+        con.execute("CREATE TABLE ev AS SELECT * FROM _empty_events")
+        con.unregister("_empty_events")
     con.execute("CREATE VIEW sales AS SELECT * FROM ev WHERE classification = 'inferred_sale'")
     con.execute("""CREATE VIEW span AS
                    SELECT (max(snapshot_ts) - min(snapshot_ts)) / 86400.0 AS days,

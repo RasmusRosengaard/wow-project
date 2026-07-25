@@ -118,7 +118,7 @@ def test_dashboard_api_routes_require_login(client):
     same business logic a subscriber does, just capped on row count
     downstream (see test_dashboard.py's _snipe_cap tests), not turned away
     with a 402 like before."""
-    UNCOLLECTED_REALM = 424242  # no data/events file -- guaranteed not to exist
+    UNCOLLECTED_REALM = 424242  # no snapshot ever collected -- guaranteed not to exist
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 401
     assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 401
 

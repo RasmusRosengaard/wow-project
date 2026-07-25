@@ -323,22 +323,6 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
     }
 
 
-def _list_collected_realms() -> list[int]:
-    """A realm is "collected" once diff_snapshots.py has produced its events
-    file -- that's the same precondition /api/snipes already 400s on, so this
-    is exactly the set of realms the picker can usefully offer."""
-    events_dir = DATA / "events"
-    if not events_dir.exists():
-        return []
-    ids = []
-    for p in events_dir.glob("*.parquet"):
-        try:
-            ids.append(int(p.stem))
-        except ValueError:
-            continue
-    return sorted(ids)
-
-
 def _realms_payload(cr_ids: list[int]) -> list[dict]:
     realms = []
     for cr_id in cr_ids:
@@ -353,15 +337,15 @@ def api_realms(user: User = Depends(current_active_user)) -> dict:
     # current_active_user, not current_subscribed_user -- the free tier
     # (see /api/snipes' SNIPE_TIER_CAPS) still needs the realm picker to
     # pick a sell realm at all, it's just capped on row count once it fetches.
-    return {"realms": _realms_payload(_list_collected_realms())}
+    return {"realms": _realms_payload(_list_snapshotted_realms())}
 
 
 def _list_snapshotted_realms() -> list[int]:
     """Every realm with at least one raw snapshot file -- the precondition
-    for /api/log, distinct from _list_collected_realms() (which requires
-    diff_snapshots.py to have run). In practice these almost always
-    coincide since collect_all.py re-diffs on every new snapshot, but the
-    log is about *retrieval*, not inference, so it checks the raw source."""
+    both /api/realms and /api/log/realms use. Used to be two separate
+    checks (one requiring diff_snapshots.py to have run) before 2026-07-25,
+    when pricing turned out to only ever need the latest snapshot -- see
+    snipe_check.check_data_ready()."""
     snap_dir = DATA / "snapshots"
     if not snap_dir.exists():
         return []
@@ -423,7 +407,13 @@ def api_status(sell: int, user: User = Depends(current_active_user)) -> dict:
         "sell": sell,
         "last_modified": last_modified,
         "listings_updated": listings_updated,
-        "events_exist": (DATA / "events" / f"{sell}.parquet").exists(),
+        # Renamed from events_exist 2026-07-25 -- diff_snapshots.py no
+        # longer runs automatically (see collect_all.py), so "does this
+        # realm have an events file" stopped being a meaningful freshness
+        # signal. has_data just means "has at least one snapshot ever been
+        # retrieved," matching what dashboard.html's ticker actually cares
+        # about (has real data ever landed for this realm).
+        "has_data": last_modified is not None,
     }
 
 

@@ -603,7 +603,7 @@ function hideTooltip() {
 // (Snapshot/Listings swept/Ledger build status) that all gestured at "is the
 // data fresh" without a single clear answer.
 function renderStatusTicker(s) {
-  const stale = !s.events_exist;
+  const stale = !s.has_data;
   $("ticker").innerHTML = `
     <div class="seg"><span class="k">Last auction data</span><span class="v mono ${stale ? "stale" : "ok"}">${fmtHttpDate(s.last_modified)}</span></div>
   `;

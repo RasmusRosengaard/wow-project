@@ -10,7 +10,6 @@ import pytest
 
 import blizz
 import collect_all
-import diff_snapshots
 import fetch_snapshot
 import item_names
 import scan_region
@@ -46,7 +45,7 @@ def reset_realm_cache(monkeypatch):
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    for mod in (fetch_snapshot, diff_snapshots, scan_region, collect_all):
+    for mod in (fetch_snapshot, scan_region, collect_all):
         monkeypatch.setattr(mod, "DATA", tmp_path)
     return tmp_path
 
@@ -111,72 +110,32 @@ def snap_row(auction_id, ts, item_id=101, buyout=20_000):
     }
 
 
-def test_prune_old_snapshots_keeps_two_most_recent_and_anything_within_retention(env):
+def test_prune_to_latest_keeps_only_newest(env):
+    """Pricing only ever reads the latest snapshot (see collect_all.py's
+    module docstring) -- prune_to_latest() replaced the old day-based
+    retention 2026-07-25 once that stopped being necessary."""
     snap_dir = env / "snapshots" / str(FULL_POP_CR)
     snap_dir.mkdir(parents=True)
     now = int(time.time())
-    old_ts = now - 30 * 86400   # 30 days old -- past the 14-day default retention
-    recent_ts = now - 1 * 86400
-    newest_ts = now
-
-    for ts in (old_ts, recent_ts, newest_ts):
+    for ts in (now - 7200, now - 3600, now):
         pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
                        snap_dir / f"{ts}.parquet")
 
-    removed = collect_all.prune_old_snapshots(FULL_POP_CR)
-    assert removed == 1
+    removed = collect_all.prune_to_latest(FULL_POP_CR)
+    assert removed == 2
     remaining = {int(p.stem) for p in snap_dir.glob("*.parquet")}
-    assert remaining == {recent_ts, newest_ts}
+    assert remaining == {now}
 
 
-def test_prune_old_snapshots_never_drops_below_two(env):
+def test_prune_to_latest_noop_with_one_snapshot(env):
     snap_dir = env / "snapshots" / str(FULL_POP_CR)
     snap_dir.mkdir(parents=True)
-    ancient_ts = int(time.time()) - 365 * 86400
-    for ts in (ancient_ts, ancient_ts + 3600):
-        pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
-                       snap_dir / f"{ts}.parquet")
+    ts = int(time.time())
+    pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
+                   snap_dir / f"{ts}.parquet")
 
-    removed = collect_all.prune_old_snapshots(FULL_POP_CR)
-    assert removed == 0
-    assert len(list(snap_dir.glob("*.parquet"))) == 2
-
-
-def test_effective_retention_days_returns_target_under_budget():
-    """Well under SAFETY_BYTES -- no tightening at all, the target stands."""
-    assert collect_all._effective_retention_days(
-        total_bytes=1 * 1024 ** 3, target_days=14, safety_bytes=4.5 * 1024 ** 3) == 14
-
-
-def test_effective_retention_days_scales_down_proportionally_over_budget():
-    """2x over budget -> roughly half the target days, per the documented
-    linear-correction rule."""
-    days = collect_all._effective_retention_days(
-        total_bytes=9 * 1024 ** 3, target_days=14, safety_bytes=4.5 * 1024 ** 3)
-    assert days == 7
-
-
-def test_effective_retention_days_never_drops_below_floor():
-    """Wildly over budget must still floor at min_days -- never prune harder
-    than prune_old_snapshots()'s own always-keep-2 floor."""
-    days = collect_all._effective_retention_days(
-        total_bytes=100 * 1024 ** 3, target_days=14, safety_bytes=4.5 * 1024 ** 3, min_days=2)
-    assert days == 2
-
-
-def test_total_snapshot_bytes_sums_across_realms(env):
-    for cr, ts in ((1403, 1_700_000_000), (1096, 1_700_000_100)):
-        snap_dir = env / "snapshots" / str(cr)
-        snap_dir.mkdir(parents=True)
-        pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
-                       snap_dir / f"{ts}.parquet")
-    total = collect_all._total_snapshot_bytes()
-    real_total = sum(p.stat().st_size for p in (env / "snapshots").glob("*/*.parquet"))
-    assert total == real_total > 0
-
-
-def test_total_snapshot_bytes_zero_when_nothing_collected_yet(env):
-    assert collect_all._total_snapshot_bytes() == 0
+    assert collect_all.prune_to_latest(FULL_POP_CR) == 0
+    assert len(list(snap_dir.glob("*.parquet"))) == 1
 
 
 def test_collect_all_only_deep_collects_high_pop_but_sweeps_everyone(env, monkeypatch):
@@ -202,13 +161,11 @@ def test_collect_all_only_deep_collects_high_pop_but_sweeps_everyone(env, monkey
     assert (env / "listings" / f"{LOW_POP_CR}.parquet").exists()
 
 
-def test_collect_all_skips_diff_when_no_new_snapshot_arrived(env, monkeypatch):
+def test_collect_all_skips_prune_when_no_new_snapshot_arrived(env, monkeypatch):
     """A cycle where Blizzard hasn't published a new dump yet (fetch_once
-    returns None, e.g. a 304) must not re-run diff_snapshots even if 2+
-    snapshots already exist on disk from earlier cycles -- diff_snapshots
-    recomputes from scratch every time, so re-running it for no new
-    information would just burn CPU on an identical result. This is what
-    makes polling every ~10 minutes (instead of hourly) cheap."""
+    returns None, e.g. a 304) must leave existing snapshot files alone --
+    pruning to latest only makes sense right after a genuinely new one
+    lands."""
     monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
     monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
     monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
@@ -220,13 +177,36 @@ def test_collect_all_skips_diff_when_no_new_snapshot_arrived(env, monkeypatch):
         pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
                        snap_dir / f"{ts}.parquet")
 
-    diff_calls = []
-    monkeypatch.setattr(collect_all, "_diff", lambda cr: diff_calls.append(cr))
     monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: None)  # no new dump this cycle
 
     summary = collect_all.collect_all()
-    assert summary["diffed"] == 0
-    assert diff_calls == []
+    assert summary["pruned_snapshots"] == 0
+    assert len(list(snap_dir.glob("*.parquet"))) == 2  # untouched
+
+
+def test_collect_all_prunes_to_latest_after_new_snapshot(env, monkeypatch):
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
+
+    snap_dir = env / "snapshots" / str(FULL_POP_CR)
+    snap_dir.mkdir(parents=True)
+    old_ts = int(time.time()) - 3600
+    pq.write_table(pa.Table.from_pylist([snap_row(1, old_ts)], schema=SCHEMA),
+                   snap_dir / f"{old_ts}.parquet")
+    new_ts = old_ts + 3600
+
+    def fake_fetch_once(cr):
+        out = snap_dir / f"{new_ts}.parquet"
+        pq.write_table(pa.Table.from_pylist([snap_row(2, new_ts)], schema=SCHEMA), out)
+        return out
+
+    monkeypatch.setattr(fetch_snapshot, "fetch_once", fake_fetch_once)
+
+    summary = collect_all.collect_all()
+    assert summary["pruned_snapshots"] == 1
+    remaining = {int(p.stem) for p in snap_dir.glob("*.parquet")}
+    assert remaining == {new_ts}
 
 
 def test_collect_all_survives_one_realm_failing(env, monkeypatch):
@@ -266,7 +246,7 @@ def test_prewarm_item_base_levels_noop_when_no_listings(env):
 def test_prewarm_item_base_levels_resolves_only_type28_candidates(env, monkeypatch):
     """Added 2026-07-25 alongside snipe_check.MAX_BASE_LEVEL_LOOKUPS_PER_CALL
     -- this is the background half of that fix: resolving item catalog
-    levels here, off the request path, so _populate_base_levels() finds
+    levels here, off the request path, so _resolve_base_levels() finds
     them already cached. Only items whose bonus_key actually carries a
     type-28 modifier should trigger a lookup."""
     listings_dir = env / "listings"
@@ -321,42 +301,3 @@ def test_collect_all_includes_prewarm_count_in_summary(env, monkeypatch):
 
     summary = collect_all.collect_all()
     assert summary["base_level_candidates"] == 0  # no listings swept -- nothing to prewarm
-    assert summary["snapshot_gb"] == 0.0  # nothing collected in this test yet
-    assert summary["effective_retention_days"] == collect_all.RETENTION_DAYS  # well under budget
-
-
-def test_collect_all_tightens_retention_when_over_budget(env, monkeypatch):
-    """A live realm's pruning must actually receive the tightened
-    effective_retention_days, not the flat RETENTION_DAYS target, once
-    total snapshot usage exceeds SAFETY_BYTES."""
-    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
-    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
-    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
-    # _effective_retention_days()'s safety_bytes default is bound at def
-    # time, so monkeypatching the module-level SAFETY_BYTES constant
-    # wouldn't reach it -- force "way over budget" via the one thing
-    # collect_all() actually calls dynamically each cycle instead.
-    monkeypatch.setattr(collect_all, "_total_snapshot_bytes", lambda: 100 * 1024 ** 3)
-
-    snap_dir = env / "snapshots" / str(FULL_POP_CR)
-    snap_dir.mkdir(parents=True)
-    now = int(time.time())
-    for ts in (now - 3600, now):
-        pq.write_table(pa.Table.from_pylist([snap_row(1, ts)], schema=SCHEMA),
-                       snap_dir / f"{ts}.parquet")
-
-    captured = {}
-    real_prune = collect_all.prune_old_snapshots
-
-    def spy(cr, retention_days=collect_all.RETENTION_DAYS):
-        captured["retention_days"] = retention_days
-        return real_prune(cr, retention_days=retention_days)
-    monkeypatch.setattr(collect_all, "prune_old_snapshots", spy)
-
-    # Force the diff/prune branch to run even though fetch_once() returned
-    # None this cycle (no *new* snapshot) -- 2 snapshots already exist.
-    monkeypatch.setattr(collect_all, "_diff", lambda cr: None)
-    monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: 1)  # pretend a new snapshot arrived
-
-    collect_all.collect_all()
-    assert captured["retention_days"] == collect_all.MIN_RETENTION_DAYS

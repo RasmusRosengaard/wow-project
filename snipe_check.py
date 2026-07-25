@@ -53,13 +53,18 @@ DATA = ROOT / "data"
 
 def check_data_ready(sell: int) -> str | None:
     """Returns an error message if `sell`'s data isn't ready to query yet
-    (events not diffed, or no region-wide listings sweep has run), else
+    (no snapshot collected, or no region-wide listings sweep has run), else
     None. Shared between the CLI (raises SystemExit) and dashboard.py's
     /api/snipes route (raises HTTPException(400)) so the two error messages
-    -- previously duplicated near-verbatim in both places -- can't drift."""
-    events_path = DATA / "events" / f"{sell}.parquet"
-    if not events_path.exists():
-        return f"{events_path} not found -- run diff_snapshots.py --cr-id {sell} first"
+    -- previously duplicated near-verbatim in both places -- can't drift.
+
+    Checks for a snapshot, not an events file, since 2026-07-25: pricing
+    only ever reads the sell realm's latest snapshot (see
+    collect_all.py's module docstring), so an events file -- which nothing
+    generates automatically anymore -- was never the right precondition."""
+    snap_dir = DATA / "snapshots" / str(sell)
+    if not snap_dir.exists() or not any(snap_dir.glob("*.parquet")):
+        return f"no snapshots collected for realm {sell} -- run fetch_snapshot.py --cr-id {sell} first"
     if not any((DATA / "listings").glob("*.parquet")):
         return "data/listings/*.parquet not found -- run scan_region.py first"
     return None
@@ -129,7 +134,13 @@ def _detect_noise_bonus_ids(con: duckdb.DuckDBPyConnection) -> dict[int, set[int
     stable, matching row ids across both reads (DuckDB re-evaluated it
     independently each time), silently corrupting the co-occurrence
     computation below. A materialized table has one fixed occ_id per row,
-    read consistently everywhere."""
+    read consistently everywhere.
+
+    The `sales` UNION below is typically empty in production since
+    2026-07-25 (diff_snapshots.py no longer runs automatically -- see
+    collect_all.py's module docstring); harmless, just contributes zero
+    rows. `snaps` (latest) and `listings` (region-wide current) remain the
+    real sample source."""
     con.execute("""
         CREATE OR REPLACE TEMP TABLE all_bonus AS
         SELECT item_id, bonus_key FROM sales
@@ -242,12 +253,16 @@ def _resolve_base_levels(con: duckdb.DuckDBPyConnection) -> dict[int, int | None
     request take 30-175s+ even off the event loop (see CLAUDE.md's
     "Real production outage" section for the full incident). sell_ids
     (sales+snaps, this realm) is prioritized over listings_ids (region-
-    wide) within the budget since it drives this query's own sold-price
-    grouping. Items beyond the cap simply get no base_level this call --
+    wide) within the budget since it drives this realm's own pricing.
+    Items beyond the cap simply get no base_level this call --
     market_key() treats an unknown base_level as "don't strip, never
     assume junk," so this degrades gracefully, not incorrectly.
     collect_all.py additionally pre-warms this cache in the background so
-    convergence doesn't depend on user traffic."""
+    convergence doesn't depend on user traffic.
+
+    The `sales` half of sell_ids is typically empty in production since
+    2026-07-25 (diff_snapshots.py no longer runs automatically); `snaps`
+    (latest) still supplies real candidates for this realm."""
     sell_ids = [item_id for (item_id,) in con.execute(r"""
         SELECT DISTINCT item_id FROM sales WHERE bonus_key LIKE '%28=%'
         UNION
