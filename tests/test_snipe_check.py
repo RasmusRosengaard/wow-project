@@ -647,3 +647,33 @@ def test_parse_items_combines_flag_and_file(tmp_path):
     f.write_text("1\n2 3\n")
     assert snipe_check.parse_items("4,5", str(f)) == [4, 5, 1, 2, 3]
     assert snipe_check.parse_items(None, None) is None
+
+
+def test_check_data_ready_missing_events(tmp_path, monkeypatch):
+    """Shared by the CLI (SystemExit) and dashboard.py's /api/snipes route
+    (HTTPException(400)) -- neither events nor listings exist yet."""
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+    msg = snipe_check.check_data_ready(SELL_CR)
+    assert msg is not None
+    assert "diff_snapshots.py" in msg
+
+
+def test_check_data_ready_missing_listings(tmp_path, monkeypatch):
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+    events_dir = tmp_path / "events"
+    events_dir.mkdir(parents=True)
+    (events_dir / f"{SELL_CR}.parquet").write_bytes(b"")
+    msg = snipe_check.check_data_ready(SELL_CR)
+    assert msg is not None
+    assert "scan_region.py" in msg
+
+
+def test_check_data_ready_ok(tmp_path, monkeypatch):
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+    events_dir = tmp_path / "events"
+    events_dir.mkdir(parents=True)
+    (events_dir / f"{SELL_CR}.parquet").write_bytes(b"")
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    (listings_dir / "1403.parquet").write_bytes(b"")
+    assert snipe_check.check_data_ready(SELL_CR) is None

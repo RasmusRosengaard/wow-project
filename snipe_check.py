@@ -51,6 +51,20 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 
 
+def check_data_ready(sell: int) -> str | None:
+    """Returns an error message if `sell`'s data isn't ready to query yet
+    (events not diffed, or no region-wide listings sweep has run), else
+    None. Shared between the CLI (raises SystemExit) and dashboard.py's
+    /api/snipes route (raises HTTPException(400)) so the two error messages
+    -- previously duplicated near-verbatim in both places -- can't drift."""
+    events_path = DATA / "events" / f"{sell}.parquet"
+    if not events_path.exists():
+        return f"{events_path} not found -- run diff_snapshots.py --cr-id {sell} first"
+    if not any((DATA / "listings").glob("*.parquet")):
+        return "data/listings/*.parquet not found -- run scan_region.py first"
+    return None
+
+
 def parse_items(items: str | None, items_file: str | None) -> list[int] | None:
     ids: list[int] = []
     if items:
@@ -597,11 +611,9 @@ def main() -> None:
                          "never-before-seen item/pet)")
     args = ap.parse_args()
 
-    events_path = DATA / "events" / f"{args.sell}.parquet"
-    if not events_path.exists():
-        raise SystemExit(f"{events_path} not found -- run diff_snapshots.py --cr-id {args.sell} first")
-    if not any((DATA / "listings").glob("*.parquet")):
-        raise SystemExit("data/listings/*.parquet not found -- run scan_region.py first")
+    not_ready = check_data_ready(args.sell)
+    if not_ready:
+        raise SystemExit(not_ready)
 
     items = parse_items(args.items, args.items_file)
     sort = "gold" if args.gold else args.sort

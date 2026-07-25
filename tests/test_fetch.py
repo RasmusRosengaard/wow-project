@@ -5,7 +5,7 @@ import json
 import pytest
 
 import fetch_snapshot
-from fetch_snapshot import bonus_key, get_auctions_with_backoff, rows
+from fetch_snapshot import bonus_key, get_auctions_with_backoff, parse_bonus_key, rows
 
 
 # --- bonus_key ---------------------------------------------------------------
@@ -32,6 +32,27 @@ def test_bonus_key_combines_parts():
 
 def test_bonus_key_distinguishes_variants():
     assert bonus_key({"bonus_lists": [42]}) != bonus_key({"bonus_lists": [43]})
+
+
+# --- parse_bonus_key ----------------------------------------------------------
+
+def test_parse_bonus_key_empty():
+    assert parse_bonus_key("") == {"bonus_ids": [], "mods": {}}
+
+
+def test_parse_bonus_key_round_trips_bonus_key_output():
+    item = {"bonus_lists": [6654, 1234], "modifiers": [{"type": 9, "value": 70},
+                                                        {"type": 28, "value": 2164}]}
+    parsed = parse_bonus_key(bonus_key(item))
+    assert parsed == {"bonus_ids": ["1234", "6654"], "mods": {9: "70", 28: "2164"}}
+
+
+def test_parse_bonus_key_bonus_only():
+    assert parse_bonus_key("b:42,43") == {"bonus_ids": ["42", "43"], "mods": {}}
+
+
+def test_parse_bonus_key_mods_only():
+    assert parse_bonus_key("m:28=1747") == {"bonus_ids": [], "mods": {28: "1747"}}
 
 
 # --- rows --------------------------------------------------------------------

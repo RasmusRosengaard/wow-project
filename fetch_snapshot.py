@@ -73,6 +73,30 @@ def bonus_key(item: dict) -> str:
     return "|".join(parts)
 
 
+def parse_bonus_key(bk: str) -> dict:
+    """Read-only counterpart to bonus_key(): splits a canonical bonus_key
+    string back into `bonus_ids` (the raw b: bonus_lists ids, kept as
+    strings -- callers only need their count or to compare them, never
+    arithmetic, and test fixtures elsewhere use non-numeric placeholder ids)
+    and `mods` (a {modifier_type: value_string} dict). For callers that only
+    need to *inspect* a bonus_key's contents (dashboard.py's ilvl/bonus-count
+    display, market_key()'s own type-28 plausibility check below) --
+    market_key()'s output-building/filtering logic stays separate and
+    untouched by this, since its exact string output is pinned by
+    tests/test_market_key.py's Python/SQL macro parity check."""
+    bonus_ids: list[str] = []
+    mods: dict[int, str] = {}
+    for part in bk.split("|"):
+        if part.startswith("b:") and part[2:]:
+            bonus_ids = part[2:].split(",")
+        elif part.startswith("m:"):
+            for pair in part[2:].split(","):
+                t, _, v = pair.partition("=")
+                if t:
+                    mods[int(t)] = v
+    return {"bonus_ids": bonus_ids, "mods": mods}
+
+
 # Undocumented by Blizzard (same caveat as modifier 28's ilvl use in
 # dashboard.py) -- this is inference from real production data, not a
 # documented fact. Found 2026-07-23 investigating item 238014 (Sun-Blessed
@@ -265,12 +289,9 @@ def market_key(bk: str, base_level: int | None = None,
         return bk
     ignore_types = set(MARKET_IGNORE_MODIFIER_TYPES)
     if base_level is not None:
-        for part in bk.split("|"):
-            if part.startswith("m:"):
-                for pair in part[2:].split(","):
-                    t, _, v = pair.partition("=")
-                    if t == "28" and v and not ilvl_plausible(int(v), base_level):
-                        ignore_types.add(28)
+        claimed = parse_bonus_key(bk)["mods"].get(28)
+        if claimed and not ilvl_plausible(int(claimed), base_level):
+            ignore_types.add(28)
     parts = []
     for part in bk.split("|"):
         if part.startswith("b:"):

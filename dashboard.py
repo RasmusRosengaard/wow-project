@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import analyze
 import billing
 import blizz
+import fetch_snapshot
 import snipe_check
 from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users, has_active_subscription
 from db import User, get_async_session
@@ -143,17 +144,8 @@ def _parse_variant(bonus_key: str) -> dict:
     """Pull the item-level modifier (type 28) out of the raw bonus_key for a
     readable summary, without discarding the rest -- the raw string still
     rides along in the response for the tooltip."""
-    ilvl = None
-    bonus_count = 0
-    for part in bonus_key.split("|"):
-        if part.startswith("b:") and part[2:]:
-            bonus_count = len(part[2:].split(","))
-        elif part.startswith("m:"):
-            for pair in part[2:].split(","):
-                t, _, v = pair.partition("=")
-                if t == "28" and v:
-                    ilvl = v
-    return {"ilvl": ilvl, "bonus_count": bonus_count}
+    parsed = fetch_snapshot.parse_bonus_key(bonus_key)
+    return {"ilvl": parsed["mods"].get(28) or None, "bonus_count": len(parsed["bonus_ids"])}
 
 
 def _variant_label(bk: str, item_id: int, names: NameCache | None) -> str:
@@ -293,11 +285,9 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
                 session: AsyncSession = Depends(get_async_session)) -> dict:
     top = min(top, _snipe_cap(user))
     await _enforce_realm_lock(user, sell, session)
-    events_path = DATA / "events" / f"{sell}.parquet"
-    if not events_path.exists():
-        raise HTTPException(400, f"{events_path} not found -- run diff_snapshots.py --cr-id {sell} first")
-    if not any((DATA / "listings").glob("*.parquet")):
-        raise HTTPException(400, "data/listings/*.parquet not found -- run scan_region.py first")
+    not_ready = snipe_check.check_data_ready(sell)
+    if not_ready:
+        raise HTTPException(400, not_ready)
     if sort not in snipe_check.SORT_COLUMNS:
         raise HTTPException(400, f"sort must be one of {sorted(snipe_check.SORT_COLUMNS)}")
 
