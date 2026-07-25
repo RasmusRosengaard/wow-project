@@ -7,7 +7,7 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day).
+Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live).
 
 ## Status at a glance
 
@@ -34,19 +34,56 @@ Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day
   already covers "is there new data" via the 60s auto-refresh timer.
 
 **Not built yet**, in priority order — see "Next up" below:
-1. Restricted Stripe key (still the full `sk_live_...` secret). Human-only, not scheduled.
-2. Email verification for new registrations, to stop spam/throwaway free-tier accounts.
-3. TSM/Auctionator buylist export idea (parked, no design work).
-4. Phase 4 (Deal Score + Discord alerts) — blocked on Phase 3 data.
-5. The free in-game addon itself (Phase 5's remaining half).
+1. A fix for decoy-listing discount% crowding out entire legitimate
+   categories from the batch cap (confirmed live 2026-07-26 on Draenor —
+   see "Next up").
+2. Restricted Stripe key (still the full `sk_live_...` secret). Human-only, not scheduled.
+3. Email verification for new registrations, to stop spam/throwaway free-tier accounts.
+4. TSM/Auctionator buylist export idea (parked, no design work).
+5. Phase 4 (Deal Score + Discord alerts) — blocked on Phase 3 data.
+6. The free in-game addon itself (Phase 5's remaining half).
 
 ## Next up (roughly this order)
 
-1. **Restricted Stripe key** — swap the full `sk_live_...` secret for a key
+1. **Decoy-listing discount% is crowding entire legitimate categories out of
+   the dashboard's batch cap** (confirmed live 2026-07-26, via `railway ssh`
+   against production data on Draenor — see `HISTORY.md` for the full trace
+   once it's written up, or re-derive with the same technique: `find_snipes()`
+   called directly against `analyze.connect(1403)`). Concrete finding: real,
+   legitimate housing-item snipes exist (best confirmed discount 88.1%), but
+   they never reach the dashboard because `fetchBatch()` only ever fetches
+   the **top `BATCH_TOP=5000` rows by discount%** (`static/dashboard.html`),
+   and on Draenor that batch is now saturated end-to-end with 99.1%-100%
+   discount rows — even the 5000th-ranked row sits at 99.1%. An 88.1%
+   discount, while genuinely good, doesn't come close to cracking that
+   cutoff. This is almost certainly the same root cause as the already-
+   documented troll/decoy pricing-model edge case (see "Known gaps /
+   risks" below — a single absurdly-cheap camped/joke listing becomes the
+   sell realm's "current cheapest listing" reference price with no sanity
+   check, producing inflated discount% numbers) — but this is the first
+   time it's been confirmed to actually **crowd out other, unrelated items/categories**
+   from ever being seen at all, not just mis-price the item it directly
+   corrupts. Likely affects more than just Housing — anything without an
+   extreme (99%+) discount on a sell realm with enough decoy listings would
+   have the same problem. Not yet fixed; open directions to evaluate, not
+   decided:
+   - Sanity-check/exclude obviously-decoy reference prices before they're
+     read as "the sell realm's current cheapest listing" (reintroduces some
+     of the classification complexity that was deliberately removed
+     2026-07-25 — needs to be weighed against that decision, not just
+     reversed reflexively).
+   - Raise `BATCH_TOP` and/or restructure the batch fetch to guarantee some
+     minimum representation per item-class/category, so one flooded
+     category can't zero out another.
+   - First confirm the suspected root cause directly: sample a handful of
+     the 99-100% discount rows and check whether they're genuinely single-
+     copy, wildly-off-market troll listings (as suspected) rather than
+     something else entirely — don't design a fix before that's verified.
+2. **Restricted Stripe key** — swap the full `sk_live_...` secret for a key
    restricted to Checkout/Customers/Subscriptions/Webhooks. **Human-only,
    asked explicitly**: do not rotate/swap this live credential without the
    human present, even when otherwise told to keep working autonomously.
-2. **Email verification for new registrations** (scoped 2026-07-26, not
+3. **Email verification for new registrations** (scoped 2026-07-26, not
    started) — goal: require a verified email before an account reaches any
    `current_active_user`-gated route (`/api/me`, `/api/snipes`,
    `/api/realms`, `/api/status`), so a spam/throwaway registration can't
@@ -79,12 +116,7 @@ Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day
      unverified-account-blocked case, updating the existing tests that
      assume register+login alone reaches `/api/snipes`/`/api/status`) is
      part of this work, not an afterthought.
-3. **TSM/Auctionator buylist export** (see "Future work" below) — no design done.
-4. **A residual pricing-model edge case**, documented not fixed: a
-   genuinely live troll/decoy current listing can still become a market's
-   reference price (inherent to the current-cheapest-listing design, not a
-   bug in it) — see `HISTORY.md`'s "Pricing model replaced" entry for the
-   item 13051 case that surfaced this.
+4. **TSM/Auctionator buylist export** (see "Future work" below) — no design done.
 5. Phase 2 (commodities feed) — explicitly out of scope, not being pursued.
 
 ## Future work (ideas, not scheduled)
@@ -97,6 +129,11 @@ Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day
   idea, 2026-07-25, investigated, parked — see `HISTORY.md` for the full
   writeup on why it's not an independent ground truth and what a
   narrowly-scoped version would look like).
+- **Marketing plan** (human idea, 2026-07-26, not started, explicitly
+  deferred — "that's a step for tomorrow"): direction floated was content
+  creators, Reddit, and Discord communities. No research, channel
+  prioritization, or messaging done yet — starting from scratch next time
+  this comes up.
 
 **Remember**: if a custom domain ever replaces the `railway.app`
 subdomain, the Stripe webhook endpoint URL needs updating by hand in the
@@ -125,7 +162,13 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   market's reference price.** Inherent to the current pricing model, not a
   bug in it — see `HISTORY.md`'s "Pricing model replaced" entry (item
   13051). No sale-classification layer exists to catch "this current
-  listing looks like a decoy"; not attempted.
+  listing looks like a decoy"; not attempted. **Confirmed 2026-07-26 to
+  have a second-order effect**: on Draenor, decoy-inflated discount%
+  numbers now saturate the dashboard's entire `BATCH_TOP=5000` cap (5000th
+  row still at 99.1% discount), crowding out real, lower-but-still-good
+  snipes in other categories entirely (Housing's best real discount, 88.1%,
+  never surfaces at all) — see "Next up" #1 for the full trace and open
+  directions.
 - Sale-inference classification (`inferred_sale` especially) has never been
   checked against real seller behavior — Phase 0's gate was skipped. No
   longer on the pricing path, and no longer runs automatically at all
