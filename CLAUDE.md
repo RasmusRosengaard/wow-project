@@ -1256,6 +1256,32 @@ appeared in the sell realm's own history at all -- the actual reported bug).
 `pytest -q`: 242 passing (up from 235), `env -u DATABASE_URL pytest -q`
 matching.
 
+**Live-verified after deploy: this is a real, but only partial, fix --
+documented as a known gap, not silently claimed as fully resolved.**
+Checking item 36507's own noise-value frequencies against the *full*
+production sample (n=50, not the smaller sample used to first calibrate
+the threshold) showed they range up to 14% -- overlapping with 109168/
+114813's real dimensions (also observed as low as 14-17%). There is no
+single global frequency threshold that cleanly separates "real dimension"
+from "per-craft noise" across both real cases. Asked the human via
+`AskUserQuestion` how to handle the ambiguous 6-14% band: keep the
+threshold conservative (never risk merging a real market), build a
+smarter per-item heuristic (e.g. detecting paired/complementary values --
+109168's real dimensions clearly co-occur in matching counts, like
+531+532 summing to exactly 100% of listings; 36507's noise values don't
+pair up this way), or loosen the threshold and accept some risk. **Human
+chose conservative** -- the 5% threshold ships as-is, correctly stripping
+clearly-noise values (≤4%) while leaving the 6-14% band untouched on every
+item alike. Consequence: item 36507's original reported case is *reduced*,
+not fully resolved -- some of its listings still fragment into separate,
+unmatched buckets (live-confirmed: the 5,400g Blackrock listing still
+doesn't surface as a snipe post-fix, though other previously-invisible
+listings for this item now correctly pool). See `PROGRESS.md`'s "Known
+gaps" for the standing entry; a paired/complementary-value heuristic is
+the most promising next step if this is revisited, not attempted this
+session given the risk of an inadequately-tested algorithm silently
+merging real markets on some other item.
+
 ### Disk usage / retention (investigated 2026-07-25, not yet built)
 
 Human asked whether Railway's disk usage had been checked, worried about
