@@ -7,7 +7,7 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-07-25 (post-cleanup-pass).
+Last updated: 2026-07-25 (post-cleanup-pass, then retention removed the same day).
 
 ## Status at a glance
 
@@ -18,8 +18,9 @@ Last updated: 2026-07-25 (post-cleanup-pass).
   dashboard with capped, real data (250 rows, locked to one sell realm) —
   no hard paywall before seeing anything.
 - Server-side data collection every ~10 minutes for FULL/HIGH-pop EU
-  realms, no human machine required. Adaptive disk retention keeps total
-  snapshot usage under Railway's volume cap.
+  realms, no human machine required. Only the latest snapshot per realm is
+  kept (pricing never needed history) — disk usage is flat by construction,
+  not adaptively managed.
 - Auto-deploy on push to `main`, gated on tests passing.
 - One consistent visual identity (light "assay ledger", dark-mode toggle)
   across all six pages.
@@ -89,10 +90,11 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   bug in it — see `HISTORY.md`'s "Pricing model replaced" entry (item
   13051). No sale-classification layer exists to catch "this current
   listing looks like a decoy"; not attempted.
-- Sale-inference classification (`inferred_sale` especially, still used by
-  `analyze.py`'s manual debugging commands, no longer on the pricing path)
-  has never been checked against real seller behavior — Phase 0's gate was
-  skipped.
+- Sale-inference classification (`inferred_sale` especially) has never been
+  checked against real seller behavior — Phase 0's gate was skipped. No
+  longer on the pricing path, and no longer runs automatically at all
+  (2026-07-25) — it's a manual/ad-hoc tool for `analyze.py`'s debugging
+  commands now, requiring a human to accumulate snapshot history first.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the
   manual stand-in.
 - The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented;
@@ -104,10 +106,10 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   this class of bug recurs.
 - **If a sell realm's entire observed history for an item is troll/camped
   listings, no existing guard can rescue the estimate for `analyze.py`'s
-  manual debugging output** (found live 2026-07-24, item 7761). A
-  region-wide cross-check against `data/listings/*.parquet` was proposed as
-  the principled fix but not built — parked. Lower-stakes than it used to
-  be now that pricing doesn't read `sales` at all.
+  manual debugging output** (found live 2026-07-24, item 7761). Not built,
+  not likely to be revisited — `analyze.py`'s classification output is now
+  a fully manual/ad-hoc tool (2026-07-25), and pricing itself never reads
+  `sales` at all.
 - `appearance.py`'s rarity signal (`source_count`) is known to diverge from
   Wowhead's own "same model as" data on at least one item (14042). No
   Wowhead API exists to reconcile against.
@@ -121,7 +123,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 
 | Component | File(s) |
 |---|---|
-| Sale-inference engine (core IP) | `diff_snapshots.py` |
+| Sale-inference engine (core IP, manual/ad-hoc only since 2026-07-25) | `diff_snapshots.py` |
 | Realm collector | `fetch_snapshot.py` (called by `collect_all.py`, not run standalone anymore) |
 | Region scanner | `scan_region.py` |
 | Snipe-check logic | `snipe_check.py` |

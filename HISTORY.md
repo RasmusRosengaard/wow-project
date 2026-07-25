@@ -729,3 +729,85 @@ Shipped, each as its own tested/deployed commit:
    (no `get_users_router` route was ever wired, so no PATCH /users/me
    endpoint exists to need it).
 6. **Docs restructure** (this file) — this session's own work.
+
+---
+
+## Stop retaining sales-history snapshots; retire diff_snapshots.py from the live loop (2026-07-25)
+
+Right after the cleanup pass above shipped (including the adaptive disk
+retention work, item 2 in that list), the human asked whether that
+retention work was even necessary, since pricing no longer reads
+sold-price history at all. Re-checked the code to answer properly rather
+than guessing: `snipe_check.find_snipes()`'s pricing query (`sell_now` CTE)
+only ever reads `snaps` filtered to `snapshot_ts = max(snapshot_ts)` — the
+*latest* snapshot per sell realm, never history, confirmed by grepping
+every place the query touches `snaps`. The only thing that still needed
+multi-day snapshot history was `diff_snapshots.py`, the sale-inference
+classification engine: not on the pricing path, never validated against
+real seller behavior (Phase 0 skipped since 2026-07-20), not scheduled to
+be used for anything live.
+
+Presented via `AskUserQuestion`: keep the adaptive retention as-is / shrink
+it hard / stop retaining history entirely and retire `diff_snapshots.py`
+from the automatic collection loop (code stays in the repo, usable
+ad-hoc). **Human chose: stop retaining history entirely.**
+
+**Turned out to be bigger than just retention.** Investigation found three
+places used "does `data/events/{cr}.parquet` exist" as a proxy for "does
+this realm have usable data," and all three would have broken the moment
+that file stopped being generated automatically:
+
+- `analyze.connect()` unconditionally did `CREATE VIEW ev AS SELECT * FROM
+  '{events_path}'` — errors outright if the file doesn't exist. Both
+  `snipe_check.find_snipes()` (via the CLI and `/api/snipes`) and
+  `analyze.py`'s own CLI get their connection through this.
+- `snipe_check.check_data_ready(sell)` 400s/exits if the events file is
+  missing — would have permanently 400'd every sell realm once nothing
+  generates it.
+- `dashboard._list_collected_realms()` (backed `GET /api/realms`, the
+  sell-realm picker dropdown) only listed realms with an events file —
+  would have returned an empty list forever, breaking realm selection
+  entirely.
+- `dashboard.py`'s `/api/status` `events_exist` field drove
+  `dashboard.html`'s "Last auction data" ticker's stale/fresh styling —
+  would have shown permanently stale.
+
+**Shipped, all in one commit** (the pieces couldn't land separately —
+removing the diff step without `analyze.connect()`'s fallback would have
+broken every realm the moment the next cycle ran with no events file):
+
+- `collect_all.py`: removed the diff step and all day-based retention
+  machinery (`_diff()`, `RETENTION_DAYS`, `SAFETY_BYTES`,
+  `MIN_RETENTION_DAYS`, `_total_snapshot_bytes()`,
+  `_effective_retention_days()`, `prune_old_snapshots()`). Added
+  `prune_to_latest(cr)`: after a new snapshot lands, deletes every other
+  snapshot for that realm, keeping only the newest.
+- `analyze.connect()` made resilient: builds an empty `ev` table (matching
+  `diff_snapshots.EVENT_SCHEMA`) when the events file is missing, instead
+  of erroring — via the same `con.register()` + `CREATE TABLE AS SELECT` +
+  `con.unregister()` pattern `snipe_check._load_market_key_table()`
+  already used. `sales` comes back empty, which is correct now, not a bug.
+- `snipe_check.check_data_ready()`'s precondition changed from "events
+  file exists" to "at least one snapshot file exists."
+- `dashboard._list_collected_realms()` and `_list_snapshotted_realms()`
+  were the same check now — consolidated into one, `/api/realms` switched
+  to it. `/api/status`'s `events_exist` renamed to `has_data` (true when a
+  snapshot has ever been retrieved); `dashboard.html`'s ticker updated.
+
+**Rollout**: snapshots already on the production volume under the old
+retention scheme self-clean automatically — `prune_to_latest()` only fires
+in the post-fetch-new-snapshot branch, same as the old pruning did, so
+each deep-collected realm's history collapses to 1 file the next time it
+gets a new snapshot (observed live: volume usage ticked from 1.3GB to
+1.6GB right after deploy as pending snapshots landed, before starting to
+shrink as each realm's next cycle pruned it down). The pre-existing
+`data/events/*.parquet` files were left in place rather than deleted —
+`analyze.connect()`'s "use it if it exists" fallback means they just keep
+serving as frozen, no-longer-updated historical data for any realm that
+happens to have one, which is harmless (a real snapshot of actual past
+sales, not garbage) even though it won't be regenerated.
+
+`pytest -q`: 258 passing (down from 262 — net removal of retention-specific
+tests that no longer applied, plus new coverage for `prune_to_latest()`
+and for `find_snipes()` working correctly with zero events on disk, the
+new normal).
