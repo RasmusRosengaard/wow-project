@@ -619,6 +619,29 @@ def test_find_snipes_max_appearance_sources_keeps_real_gear(data_dir, monkeypatc
     assert rows[0]["item_id"] == 101
 
 
+def test_filter_by_appearance_directly_no_duckdb(monkeypatch):
+    """_filter_by_appearance() is a pure list->list function -- exercise it
+    directly, without going through find_snipes()'s DuckDB query, covering
+    the same three rules its find_snipes()-level tests above cover: always
+    annotate, drop unknown/uncached items when filtering, drop profession
+    tools even at a qualifying count."""
+    write_appearance_cache(appearance.CACHE_PATH, {101: 1, 102: 3})
+    inventory_types = {101: "HEAD", 102: "PROFESSION_TOOL"}
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {"name": None, "quality": None, "level": None,
+                                          "inventory_type": inventory_types.get(item_id)})
+    rows = [{"item_id": 101}, {"item_id": 102}, {"item_id": 999}]
+
+    annotated = snipe_check._filter_by_appearance(rows, max_appearance_sources=None)
+    assert annotated == rows  # nothing dropped
+    assert [r["appearance_sources"] for r in annotated] == [1, 3, None]
+
+    filtered = snipe_check._filter_by_appearance(rows, max_appearance_sources=5)
+    # 101 kept (real gear, within cap); 102 dropped (profession tool,
+    # even though 3 <= 5); 999 dropped (not in the cache, can't prove rare)
+    assert [r["item_id"] for r in filtered] == [101]
+
+
 def test_parse_items_combines_flag_and_file(tmp_path):
     f = tmp_path / "watchlist.txt"
     f.write_text("1\n2 3\n")

@@ -85,87 +85,37 @@ NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
 MAX_BASE_LEVEL_LOOKUPS_PER_CALL = 500
 
 
-def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
-    """Precomputes market_key() in Python for every distinct (item_id,
-    bonus_key) pair the query will touch, then bulk-loads the results into
-    a `bonus_key_market_keys` temp table the main query JOINs against on
-    (item_id, bonus_key) -- replacing the old inline SQL macro calls
-    (`market_key(bonus_key, base_level)`) entirely for this query. Renamed
-    from `_populate_base_levels` (2026-07-25, same day) once a second
-    pooling problem needed a capability the SQL macro can't express without
-    real complexity -- see below.
+def _detect_noise_bonus_ids(con: duckdb.DuckDBPyConnection) -> dict[int, set[int]]:
+    """Finds per-item `b:` bonus-list ids that are per-craft noise (a
+    different "instance" id on every listing of what's really one liquid
+    market, e.g. item 36507/Iron-Molded Fist) rather than a real distinguishing
+    variant (e.g. item 109168's two-part gem bonus, or item 244752's
+    five-value item-level-upgrade track). Unlike a modifier type, a raw
+    bonus id isn't a typed field -- the same id can mean something
+    completely different on a different item -- so this can't be a fixed
+    global ignore-list; it's computed fresh per item from the data itself.
 
-    Two things get folded in here:
+    Determined via a structural test, not a frequency threshold alone --
+    **a frequency-only cutoff was tried first, shipped, and live-confirmed
+    insufficient the same day (2026-07-24)**: item 36507's own noise
+    reached 14% frequency, overlapping with other items' real dimensions
+    also observed as low as 14-17%, so no single band separates the two.
+    The real distinguishing signal is whether a value has a *partner*: a
+    real dimension either reliably co-occurs with another specific value in
+    the same bonus_key (a companion pair), or belongs to a small set of
+    mutually-exclusive values that jointly cover most of the item's
+    listings (a partition). Per-craft noise has neither shape: each value
+    stands alone. See fetch_snapshot.py's BONUS_NOISE_* constants for the
+    full methodology and the real-data validation (10 real items, both
+    noise-heavy and multi-dimension-real, checked live).
 
-    1. **base_level** (unchanged from the original `_populate_base_levels`):
-       market_key()'s type-28 ilvl-plausibility pooling needs each
-       candidate item's catalog base level, which requires a Blizzard API
-       call DuckDB can't make mid-query. `NameCache.ensure_many()` resolves
-       these concurrently, capped at MAX_BASE_LEVEL_LOOKUPS_PER_CALL --
-       live-confirmed 2026-07-25 the type-28 prefilter's candidate set can
-       be 15,000+ items on a single sell realm (type 28 is ubiquitous on
-       modern ilvl-scaling gear, not rare), so an unbounded gather made a
-       single request take 30-175s+ even off the event loop (see
-       CLAUDE.md's "Per-request latency fix" for the full incident).
-       sell_ids (sales+snaps, this realm) is prioritized over listings_ids
-       (region-wide) within the budget since it drives this query's own
-       sold-price grouping. Items beyond the cap simply get no base_level
-       this call -- market_key() treats an unknown base_level as "don't
-       strip, never assume junk," so this degrades gracefully, not
-       incorrectly. collect_all.py additionally pre-warms this cache in
-       the background so convergence doesn't depend on user traffic.
-
-    2. **noise_bonus_ids** (new, same day, a real user-reported bug: item
-       36507/Iron-Molded Fist, a genuinely cheap 5,400g listing never
-       matched the sell realm's own sales because every listing's bonus
-       list carried a different per-craft "instance" id, the same
-       fragmentation shape as the already-handled m:42/44, just expressed
-       via `b:` bonus_lists instead of a modifier). Unlike base_level, this
-       can't be a fixed global ignore-list: a raw bonus id is just a
-       number, not a typed field, so the same id can mean something
-       completely different on a different item.
-
-       Determined per item via a structural test, not a frequency
-       threshold alone -- **a frequency-only cutoff was tried first,
-       shipped, and live-confirmed insufficient the same day**: item
-       36507's own noise reached 14% frequency, overlapping with other
-       items' real dimensions also observed as low as 14-17%, so no single
-       band separates the two. The real distinguishing signal is whether a
-       value has a *partner*: a real dimension either reliably co-occurs
-       with another specific value in the same bonus_key (a companion
-       pair -- e.g. item 109168's two-part gem bonus), or belongs to a
-       small set of mutually-exclusive values that jointly cover most of
-       the item's listings (a partition -- e.g. a binary quality flag, or
-       item 244752's five-value item-level-upgrade track). Per-craft noise
-       has neither shape: each value stands alone. See
-       fetch_snapshot.py's BONUS_NOISE_* constants for the full
-       methodology, the rejected frequency-only and cardinality-only
-       attempts, and the real-data validation (10 real items, both noise-
-       heavy and multi-dimension-real, checked live).
-
-    **Why Python, not a bigger SQL macro**: a per-item variable-length
-    "strip these specific ids" set doesn't fit DuckDB's macro model as
-    cleanly as a single scalar base_level does. Computing the final
-    market_key string once per distinct (item_id, bonus_key) pair in
-    Python and joining on the result keeps both capabilities (base_level
-    AND noise_bonus_ids) in one code path instead of two SQL macros
-    growing in parallel with tests/test_market_key.py's parity check.
-
-    **Why a bulk Arrow load, not executemany()**: live-timed 2026-07-25 --
-    ~700k distinct (item_id, bonus_key) pairs is a realistic real-world
-    count (Draenor). `executemany()` inserting them row-by-row did not
-    return within 90s. Registering a pyarrow Table and `CREATE TABLE AS
-    SELECT` from it ingests natively; the same 700k rows loaded in 0.23s.
-    Noise detection + pair fetch + market_key computation + bulk load
-    together: ~1.3s total, live-verified."""
-    # --- noise-bonus-id detection: SQL, no network, fast ---
-    # Materialized as real temp tables (occ_id assigned once), not CTEs
-    # referenced twice -- a CTE referencing row_number() OVER () and read
-    # from two places in the same query was live-confirmed to NOT give
-    # stable, matching row ids across both reads (DuckDB re-evaluated it
-    # independently each time), silently corrupting the co-occurrence
-    # computation below. A materialized table has one fixed occ_id per row,
-    # read consistently everywhere.
+    Materialized as real temp tables (occ_id assigned once), not CTEs
+    referenced twice -- a CTE referencing row_number() OVER () and read
+    from two places in the same query was live-confirmed to NOT give
+    stable, matching row ids across both reads (DuckDB re-evaluated it
+    independently each time), silently corrupting the co-occurrence
+    computation below. A materialized table has one fixed occ_id per row,
+    read consistently everywhere."""
     con.execute("""
         CREATE OR REPLACE TEMP TABLE all_bonus AS
         SELECT item_id, bonus_key FROM sales
@@ -264,8 +214,26 @@ def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
     noise_by_item: dict[int, set[int]] = {}
     for item_id, bonus_id in noise_rows:
         noise_by_item.setdefault(item_id, set()).add(bonus_id)
+    return noise_by_item
 
-    # --- base_level resolution: Python, needs Blizzard API, capped ---
+
+def _resolve_base_levels(con: duckdb.DuckDBPyConnection) -> dict[int, int | None]:
+    """Resolves each candidate item's catalog base level, needed by
+    market_key()'s type-28 ilvl-plausibility pooling -- a Blizzard API call
+    DuckDB can't make mid-query. `NameCache.ensure_many()` resolves these
+    concurrently, capped at MAX_BASE_LEVEL_LOOKUPS_PER_CALL -- live-
+    confirmed 2026-07-25 the type-28 prefilter's candidate set can be
+    15,000+ items on a single sell realm (type 28 is ubiquitous on modern
+    ilvl-scaling gear, not rare), so an unbounded gather made a single
+    request take 30-175s+ even off the event loop (see CLAUDE.md's
+    "Real production outage" section for the full incident). sell_ids
+    (sales+snaps, this realm) is prioritized over listings_ids (region-
+    wide) within the budget since it drives this query's own sold-price
+    grouping. Items beyond the cap simply get no base_level this call --
+    market_key() treats an unknown base_level as "don't strip, never
+    assume junk," so this degrades gracefully, not incorrectly.
+    collect_all.py additionally pre-warms this cache in the background so
+    convergence doesn't depend on user traffic."""
     sell_ids = [item_id for (item_id,) in con.execute(r"""
         SELECT DISTINCT item_id FROM sales WHERE bonus_key LIKE '%28=%'
         UNION
@@ -279,9 +247,26 @@ def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
     type28_ids = list(dict.fromkeys(sell_ids + listings_ids))  # dedup, sell_ids first
     names = NameCache()
     names.ensure_many(type28_ids, max_workers=24, limit=MAX_BASE_LEVEL_LOOKUPS_PER_CALL)
-    base_levels = {item_id: names.base_level(item_id) for item_id in type28_ids}
+    return {item_id: names.base_level(item_id) for item_id in type28_ids}
 
-    # --- compute market_key() for every distinct (item_id, bonus_key) pair ---
+
+def _load_market_key_table(con: duckdb.DuckDBPyConnection,
+                           noise_by_item: dict[int, set[int]],
+                           base_levels: dict[int, int | None]) -> None:
+    """Computes market_key() in Python for every distinct (item_id,
+    bonus_key) pair the query will touch, then bulk-loads the results into
+    a `bonus_key_market_keys` temp table the main query JOINs against on
+    (item_id, bonus_key) -- replacing inline SQL macro calls
+    (`market_key(bonus_key, base_level)`) entirely for this query, since a
+    per-item variable-length "strip these specific ids" set (noise_by_item)
+    doesn't fit DuckDB's macro model as cleanly as a single scalar
+    base_level does.
+
+    **Why a bulk Arrow load, not executemany()**: live-timed 2026-07-25 --
+    ~700k distinct (item_id, bonus_key) pairs is a realistic real-world
+    count (Draenor). `executemany()` inserting them row-by-row did not
+    return within 90s. Registering a pyarrow Table and `CREATE TABLE AS
+    SELECT` from it ingests natively; the same 700k rows loaded in 0.23s."""
     pairs = con.execute("""
         SELECT DISTINCT item_id, bonus_key FROM sales
         UNION
@@ -302,6 +287,27 @@ def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
     con.register("_bkm_source", tbl)
     con.execute("CREATE OR REPLACE TEMP TABLE bonus_key_market_keys AS SELECT * FROM _bkm_source")
     con.unregister("_bkm_source")
+
+
+def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
+    """Populates the `bonus_key_market_keys` temp table find_snipes() joins
+    against for every distinct (item_id, bonus_key) pair. Three steps, each
+    independently documented on its own helper: noise-bonus-id detection
+    (per-craft `b:` bonus ids that fragment one market into many, see
+    _detect_noise_bonus_ids), base_level resolution (needed for type-28
+    ilvl-plausibility pooling, see _resolve_base_levels), then computing
+    and bulk-loading the final market_key per pair (see
+    _load_market_key_table). Renamed from `_populate_base_levels`
+    (2026-07-25) once noise-bonus-id detection joined base_level as a
+    second responsibility -- split back into named steps here for
+    readability (2026-07-25, same day, no behavior change).
+
+    Noise detection + base_level resolution + market_key computation + bulk
+    load together: ~1.3s total on a realistic (~700k pair) realm, live-
+    verified."""
+    noise_by_item = _detect_noise_bonus_ids(con)
+    base_levels = _resolve_base_levels(con)
+    _load_market_key_table(con, noise_by_item, base_levels)
 
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
@@ -325,9 +331,11 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     15138), a repeated troll sale dragging the median even past the
     min_sales=2 floor (item 206477), and finally item 13051 (Witchfury),
     where the *only two* recorded sales were the same camped-relist troll
-    listing at two different joke prices (the relist-matching window needs
-    an exact price match, so a price-varying troll relist slips through as
-    two fake "sales") -- and the existing safety cap couldn't rescue it
+    listing at two different joke prices (at the time, the relist-matching
+    window required an exact price match, so a price-varying troll relist
+    slipped through as two fake "sales" -- fixed 2026-07-25 by
+    diff_snapshots.RELIST_PRICE_TOLERANCE, but that fix alone wouldn't have
+    saved this case, see below) -- and the existing safety cap couldn't rescue it
     because an unrelated bug (the ilvl-plausibility check treating a
     plausible-looking but still-junk value as a real, distinct item level)
     split the troll listing and a genuinely cheap real listing into two
@@ -496,22 +504,33 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     """)
     cols = [d[0] for d in res.description]
     rows = [dict(zip(cols, row)) for row in res.fetchall()]
+    rows = _filter_by_appearance(rows, max_appearance_sources)
+    return rows[: int(top)]
 
+
+def _filter_by_appearance(rows: list[dict], max_appearance_sources: int | None) -> list[dict]:
+    """Annotates every row with `appearance_sources` (None if the item isn't
+    in the cache, e.g. the cache was never built) regardless of whether
+    filtering is active, so callers can always display it. When
+    max_appearance_sources is set, filters to items whose transmog
+    appearance is shared by at most N distinct items region-wide -- see
+    find_snipes()'s docstring for the full rationale. Profession tool/
+    accessory slots (NON_TRANSMOG_INVENTORY_TYPES) are always excluded from
+    a filtered result even when their appearance_sources happens to look
+    "unique" -- a small item pool trivially produces low source counts, but
+    neither slot is part of the visible paperdoll model."""
     appearances = AppearanceCache()
     for r in rows:
         r["appearance_sources"] = appearances.source_count(r["item_id"])
-    if max_appearance_sources is not None:
-        # Profession tool/accessory slots aren't part of the visible
-        # paperdoll model -- see NON_TRANSMOG_INVENTORY_TYPES -- so they're
-        # excluded here even when their appearance_sources happens to look
-        # "unique" (a small item pool trivially produces low source counts).
-        names = NameCache()
-        rows = [r for r in rows
+    if max_appearance_sources is None:
+        return rows
+    names = NameCache()
+    filtered = [r for r in rows
                 if r["appearance_sources"] is not None
                 and r["appearance_sources"] <= max_appearance_sources
                 and names.inventory_type(r["item_id"]) not in NON_TRANSMOG_INVENTORY_TYPES]
-        names.save()
-    return rows[: int(top)]
+    names.save()
+    return filtered
 
 
 def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
