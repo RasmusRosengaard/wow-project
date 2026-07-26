@@ -198,6 +198,33 @@ class NameCache:
                     self.save()
         self.save()
 
+    def ensure_icons_many(self, item_ids: list[int], max_workers: int = 16) -> None:
+        """Batch/concurrent version of icon() for items (not pets) -- icon()
+        isn't covered by ensure_many()'s _fetch_item_details batch (icons
+        come from a separate media endpoint), so a realm queried for the
+        first time still resolved every distinct item's icon one at a time,
+        sequentially -- same root cause ensure_many() was added for
+        (2026-07-25), just for a code path (dashboard.api_snipes's per-row
+        names=true resolution) that predates ensure_many() and was never
+        updated to prefetch icons the same way. Added 2026-07-26 after this
+        was confirmed live to freeze a switch to a never-before-queried sell
+        realm."""
+        missing = [item_id for item_id in dict.fromkeys(item_ids)
+                   if str(item_id) not in self._cache["item_icons"]]
+        if not missing:
+            return
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch_icon, f"/data/wow/media/item/{item_id}"): item_id
+                       for item_id in missing}
+            for i, future in enumerate(as_completed(futures)):
+                url = future.result()
+                if url:
+                    self._cache["item_icons"][str(futures[future])] = url
+                    self._dirty = True
+                if i % 50 == 49:
+                    self.save()
+        self.save()
+
     def get(self, item_id: int, pet_species_id: int | None = None) -> str:
         if item_id == PET_CAGE_ITEM_ID and pet_species_id is not None:
             key = str(pet_species_id)

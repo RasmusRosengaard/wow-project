@@ -811,3 +811,44 @@ sales, not garbage) even though it won't be regenerated.
 tests that no longer applied, plus new coverage for `prune_to_latest()`
 and for `find_snipes()` working correctly with zero events on disk, the
 new normal).
+
+## Realm-switch hang/timeout: a second blocking-event-loop site (2026-07-26)
+
+Human reported live: switching the dashboard's sell-realm dropdown away from
+Draenor (the realm every prior session's testing had already warmed the
+cache against) loaded indefinitely and then errored out/timed out, while
+Draenor itself always loaded fine.
+
+Traced to `dashboard.api_snipes()`: the 2026-07-25 outage fix
+(`asyncio.to_thread(_run_query)`, see "Per-request latency fix" above and
+`CLAUDE.md`'s "Real production outage" section) only covered
+`find_snipes()`'s own blocking Blizzard calls. The `names=true` row-building
+step added afterward (`[_row_to_json(r, name_cache) for r in rows]`) was
+never wrapped the same way — it ran directly on the event loop, and every
+row's `name_cache.get()`/`.icon()`/`.quality_color()`/`.quality()`/
+`.item_class()`/`.item_subclass()`/`.inventory_type()` calls fall back to a
+blocking Blizzard API call on a cache miss (`item_names.py`'s
+`_ensure_item_details`/`_fetch_icon`). Draenor's cache was warm from every
+prior session, so this path was always a cache hit there and the bug never
+surfaced; any realm queried for the first time hit potentially hundreds of
+distinct never-before-seen items, each doing at least one (often two,
+counting the separate icon fetch) sequential blocking HTTP round trip,
+directly on the event loop — freezing the whole single-process server for
+the duration, same failure mode as the original outage, just a different
+call site.
+
+Fix: wrapped the whole row-building step in `asyncio.to_thread`, and added
+`NameCache.ensure_icons_many()` (icon lookups were never covered by
+`ensure_many()`'s concurrent `_fetch_item_details` batch at all — a
+separate gap, not just a missing `to_thread`). Both `ensure_many()` and
+`ensure_icons_many()` now run concurrently (`max_workers=24`) over the
+batch's distinct item ids before the per-row translation, so a cold realm's
+first query resolves its items in parallel instead of one blocking call at
+a time. Addresses the "no test coverage for 'does an async route block the
+event loop'" gap noted in `PROGRESS.md`'s "Known gaps" partially — added
+unit coverage for `ensure_icons_many()`'s concurrency/dedup/cache-skip
+behavior in `tests/test_item_names.py`, though a true event-loop-blocking
+regression test (a slow stub proving a concurrent lightweight request still
+completes quickly) is still not built.
+
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 266 passing, both envs.

@@ -261,6 +261,70 @@ def test_ensure_many_noop_on_empty_input(cache_path, monkeypatch):
     assert not cache_path.exists()
 
 
+def test_ensure_icons_many_resolves_multiple_items_concurrently(cache_path, monkeypatch):
+    """Batch path for dashboard.api_snipes' names=true row-building step --
+    added (2026-07-26) after icon() turned out not to be covered by
+    ensure_many()'s concurrent _fetch_item_details batch at all, so a sell
+    realm queried for the first time still resolved every distinct item's
+    icon one at a time, sequentially, directly in the per-row translation
+    loop -- real production symptom: a switch to a never-before-queried
+    realm hung until the request timed out."""
+    calls = []
+
+    def fake(path):
+        calls.append(path)
+        item_id = path.rsplit("/", 1)[-1]
+        return f"https://example/{item_id}.jpg"
+    monkeypatch.setattr(item_names, "_fetch_icon", fake)
+
+    nc = NameCache()
+    nc.ensure_icons_many([201, 202, 203])
+    assert sorted(calls) == [
+        "/data/wow/media/item/201", "/data/wow/media/item/202", "/data/wow/media/item/203",
+    ]
+    assert nc.icon(201) == "https://example/201.jpg"
+    assert nc.icon(202) == "https://example/202.jpg"
+    assert nc.icon(203) == "https://example/203.jpg"
+    # second call for already-cached ids -- no new fetch
+    nc.ensure_icons_many([201, 202, 203])
+    assert len(calls) == 3
+
+
+def test_ensure_icons_many_dedupes_repeated_ids_in_input(cache_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(item_names, "_fetch_icon", lambda path: calls.append(path) or "https://example/icon.jpg")
+    nc = NameCache()
+    nc.ensure_icons_many([5507, 5507, 5507])
+    assert calls == ["/data/wow/media/item/5507"]
+
+
+def test_ensure_icons_many_tolerates_fetch_failures(cache_path, monkeypatch):
+    def fake(path):
+        if path.endswith("999999"):
+            return None
+        return "https://example/icon.jpg"
+    monkeypatch.setattr(item_names, "_fetch_icon", fake)
+
+    nc = NameCache()
+    nc.ensure_icons_many([5507, 999999])
+    assert nc.icon(5507) == "https://example/icon.jpg"
+
+
+def test_ensure_icons_many_noop_on_empty_input(cache_path, monkeypatch):
+    nc = NameCache()
+    nc.ensure_icons_many([])
+    assert not cache_path.exists()
+
+
+def test_ensure_icons_many_saves_to_disk(cache_path, monkeypatch):
+    monkeypatch.setattr(item_names, "_fetch_icon", lambda path: "https://example/icon.jpg")
+    nc = NameCache()
+    nc.ensure_icons_many([5507])
+    assert cache_path.exists()
+    saved = json.loads(cache_path.read_text())
+    assert saved["item_icons"]["5507"] == "https://example/icon.jpg"
+
+
 def test_save_only_writes_when_dirty(cache_path, monkeypatch):
     nc = NameCache()
     nc.save()

@@ -317,10 +317,33 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
     # sequentially. to_thread() keeps the rest of the app responsive while
     # this one request does its (possibly slow, first-time) work.
     rows = await asyncio.to_thread(_run_query)
-    name_cache = NameCache() if names else None
-    out_rows = [_row_to_json(r, name_cache) for r in rows]
-    if name_cache is not None:
-        name_cache.save()
+
+    # names=true's per-row NameCache lookups (name/icon/quality/item_class/...)
+    # each fall back to a blocking Blizzard API call on a cache miss (see
+    # item_names.py) -- on a sell realm queried for the first time, most rows'
+    # items have never been resolved, so this loop used to run item-by-item,
+    # synchronously, directly on the event loop: real production symptom
+    # confirmed live 2026-07-26, a realm switch to any never-before-queried
+    # realm hung until the request/proxy timed out (the same class of bug as
+    # the 2026-07-25 outage this route's _run_query offload already fixed --
+    # that fix only covered find_snipes()'s own blocking calls, not this
+    # separate per-row translation step added afterward). Fixed the same way
+    # (asyncio.to_thread), plus a concurrent prefetch (ensure_many/
+    # ensure_icons_many, same pattern as _resolve_base_levels) so a cold realm
+    # resolves its distinct items in parallel instead of one blocking call at
+    # a time.
+    def _build_rows() -> list[dict]:
+        name_cache = NameCache() if names else None
+        if name_cache is not None:
+            item_ids = [r["item_id"] for r in rows]
+            name_cache.ensure_many(item_ids, max_workers=24)
+            name_cache.ensure_icons_many(item_ids, max_workers=24)
+        out = [_row_to_json(r, name_cache) for r in rows]
+        if name_cache is not None:
+            name_cache.save()
+        return out
+
+    out_rows = await asyncio.to_thread(_build_rows)
     return {
         "rows": out_rows, "count": len(out_rows), "caveat": snipe_check.CAVEAT,
         "region": blizz.REGION, "sell_realm_slug": _realm_info(sell)["slug"],

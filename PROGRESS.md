@@ -7,7 +7,7 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live).
+Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live + realm-switch hang/timeout fixed).
 
 ## Status at a glance
 
@@ -181,8 +181,11 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   "Inference logic"), but the underlying meaning is still community-sourced,
   not official. Same caveat applies to modifier types 9/42/44.
 - **No test coverage for "does an async route block the event loop"** — see
-  `CLAUDE.md`'s "Real production outage" note. Worth a regression test if
-  this class of bug recurs.
+  `CLAUDE.md`'s "Real production outage" note. This exact gap let the same
+  bug recur at a second call site 2026-07-26 (a realm switch hanging/timing
+  out — fixed, see `HISTORY.md`); still no regression test for the class of
+  bug itself, only unit coverage for the specific fix
+  (`tests/test_item_names.py`'s `ensure_icons_many` tests).
 - **If a sell realm's entire observed history for an item is troll/camped
   listings, no existing guard can rescue the estimate for `analyze.py`'s
   manual debugging output** (found live 2026-07-24, item 7761). Not built,
