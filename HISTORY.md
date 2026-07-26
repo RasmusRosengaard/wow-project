@@ -980,3 +980,66 @@ cap raised from 5000 to 10000 (`dashboard.SNIPE_TIER_CAPS`), with
 frontend ever requests -- leaving it at 5000 would have silently kept
 superuser responses capped at the old value regardless of the server-side
 change).
+
+## New public landing page; sniper tool moved to /snipes (2026-07-26, same session)
+
+Human requests, handled together since they're the same underlying change:
+remove the redundant "← Back to dashboard" link from the pricing page,
+add a real public marketing landing page at `/`, and move the sniper tool
+itself to `/snipes`.
+
+**Routing** (`dashboard.py`): `GET /` now serves the new `static/landing.html`
+instead of `static/dashboard.html`; a new `GET /snipes` route serves
+`static/dashboard.html` (unauthenticated at the route level, same as
+before -- `dashboard.html`'s own `init()` still enforces auth client-side
+by checking `/api/me`). Every other page's "Dashboard" nav link and
+`login.html`'s post-login redirect were updated from `/` to `/snipes`.
+
+**New landing page** (`static/landing.html`): consulted the
+`frontend-design` skill before building it, since a marketing page has
+real design stakes and this project already has an established, deliberate
+visual identity ("assay ledger" -- see the "UI design pass" entry above)
+that a fresh page should extend, not reinvent. Reused the exact existing
+color tokens/type stack for everything except one restrained addition: the
+hero `<h1>` alone uses a serif system stack (`Georgia, "Times New Roman"`)
+against the sans-serif body everywhere else, meant to read like a heading
+on a certified/appraisal document -- the same "validated data, not
+decoration" thesis the seal mark already carries, not a new one. Signature
+element: a static "sample ledger row" in the hero, reusing the real
+dashboard's own coin-icon/quality-ring/discount% visual language rather
+than a generic illustration, explicitly labeled "Example listing --
+illustrative, not live data" so it can never be mistaken for real numbers
+(this project has an existing "not a demo, not fake data" ethic on
+`pricing.html` that a misleading hero mockup would have quietly
+contradicted). A numbered 3-step "how it works" section is used
+deliberately -- it's a genuine sequential process (pick realm → scan →
+results), not decorative numbering. A logged-in visitor landing on `/`
+(e.g. an old bookmark) gets silently redirected to `/snipes` via a
+background `/api/me` check, since a logged-in user hitting the marketing
+pitch almost always wants the tool instead.
+
+**Two follow-up requests during the same build**, applied consistently
+across all seven other static pages (`dashboard.html`, `login.html`,
+`register.html`, `subscribe.html`, `profile.html`, `log.html`,
+`pricing.html`):
+1. Removed the `seal-label` "Validated Data" text next to the seal icon in
+   `dashboard.html`'s topbar (the only page that had it) -- the seal icon
+   itself is unchanged.
+2. Wrapped every page's brand mark (seal + wordmark) in a link to `/`
+   (`.brand-link`, `display: contents` so the link itself takes no box in
+   the existing flex layout -- only the svg/h1 participate in `.brand`'s
+   flex row, so nothing about the existing spacing changes). `pricing.html`'s
+   separate "Dashboard" nav link was removed outright per the original
+   request (not repointed, unlike `profile.html`/`log.html`'s); the exact
+   quoted "← Back to dashboard" text turned out to live on `subscribe.html`,
+   not `/pricing` as first described -- removed there too, since the
+   literal text match was the stronger signal once both pages were checked.
+
+**Verified in an actual browser**: the new landing page in both themes
+(dark/light toggle, all CTA hrefs correct via DOM inspection); `dashboard.html`'s
+header confirmed to have no `seal-label`/"Validated Data" text and a real
+`<a href="/">` wrapping the brand mark, with no visual layout disruption.
+
+`pytest -q`/`env -u DATABASE_URL pytest -q`: 265 passing (new
+`test_index_serves_landing_page` replacing the old `test_index_serves_html`,
+plus a new `test_snipes_serves_dashboard_html`).

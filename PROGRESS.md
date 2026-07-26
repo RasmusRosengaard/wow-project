@@ -7,7 +7,7 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live + realm-switch hang/timeout fixed + realm switch now skips redundant re-fetch when cache is fresh + bonus/ilvl-aware matching dropped from live pricing + superuser tier cap raised to 10000).
+Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live + realm-switch hang/timeout fixed + realm switch now skips redundant re-fetch when cache is fresh + bonus/ilvl-aware matching dropped from live pricing + superuser tier cap raised to 10000 + new public landing page at / with the sniper tool moved to /snipes).
 
 ## Status at a glance
 
@@ -23,7 +23,10 @@ Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out c
   not adaptively managed.
 - Auto-deploy on push to `main`, gated on tests passing.
 - One consistent visual identity (light "assay ledger", dark-mode toggle)
-  across all six pages.
+  across all eight pages, including the new public landing page.
+- `/` is now a public marketing landing page (`static/landing.html`,
+  2026-07-26); the sniper tool itself moved to `/snipes`. Every page's
+  brand mark links to `/`; nav "Dashboard" links point to `/snipes`.
 - Sell price is the sell realm's own **current cheapest live listing**
   (not an inferred sold-price percentile — see `CLAUDE.md`'s "What this
   project is" for why that changed 2026-07-25).
@@ -229,7 +232,8 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | Region scanner | `scan_region.py` |
 | Snipe-check logic | `snipe_check.py` |
 | Server-side collection | `collect_all.py` |
-| Web dashboard | `dashboard.py`, `static/dashboard.html` |
+| Public landing page | `static/landing.html` (`GET /`, added 2026-07-26) |
+| Web dashboard (the sniper tool) | `dashboard.py`, `static/dashboard.html` (`GET /snipes`, moved from `/` 2026-07-26) |
 | Auth | `auth.py`, `db.py`, `static/login.html`/`register.html` |
 | Billing | `billing.py`, `static/subscribe.html` |
 | Item name/icon/quality cache | `item_names.py` |

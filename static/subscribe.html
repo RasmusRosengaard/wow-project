@@ -53,6 +53,7 @@
   }
   #theme-toggle:hover { color: var(--ink); border-color: var(--bullion); }
   .brand { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.5rem; }
+  .brand-link { display: contents; text-decoration: none; color: inherit; }
   .brand h1 {
     font-size: 1rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
     text-transform: uppercase; color: var(--ink);
@@ -116,6 +117,7 @@
 <body>
 <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
 <div class="brand">
+  <a href="/" class="brand-link" aria-label="Realm Arbitrage home">
   <svg class="seal" width="22" height="22" viewBox="0 0 30 30" aria-hidden="true">
     <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
     <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
@@ -132,6 +134,7 @@
     <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>
   <h1>Realm Arbitrage</h1>
+  </a>
 </div>
 <div class="wrap">
   <div class="pitch">
@@ -162,7 +165,6 @@
     features later.</div>
 
   <div class="nav">
-    <a href="/">&larr; Back to dashboard</a><br>
     Issues with the site or payment? Email <a href="mailto:rasmus2001@gmail.com">rasmus2001@gmail.com</a>
     or find <b>rasmus5533</b> on Discord.
   </div>

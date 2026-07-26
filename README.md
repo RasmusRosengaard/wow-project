@@ -157,6 +157,11 @@ commands (`item`/`trace`/`summary`) still use it for manual debugging.
 
 ## Dashboard
 
+The live site's `/` is a public marketing landing page (added 2026-07-26);
+the actual sniper tool lives at `/snipes` (moved there from `/` the same
+day so the root could become a real landing page instead of the tool
+itself).
+
 Sortable/filterable table styled to feel like the game itself: item names
 colored by rarity, gold/silver/copper coin icons for prices, realm *names*
 instead of raw connected-realm ids, and a mouse-hover tooltip per item

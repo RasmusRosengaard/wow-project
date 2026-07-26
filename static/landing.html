@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realm Arbitrage — cross-realm AH validation for World of Warcraft</title>
+<meta name="description" content="Realm Arbitrage checks every EU realm's live auction listings against your own realm's current price. If it's flagged, it's already validated.">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<script>
+  (function () {
+    var saved = localStorage.getItem("theme");
+    var theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --paper: #f6f7f5;
+    --card: #ffffff;
+    --hairline: #d8dbd4;
+    --hairline-strong: #c3c8bd;
+    --ink: #14161a;
+    --text-dim: #5b6259;
+    --bullion: #a67c2e;
+    --bullion-dim: #8a6624;
+    --verified: #2f7d72;
+    --verified-bg: rgba(47,125,114,0.08);
+    --alert: #b0392f;
+    --coin-gold: #d4af37; --coin-silver: #b7b7b7; --coin-copper: #b87333;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #14161a;
+    --card: #1b1e24;
+    --hairline: #333844;
+    --hairline-strong: #454b59;
+    --ink: #e8eaed;
+    --text-dim: #8b93a3;
+    --bullion: #d4af61;
+    --bullion-dim: #b8934f;
+    --verified: #3fa9a0;
+    --verified-bg: rgba(63,169,160,0.14);
+    --alert: #e0645a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: var(--paper); color: var(--ink); min-height: 100vh;
+  }
+  .mono, .money { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+  /* Hero headline only -- a serif, used with restraint, deliberately
+     evoking a printed certificate/appraisal document (the same "validated
+     data, not decoration" thesis the seal mark already carries elsewhere).
+     Everything else on the page stays the same sans-serif as the rest of
+     the product. */
+  .hero h1 {
+    font-family: Georgia, "Times New Roman", serif;
+  }
+
+  a { color: inherit; }
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 1rem; padding: 0.9rem 1.5rem; background: var(--card);
+    border-bottom: 1px solid var(--hairline-strong);
+  }
+  .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .brand h1 {
+    font-size: 1.05rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
+    text-transform: uppercase; color: var(--ink); font-family: inherit;
+  }
+  .seal { color: var(--verified); flex-shrink: 0; }
+  .nav { display: flex; gap: 0.5rem; align-items: center; }
+  .nav a, .nav button {
+    background: transparent; border: 1px solid transparent; color: var(--text-dim);
+    border-radius: 3px; padding: 0.45rem 0.75rem; cursor: pointer; font-size: 0.82rem;
+    text-decoration: none; font-weight: 600; font-family: inherit;
+  }
+  .nav a:hover, .nav button:hover { border-color: var(--hairline-strong); color: var(--ink); }
+  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.4rem 0.55rem; }
+  .nav .cta-primary {
+    background: var(--bullion); color: #fff; border-color: var(--bullion);
+  }
+  .nav .cta-primary:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); color: #fff; }
+
+  main { max-width: 1000px; margin: 0 auto; padding: 0 1.5rem; }
+
+  .hero {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    gap: 1.4rem; padding: 4.5rem 0 3.5rem;
+  }
+  .eyebrow {
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--verified);
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 4.5vw, 3rem); font-weight: 700; margin: 0; line-height: 1.15;
+    max-width: 720px;
+  }
+  .hero .sub {
+    max-width: 560px; color: var(--text-dim); font-size: 1rem; line-height: 1.6; margin: 0;
+  }
+  .hero-ctas { display: flex; gap: 0.85rem; flex-wrap: wrap; justify-content: center; margin-top: 0.3rem; }
+  .cta {
+    display: inline-block; text-decoration: none; border-radius: 4px;
+    padding: 0.75rem 1.4rem; font-weight: 700; text-transform: uppercase;
+    font-size: 0.82rem; letter-spacing: 0.03em; border: 1px solid transparent;
+  }
+  .cta.primary { background: var(--bullion); color: #fff; border-color: var(--bullion); }
+  .cta.primary:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
+  .cta.secondary { background: transparent; color: var(--ink); border-color: var(--hairline-strong); }
+  .cta.secondary:hover { border-color: var(--ink); }
+
+  /* ---------- Signature: a static "sample ledger row", the real
+     product's own visual vocabulary (coin icons, quality ring,
+     discount%) doing the explaining instead of a generic illustration. ---------- */
+  .sample {
+    width: 100%; max-width: 640px; margin-top: 1rem;
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 8px;
+    padding: 1rem 1.2rem 1.2rem; text-align: left;
+    box-shadow: 0 12px 32px rgba(20,22,26,0.06);
+  }
+  :root[data-theme="dark"] .sample { box-shadow: 0 12px 32px rgba(0,0,0,0.3); }
+  .sample-label {
+    font-size: 0.64rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); margin-bottom: 0.7rem;
+  }
+  .sample-row { display: flex; align-items: center; gap: 0.85rem; }
+  .sample-icon {
+    width: 40px; height: 40px; border-radius: 5px; flex-shrink: 0;
+    background: linear-gradient(135deg, #b48a3a, #8a6624);
+    box-shadow: inset 0 0 0 3px #a335ee;
+  }
+  .sample-item { flex: 1; min-width: 0; }
+  .sample-name { font-weight: 700; font-size: 0.92rem; }
+  .sample-route {
+    font-size: 0.76rem; color: var(--text-dim); margin-top: 0.15rem;
+    display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+  }
+  .sample-prices { text-align: right; flex-shrink: 0; }
+  .sample-buy { font-size: 0.78rem; color: var(--text-dim); }
+  .sample-sell { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.15rem; }
+  .sample-discount {
+    margin-top: 0.3rem; display: inline-block; font-weight: 700; font-size: 0.95rem;
+    color: var(--verified);
+  }
+  .coin {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    box-shadow: inset -1px -1px 1px rgba(0,0,0,0.35), inset 1px 1px 1px rgba(255,255,255,0.5);
+    margin: 0 1px;
+  }
+  .coin-gold { background: radial-gradient(circle at 35% 30%, #f3d78a, var(--coin-gold) 55%, #a3821f); }
+
+  section { padding: 3rem 0; border-top: 1px solid var(--hairline); }
+  .section-head { text-align: center; max-width: 560px; margin: 0 auto 2.2rem; }
+  .section-head h2 { font-size: 1.4rem; margin: 0 0 0.5rem; font-weight: 800; }
+  .section-head p { margin: 0; color: var(--text-dim); font-size: 0.92rem; line-height: 1.55; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.4rem; }
+  .step { display: flex; flex-direction: column; gap: 0.6rem; }
+  .step .n {
+    width: 2rem; height: 2rem; border-radius: 50%; border: 1px solid var(--bullion);
+    color: var(--bullion); display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.9rem; flex-shrink: 0;
+  }
+  .step h3 { margin: 0; font-size: 0.98rem; font-weight: 700; }
+  .step p { margin: 0; color: var(--text-dim); font-size: 0.86rem; line-height: 1.5; }
+
+  .compare { display: flex; gap: 1.4rem; flex-wrap: wrap; }
+  .compare > div {
+    flex: 1 1 260px; background: var(--card); border: 1px solid var(--hairline);
+    border-radius: 8px; padding: 1.2rem 1.3rem;
+  }
+  .compare .them { color: var(--text-dim); }
+  .compare .us { border-color: var(--verified); }
+  .compare .label {
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 0.5rem;
+  }
+  .compare .them .label { color: var(--text-dim); }
+  .compare .us .label { color: var(--verified); }
+  .compare p { margin: 0; font-size: 0.88rem; line-height: 1.55; }
+  .compare .us p { color: var(--ink); }
+
+  .closing {
+    text-align: center; display: flex; flex-direction: column; align-items: center; gap: 1.1rem;
+  }
+  .closing h2 { margin: 0; font-size: 1.5rem; font-weight: 800; }
+  .closing p { margin: 0; color: var(--text-dim); font-size: 0.92rem; max-width: 480px; }
+
+  footer {
+    border-top: 1px solid var(--hairline); padding: 1.6rem 1.5rem 2.5rem; text-align: center;
+    font-size: 0.75rem; color: var(--text-dim);
+  }
+  footer a { color: var(--bullion); }
+
+  @media (max-width: 720px) {
+    .steps { grid-template-columns: 1fr; }
+    .sample-row { flex-wrap: wrap; }
+    .sample-prices { text-align: left; margin-left: 52px; }
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">
+    <svg class="seal" width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
+      <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
+      <g stroke="currentColor" stroke-width="0.9" stroke-linecap="round">
+        <line x1="15" y1="1" x2="15" y2="3.4"/>
+        <line x1="15" y1="26.6" x2="15" y2="29"/>
+        <line x1="1" y1="15" x2="3.4" y2="15"/>
+        <line x1="26.6" y1="15" x2="29" y2="15"/>
+        <line x1="5.11" y1="5.11" x2="6.81" y2="6.81"/>
+        <line x1="23.19" y1="23.19" x2="24.89" y2="24.89"/>
+        <line x1="5.11" y1="24.89" x2="6.81" y2="23.19"/>
+        <line x1="23.19" y1="6.81" x2="24.89" y2="5.11"/>
+      </g>
+      <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>Realm Arbitrage</h1>
+  </div>
+  <div class="nav">
+    <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
+    <a href="/pricing">Pricing</a>
+    <a href="/login">Log in</a>
+    <a class="cta-primary" href="/register">Create free account</a>
+  </div>
+</div>
+
+<main>
+  <div class="hero">
+    <div class="eyebrow">Cross-realm AH validation for World of Warcraft</div>
+    <h1>Somewhere in the EU, this is cheaper.</h1>
+    <p class="sub">Realm Arbitrage checks every EU realm's live auction listings against
+      your own realm's current price — not a guess, not an average. If it's flagged, it's
+      already validated: buy it there, move it home through the warband bank, sell it here.</p>
+    <div class="hero-ctas">
+      <a class="cta primary" href="/register">Create free account</a>
+      <a class="cta secondary" href="/pricing">See pricing</a>
+    </div>
+
+    <div class="sample">
+      <div class="sample-label">Example listing — illustrative, not live data</div>
+      <div class="sample-row">
+        <div class="sample-icon" aria-hidden="true"></div>
+        <div class="sample-item">
+          <div class="sample-name">Ashbringer's Lesser Cousin</div>
+          <div class="sample-route">Listed on <b>Silvermoon</b> &rarr; your realm <b>Draenor</b></div>
+        </div>
+        <div class="sample-prices">
+          <div class="sample-buy">Buy <span class="money">45<span class="coin coin-gold"></span></span></div>
+          <div class="sample-sell">Your realm's price <span class="money">210<span class="coin coin-gold"></span></span></div>
+          <div class="sample-discount">78.5% below your realm</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <div class="section-head">
+      <h2>How it works</h2>
+      <p>Three steps, no manual comparisons across realm forums or Discord price checks.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <h3>Pick your sell realm</h3>
+        <p>The high-population realm where you actually sell gear. We collect its live
+          auction data hourly.</p>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <h3>We scan every other EU realm</h3>
+        <p>Every connected realm's current listings, swept on the same schedule —
+          no history needed on the buy side.</p>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <h3>Only genuine snipes surface</h3>
+        <p>Priced below your own realm's current cheapest listing, net of the 5% AH cut.
+          Nothing else shows up.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Not another sniper</h2>
+      <p>Existing tools compare one listing to another listing. That's not the price that matters.</p>
+    </div>
+    <div class="compare">
+      <div class="them">
+        <div class="label">TSM / Auctionator</div>
+        <p>Flag an item as cheap because it's priced below other listings of the same
+          item — wherever those happen to be. That comparison can be fiction: cheap
+          next to what, exactly?</p>
+      </div>
+      <div class="us">
+        <div class="label">Realm Arbitrage</div>
+        <p>Flags an item only when it's priced below what you'd actually get selling it
+          on your own realm, right now. The number you're compared against is real,
+          because it's the same number you'd charge.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="closing">
+    <h2>Every account gets real data.</h2>
+    <p>Not a demo, not fake numbers behind a paywall. The free tier is capped, not faked —
+      no credit card to start.</p>
+    <a class="cta primary" href="/register">Create free account</a>
+  </section>
+</main>
+
+<footer>
+  Issues with the site? Email
+  <a href="mailto:rasmus2001@gmail.com">rasmus2001@gmail.com</a> or find
+  <b>rasmus5533</b> on Discord.
+</footer>
+
+<script>
+function applyThemeButtonState() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  const btn = document.getElementById("theme-toggle");
+  btn.textContent = dark ? "☀" : "☽";
+  const label = dark ? "Switch to light mode" : "Switch to dark mode";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  applyThemeButtonState();
+});
+applyThemeButtonState();
+
+// A logged-in visitor landing on the marketing page (e.g. an old
+// bookmark, or clicking the brand mark from elsewhere) almost always
+// wants the actual tool, not the pitch -- send them straight to /snipes.
+// Silent/best-effort: a failed check just leaves the marketing page as is.
+fetch("/api/me").then(r => { if (r.ok) window.location.href = "/snipes"; }).catch(() => {});
+</script>
+</body>
+</html>

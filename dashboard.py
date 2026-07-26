@@ -457,6 +457,21 @@ def api_config() -> dict:
 
 @app.get("/")
 def index() -> FileResponse:
+    """Public marketing landing page (changed 2026-07-26 -- the sniper tool
+    itself moved to /snipes, see that route below). Deliberately no auth
+    check, same reasoning as /pricing/log -- this is what a logged-out
+    visitor sees first."""
+    return FileResponse(ROOT / "static" / "landing.html")
+
+
+@app.get("/snipes")
+def snipes_page() -> FileResponse:
+    """The actual sniper dashboard -- moved here from `/` (2026-07-26) so
+    `/` could become a real marketing landing page instead of bouncing
+    straight into the tool. Auth itself is still enforced client-side by
+    dashboard.html's own init() (checks /api/me, redirects to /login), same
+    as before the move -- this route itself stays public so the static
+    file can be served at all."""
     return FileResponse(ROOT / "static" / "dashboard.html")
 
 
