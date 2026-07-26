@@ -1121,3 +1121,30 @@ verified no console error after the fix by reloading in an actual browser.
 Reworded the "how it works" step 2 heading: "We scan every other EU
 realm" -> "Scans every EU realm" (human iterated on the exact phrasing
 mid-request, landing here). `pytest -q`: 265 passing, no Python touched.
+
+## Hero copy rewritten to stop overclaiming "validated" (2026-07-26, same session)
+
+Human asked for the hero subheading to be redescribed: emphasize that the
+tool *calculates the price difference* (the literal "arbitrage" the
+product is named for), and be honest that not every flagged item is
+necessarily a good snipe -- the number could reflect a troll/camped
+listing from another player, not real value.
+
+This is a genuine accuracy fix, not just copy polish: the old wording
+("If it's flagged, it's already validated") oversold the product relative
+to a real, still-open, already-documented gap -- `PROGRESS.md`'s "Known
+gaps" section has tracked since earlier today that a genuinely live troll/
+decoy listing can become a market's reference price, with no
+classification layer to catch it (see the "decoy-listing crowd-out"
+finding). The hero was quietly claiming a guarantee the product doesn't
+actually make.
+
+New copy: "Realm Arbitrage calculates the real price difference, the
+arbitrage, between your own realm's current price and every other EU
+realm's listings for the same item. Not every gap is a genuine bargain:
+some listings are troll prices or camped jokes from other players, not
+real value. If it looks worth it, buy it there, move it home through the
+warband bank, sell it here." The `<meta name="description">` tag (same
+overclaiming phrase) was updated to match. Verified in an actual browser;
+no em-dashes introduced (still holding the earlier em-dash-free request).
+`pytest -q`: 265 passing, no Python touched.
