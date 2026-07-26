@@ -852,3 +852,36 @@ regression test (a slow stub proving a concurrent lightweight request still
 completes quickly) is still not built.
 
 `pytest -q` and `env -u DATABASE_URL pytest -q`: 266 passing, both envs.
+
+## Realm switch also skipped the "is this actually stale" check (2026-07-26, same session)
+
+Follow-up question from the human after the fix above landed: "if the user
+already has a relevant snapshot for the desired/locked realm, no reason to
+query again, right?" Checking `static/dashboard.html` confirmed this wasn't
+actually true: `$("sell").addEventListener("change", fetchBatch)` and the
+items-csv equivalent called `fetchBatch()` directly, which always issues a
+real `/api/snipes` call (it paints from `localStorage` first for instant
+feedback, but then unconditionally re-fetches regardless). Only the 60s
+auto-refresh timer and the initial page load went through `checkForUpdates()`
+— the cheap `/api/status` check that skips the expensive query when
+`last_modified` hasn't changed since the cached copy. So switching back to a
+realm already viewed this session, with no new Blizzard data since, still
+re-ran the full DuckDB `find_snipes()` query every time.
+
+Fixed by adding `onCandidatePoolChange()` (paints from cache, then calls
+`checkForUpdates()` instead of `fetchBatch()` directly) and wiring both the
+sell-realm and items-csv change listeners to it instead. `fetchBatch()`
+itself is unchanged — it's now only ever invoked by `checkForUpdates()`.
+
+**Verified in an actual browser** (this project's established technique:
+scratchpad copy of `dashboard.html`, `window.fetch` stubbed with two fake
+realms and controllable `last_modified` values, served via
+`python -m http.server`, driven via `claude-in-chrome`'s `javascript_tool`
+dispatching real `change` events on the `#sell` select — not just reading
+the diff): confirmed all three cases — first-time switch to a realm fetches
+(1 call), switching back to an already-cached *unchanged* realm makes zero
+new `/api/snipes` calls, and a realm whose stubbed `last_modified` was then
+advanced correctly triggered a fresh fetch and rendered the updated data.
+
+No Python changed (`static/dashboard.html` only) — `pytest -q` unaffected,
+266 passing.

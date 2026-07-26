@@ -7,7 +7,7 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live + realm-switch hang/timeout fixed).
+Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live + realm-switch hang/timeout fixed + realm switch now skips redundant re-fetch when cache is fresh).
 
 ## Status at a glance
 

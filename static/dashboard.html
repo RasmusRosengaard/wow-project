@@ -770,10 +770,11 @@ function renderFromCache(sell, items) {
 // The only real "give me fresh data" network round-trip -- fetches one
 // loose, generously-sized batch (see batchParams()/BATCH_TOP) for the
 // current sell realm + item-id restriction, then caches it to localStorage.
-// Triggered by a realm switch, an items-csv change, or checkForUpdates()
-// below when it detects genuinely new data -- never by a filter-rail
-// threshold changing (those call renderTable() directly instead, see the
-// listeners wired at the bottom).
+// Only ever called by checkForUpdates() below (a realm switch, an items-csv
+// change, the 60s timer, or initial page load all go through that first --
+// see its own comment) once it's decided a real fetch is actually needed --
+// never by a filter-rail threshold changing (those call renderTable()
+// directly instead, see the listeners wired at the bottom).
 async function fetchBatch() {
   const sell = $("sell").value;
   if (!sell) return;
@@ -887,8 +888,23 @@ $("auto").addEventListener("change", scheduleAuto);
 // candidate pool at the SQL/join level -- these are the only filter-rail
 // inputs that still trigger a real fetch. "change" (not "input") on the
 // items text field so it fires on blur/Enter, not every keystroke.
-$("sell").addEventListener("change", fetchBatch);
-$("items").addEventListener("change", fetchBatch);
+//
+// Goes through checkForUpdates() (paint-from-cache, then a cheap
+// /api/status check), not fetchBatch() directly -- switching back to a
+// realm/item-filter combo already cached and still fresh (same
+// last_modified) used to re-run the full expensive /api/snipes query
+// anyway, since fetchBatch() paints from cache but always re-fetches
+// regardless (fixed 2026-07-26 -- same "don't query if nothing's new"
+// idea the 60s timer and initial page load already used, just never
+// extended to a manual switch).
+async function onCandidatePoolChange() {
+  const sell = $("sell").value;
+  if (!sell) return;
+  renderFromCache(sell, $("items").value.trim());
+  await checkForUpdates();
+}
+$("sell").addEventListener("change", onCandidatePoolChange);
+$("items").addEventListener("change", onCandidatePoolChange);
 
 // Every other threshold in the rail is a pure re-filter of the already-
 // cached batch -- see applyFilters()/renderTable(). "input" fires live as
