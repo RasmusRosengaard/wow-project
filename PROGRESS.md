@@ -7,7 +7,7 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live + realm-switch hang/timeout fixed + realm switch now skips redundant re-fetch when cache is fresh).
+Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out confirmed live + realm-switch hang/timeout fixed + realm switch now skips redundant re-fetch when cache is fresh + bonus/ilvl-aware matching dropped from live pricing + superuser tier cap raised to 10000).
 
 ## Status at a glance
 
@@ -27,6 +27,10 @@ Last updated: 2026-07-26 (rebrand to Realm Arbitrage + decoy-listing crowd-out c
 - Sell price is the sell realm's own **current cheapest live listing**
   (not an inferred sold-price percentile — see `CLAUDE.md`'s "What this
   project is" for why that changed 2026-07-25).
+- Matching is now purely `(item_id, pet_species_id, pet_quality_id)` —
+  bonus/ilvl differences no longer gate a match at all (changed 2026-07-26,
+  see `CLAUDE.md`'s "What this project is" matching-model note); the
+  buy-side listing's actual variant is still shown per row for display.
 - Client-side filter rail (discount%, gold range, sell-now, max-per-item,
   unique-transmog, 8-way item-class, 6-way rarity), instant table
   sorting/grouping, an `localStorage` batch cache so a page reload paints
@@ -164,11 +168,13 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   13051). No sale-classification layer exists to catch "this current
   listing looks like a decoy"; not attempted. **Confirmed 2026-07-26 to
   have a second-order effect**: on Draenor, decoy-inflated discount%
-  numbers now saturate the dashboard's entire `BATCH_TOP=5000` cap (5000th
-  row still at 99.1% discount), crowding out real, lower-but-still-good
-  snipes in other categories entirely (Housing's best real discount, 88.1%,
-  never surfaces at all) — see "Next up" #1 for the full trace and open
-  directions.
+  numbers saturated the dashboard's entire batch cap (at the then-current
+  `BATCH_TOP=5000`, the 5000th row was still at 99.1% discount), crowding
+  out real, lower-but-still-good snipes in other categories entirely
+  (Housing's best real discount, 88.1%, never surfaced at all) — see "Next
+  up" #1 for the full trace and open directions. `BATCH_TOP`/the superuser
+  tier cap were both raised to 10000 the same day (unrelated request), not
+  independently re-measured against this specific saturation issue.
 - Sale-inference classification (`inferred_sale` especially) has never been
   checked against real seller behavior — Phase 0's gate was skipped. No
   longer on the pricing path, and no longer runs automatically at all
@@ -177,9 +183,22 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 - No sell/scan realm config file — `--exclude`/`--items` CLI flags are the
   manual stand-in.
 - The AH `modifiers` type-28 field ("item level") isn't Blizzard-documented;
-  `market_key()` conditionally pools implausible values (see `CLAUDE.md`'s
-  "Inference logic"), but the underlying meaning is still community-sourced,
-  not official. Same caveat applies to modifier types 9/42/44.
+  `market_key()` (see `CLAUDE.md`'s "Inference logic") conditionally pools
+  implausible values for `diff_snapshots.py`'s relist detection and
+  `analyze.py`'s manual debugging tool — the only remaining live callers
+  since 2026-07-26 (live pricing/matching in `snipe_check.py` dropped
+  bonus/ilvl-aware matching entirely, see "Status at a glance"). The
+  underlying meaning is still community-sourced, not official. Same caveat
+  applies to modifier types 9/42/44.
+- **Bonus/ilvl differences no longer gate a snipe match at all** (human
+  product decision, 2026-07-26, see `HISTORY.md`) — every variant of an
+  item_id is treated as one market, priced at the sell realm's overall
+  cheapest listing. This is a deliberate tradeoff, not a bug: a genuinely
+  different-value variant (e.g. a much higher ilvl roll) can now be priced
+  against a cheaper lower-tier listing's reference price, which the
+  previous market_key()-based design specifically existed to prevent. The
+  buy-side listing's actual bonus_key/ilvl is still shown per row so a user
+  can judge for themselves before buying.
 - **No test coverage for "does an async route block the event loop"** — see
   `CLAUDE.md`'s "Real production outage" note. This exact gap let the same
   bug recur at a second call site 2026-07-26 (a realm switch hanging/timing

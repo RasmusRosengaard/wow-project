@@ -392,11 +392,13 @@ let currentSellSlug = null;
 
 // The ceiling this client ever asks for -- the server (dashboard.py's
 // SNIPE_TIER_CAPS) is what actually enforces the real per-account limit
-// (250 free / 2000 subscribed / 5000 superuser, added 2026-07-25), clamping
-// down regardless of what's requested here. Always requesting the top of
-// that range means the frontend never needs to know its own tier ahead of
-// time -- whatever comes back is already the correct, capped amount.
-const BATCH_TOP = 5000;
+// (250 free / 2000 subscribed / 10000 superuser, superuser raised from 5000
+// 2026-07-26), clamping down regardless of what's requested here. Always
+// requesting the top of that range means the frontend never needs to know
+// its own tier ahead of time -- whatever comes back is already the correct,
+// capped amount. Must stay >= the highest tier cap, or that tier's own
+// requests get clamped by this instead of by the server.
+const BATCH_TOP = 10000;
 
 // localStorage cache of the last-fetched batch, keyed per (sell realm, item
 // restriction) so a page refresh (or revisit) can paint instantly instead of
@@ -492,19 +494,16 @@ function compareRows(a, b) {
 // Multiple listings can snipe the same item/variant (different buy realms,
 // or several auctions on one) -- group them so the ledger shows one line per
 // item, with the single best deal on top, instead of drowning duplicates.
-// Groups on market_key (added 2026-07-24), not the exact bonus_key/
-// variant_raw -- snipe_check.find_snipes() already matches/prices listings
-// by market_key, so two listings on different realms routinely share one
-// (and, provably, the same sell price) without ever sharing an
-// exact bonus_key (per-instance modifiers). Grouping by the exact string
-// was splitting an already-identically-priced market into separate table
-// rows instead of one expandable group -- caught live from a real user
-// screenshot showing 8 separate "Dawnforged Edge" rows across 8 realms, all
-// with byte-identical sell-side numbers. Falls back to variant_raw only if
-// market_key is ever missing (shouldn't happen -- always present on
-// names=true rows -- but keeps grouping from breaking outright if it is).
+// Groups on (item_id, pet_species_id, pet_quality_id), not variant_raw
+// (changed 2026-07-26, replacing the old market_key-based grouping --
+// matching itself stopped looking at bonus_key/ilvl at all, see
+// snipe_check.find_snipes()'s docstring, so grouping follows the same key).
+// Pet identity is still needed here even though bonus_key no longer
+// matters: every caged pet shares one item_id (82800), so item_id alone
+// would wrongly merge every pet species/quality into one group; it's null
+// for ordinary gear, a no-op there.
 function groupKey(row) {
-  return `${row.item_id}|${row.market_key ?? row.variant_raw ?? ""}`;
+  return `${row.item_id}|${row.pet_species_id ?? ""}|${row.pet_quality_id ?? ""}`;
 }
 
 function buildGroups(rows) {

@@ -11,6 +11,18 @@ of why the sold-price-percentile approach was replaced (three separate
 live production bugs from troll/camped listings corrupting the inferred
 price, despite successive patches).
 
+**Matching, changed again 2026-07-26 (human product decision)**: matching
+is now purely `(item_id, pet_species_id, pet_quality_id)` -- bonus/modifier
+variance (ilvl, sockets, crafted stat rolls, per-craft noise) no longer
+gates whether two listings are "the same item" for pricing purposes at all.
+See find_snipes()'s docstring for the full reasoning and the bug that
+prompted it; `market_key()`/its per-item noise-detection machinery
+(`fetch_snapshot.py`) still exist and are still real, but are no longer
+called from this module -- they remain in use by `diff_snapshots.py`'s
+relist detection and `analyze.py`'s manual debugging tool, both of which
+still need finer-grained identity than "same item_id" for their own
+purposes.
+
 NOTE: since anything listed on the AH is by definition unsoulbound (BoP items
 can't be listed), a flagged snipe can always ride the warband bank to your
 sell realm as long as you don't equip/use it before moving it -- the only
@@ -32,19 +44,9 @@ import argparse
 from pathlib import Path
 
 import duckdb
-import pyarrow as pa
 
 import analyze
 from appearance import AppearanceCache
-from fetch_snapshot import (
-    BONUS_NOISE_BASE_TAG_FREQUENCY,
-    BONUS_NOISE_COMPANION_THRESHOLD,
-    BONUS_NOISE_LOW_FREQUENCY,
-    BONUS_NOISE_MAX_EXCLUSIVE_GROUP,
-    BONUS_NOISE_MIN_EXCLUSIVE_COVERAGE,
-    BONUS_NOISE_MIN_SAMPLES,
-)
-from fetch_snapshot import market_key as _market_key
 from item_names import NameCache
 
 ROOT = Path(__file__).resolve().parent
@@ -95,248 +97,6 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
 # of the visible paperdoll model, so "unique transmog" never meaningfully
 # applied to them -- excluded from max_appearance_sources results below.
 NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
-
-# Bounds the base_level half of a single _populate_market_keys() call's
-# worst-case latency -- see its docstring. At max_workers=24 (comfortably
-# under Blizzard's 100 req/s ceiling), 500 items resolves in single-digit
-# seconds even fully cold, versus the 30-175s+ an unbounded, largely-
-# uncached region-wide gather produced live 2026-07-25.
-MAX_BASE_LEVEL_LOOKUPS_PER_CALL = 500
-
-
-def _detect_noise_bonus_ids(con: duckdb.DuckDBPyConnection) -> dict[int, set[int]]:
-    """Finds per-item `b:` bonus-list ids that are per-craft noise (a
-    different "instance" id on every listing of what's really one liquid
-    market, e.g. item 36507/Iron-Molded Fist) rather than a real distinguishing
-    variant (e.g. item 109168's two-part gem bonus, or item 244752's
-    five-value item-level-upgrade track). Unlike a modifier type, a raw
-    bonus id isn't a typed field -- the same id can mean something
-    completely different on a different item -- so this can't be a fixed
-    global ignore-list; it's computed fresh per item from the data itself.
-
-    Determined via a structural test, not a frequency threshold alone --
-    **a frequency-only cutoff was tried first, shipped, and live-confirmed
-    insufficient the same day (2026-07-24)**: item 36507's own noise
-    reached 14% frequency, overlapping with other items' real dimensions
-    also observed as low as 14-17%, so no single band separates the two.
-    The real distinguishing signal is whether a value has a *partner*: a
-    real dimension either reliably co-occurs with another specific value in
-    the same bonus_key (a companion pair), or belongs to a small set of
-    mutually-exclusive values that jointly cover most of the item's
-    listings (a partition). Per-craft noise has neither shape: each value
-    stands alone. See fetch_snapshot.py's BONUS_NOISE_* constants for the
-    full methodology and the real-data validation (10 real items, both
-    noise-heavy and multi-dimension-real, checked live).
-
-    Materialized as real temp tables (occ_id assigned once), not CTEs
-    referenced twice -- a CTE referencing row_number() OVER () and read
-    from two places in the same query was live-confirmed to NOT give
-    stable, matching row ids across both reads (DuckDB re-evaluated it
-    independently each time), silently corrupting the co-occurrence
-    computation below. A materialized table has one fixed occ_id per row,
-    read consistently everywhere.
-
-    The `sales` UNION below is typically empty in production since
-    2026-07-25 (diff_snapshots.py no longer runs automatically -- see
-    collect_all.py's module docstring); harmless, just contributes zero
-    rows. `snaps` (latest) and `listings` (region-wide current) remain the
-    real sample source."""
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE all_bonus AS
-        SELECT item_id, bonus_key FROM sales
-        UNION ALL
-        SELECT item_id, bonus_key FROM snaps
-        WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps) AND buyout IS NOT NULL
-        UNION ALL
-        SELECT item_id, bonus_key FROM listings
-    """)
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE bonus_occurrences AS
-        SELECT row_number() OVER () AS occ_id, item_id, bonus_key
-        FROM all_bonus WHERE bonus_key LIKE 'b:%'
-    """)
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE noise_bonus_values AS
-        SELECT bo.occ_id, bo.item_id, CAST(t.v AS BIGINT) AS bonus_id
-        FROM bonus_occurrences bo,
-             UNNEST(string_split(regexp_extract(bo.bonus_key, '^b:([0-9,]+)', 1), ',')) AS t(v)
-        WHERE length(t.v) > 0
-    """)
-    noise_rows = con.execute(f"""
-        WITH item_totals AS (
-            SELECT item_id, count(*) AS n FROM bonus_occurrences GROUP BY item_id
-        ),
-        value_freq AS (
-            SELECT bv.item_id, bv.bonus_id, count(*) AS doc_count
-            FROM noise_bonus_values bv GROUP BY bv.item_id, bv.bonus_id
-        ),
-        classified AS (
-            SELECT vf.item_id, vf.bonus_id, vf.doc_count, it.n, vf.doc_count * 1.0 / it.n AS freq
-            FROM value_freq vf JOIN item_totals it ON vf.item_id = it.item_id
-            WHERE it.n >= {BONUS_NOISE_MIN_SAMPLES}
-        ),
-        -- The "ambiguous band": not rare enough to be automatic noise, not
-        -- frequent enough to be an automatic real base tag. Every value
-        -- here needs a partner (below) to be trusted as real.
-        ambiguous AS (
-            SELECT * FROM classified
-            WHERE freq >= {BONUS_NOISE_LOW_FREQUENCY} AND freq < {BONUS_NOISE_BASE_TAG_FREQUENCY}
-        ),
-        -- Pairwise co-occurrence between ambiguous-band values only (a
-        -- true base tag is deliberately excluded from ever being "the
-        -- other side" of a pairing check -- see BASE_TAG_FREQ's comment).
-        cooc AS (
-            SELECT bv1.item_id, bv1.bonus_id AS id_a, bv2.bonus_id AS id_b, count(*) AS co_count
-            FROM noise_bonus_values bv1
-            JOIN noise_bonus_values bv2
-              ON bv1.occ_id = bv2.occ_id AND bv1.bonus_id != bv2.bonus_id
-            JOIN ambiguous a1 ON bv1.item_id = a1.item_id AND bv1.bonus_id = a1.bonus_id
-            JOIN ambiguous a2 ON bv2.item_id = a2.item_id AND bv2.bonus_id = a2.bonus_id
-            GROUP BY bv1.item_id, bv1.bonus_id, bv2.bonus_id
-        ),
-        -- (a) companion: value A reliably co-occurs together WITH some
-        -- other ambiguous value B in the same bonus_key (e.g. a two-part
-        -- gem/socket bonus).
-        companions AS (
-            SELECT DISTINCT c.item_id, c.id_a AS bonus_id
-            FROM cooc c JOIN ambiguous ca ON c.item_id = ca.item_id AND c.id_a = ca.bonus_id
-            WHERE c.co_count * 1.0 / ca.doc_count >= {BONUS_NOISE_COMPANION_THRESHOLD}
-        ),
-        -- (b) partition: value A's "exclusive partners" are the other
-        -- ambiguous values that NEVER co-occur with it. If that set is
-        -- small and A plus its exclusive partners jointly explain most of
-        -- the item's listings, this is a real small enum/tier system
-        -- (e.g. a 2-way quality flag, or a 5-way item-level-upgrade
-        -- track) -- not a big per-craft pool that also happens to never
-        -- repeat within one listing.
-        exclusive_pairs AS (
-            SELECT a1.item_id, a1.bonus_id AS id_a, a2.bonus_id AS id_b, a2.doc_count
-            FROM ambiguous a1
-            JOIN ambiguous a2 ON a1.item_id = a2.item_id AND a1.bonus_id != a2.bonus_id
-            LEFT JOIN cooc c
-              ON c.item_id = a1.item_id AND c.id_a = a1.bonus_id AND c.id_b = a2.bonus_id
-            WHERE c.co_count IS NULL
-        ),
-        exclusive_groups AS (
-            SELECT ep.item_id, ep.id_a AS bonus_id, count(*) AS group_size,
-                   (a1.doc_count + sum(ep.doc_count)) * 1.0 / a1.n AS coverage
-            FROM exclusive_pairs ep
-            JOIN ambiguous a1 ON ep.item_id = a1.item_id AND ep.id_a = a1.bonus_id
-            GROUP BY ep.item_id, ep.id_a, a1.doc_count, a1.n
-        ),
-        partitions AS (
-            SELECT item_id, bonus_id FROM exclusive_groups
-            WHERE group_size <= {BONUS_NOISE_MAX_EXCLUSIVE_GROUP}
-              AND coverage >= {BONUS_NOISE_MIN_EXCLUSIVE_COVERAGE}
-        )
-        SELECT a.item_id, a.bonus_id FROM ambiguous a
-        LEFT JOIN companions co ON a.item_id = co.item_id AND a.bonus_id = co.bonus_id
-        LEFT JOIN partitions p ON a.item_id = p.item_id AND a.bonus_id = p.bonus_id
-        WHERE co.bonus_id IS NULL AND p.bonus_id IS NULL
-        UNION
-        SELECT item_id, bonus_id FROM classified WHERE freq < {BONUS_NOISE_LOW_FREQUENCY}
-    """).fetchall()
-    noise_by_item: dict[int, set[int]] = {}
-    for item_id, bonus_id in noise_rows:
-        noise_by_item.setdefault(item_id, set()).add(bonus_id)
-    return noise_by_item
-
-
-def _resolve_base_levels(con: duckdb.DuckDBPyConnection) -> dict[int, int | None]:
-    """Resolves each candidate item's catalog base level, needed by
-    market_key()'s type-28 ilvl-plausibility pooling -- a Blizzard API call
-    DuckDB can't make mid-query. `NameCache.ensure_many()` resolves these
-    concurrently, capped at MAX_BASE_LEVEL_LOOKUPS_PER_CALL -- live-
-    confirmed 2026-07-25 the type-28 prefilter's candidate set can be
-    15,000+ items on a single sell realm (type 28 is ubiquitous on modern
-    ilvl-scaling gear, not rare), so an unbounded gather made a single
-    request take 30-175s+ even off the event loop (see CLAUDE.md's
-    "Real production outage" section for the full incident). sell_ids
-    (sales+snaps, this realm) is prioritized over listings_ids (region-
-    wide) within the budget since it drives this realm's own pricing.
-    Items beyond the cap simply get no base_level this call --
-    market_key() treats an unknown base_level as "don't strip, never
-    assume junk," so this degrades gracefully, not incorrectly.
-    collect_all.py additionally pre-warms this cache in the background so
-    convergence doesn't depend on user traffic.
-
-    The `sales` half of sell_ids is typically empty in production since
-    2026-07-25 (diff_snapshots.py no longer runs automatically); `snaps`
-    (latest) still supplies real candidates for this realm."""
-    sell_ids = [item_id for (item_id,) in con.execute(r"""
-        SELECT DISTINCT item_id FROM sales WHERE bonus_key LIKE '%28=%'
-        UNION
-        SELECT DISTINCT item_id FROM snaps
-        WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
-          AND buyout IS NOT NULL AND bonus_key LIKE '%28=%'
-    """).fetchall()]
-    listings_ids = [item_id for (item_id,) in con.execute(
-        "SELECT DISTINCT item_id FROM listings WHERE bonus_key LIKE '%28=%'"
-    ).fetchall()]
-    type28_ids = list(dict.fromkeys(sell_ids + listings_ids))  # dedup, sell_ids first
-    names = NameCache()
-    names.ensure_many(type28_ids, max_workers=24, limit=MAX_BASE_LEVEL_LOOKUPS_PER_CALL)
-    return {item_id: names.base_level(item_id) for item_id in type28_ids}
-
-
-def _load_market_key_table(con: duckdb.DuckDBPyConnection,
-                           noise_by_item: dict[int, set[int]],
-                           base_levels: dict[int, int | None]) -> None:
-    """Computes market_key() in Python for every distinct (item_id,
-    bonus_key) pair the query will touch, then bulk-loads the results into
-    a `bonus_key_market_keys` temp table the main query JOINs against on
-    (item_id, bonus_key) -- replacing inline SQL macro calls
-    (`market_key(bonus_key, base_level)`) entirely for this query, since a
-    per-item variable-length "strip these specific ids" set (noise_by_item)
-    doesn't fit DuckDB's macro model as cleanly as a single scalar
-    base_level does.
-
-    **Why a bulk Arrow load, not executemany()**: live-timed 2026-07-25 --
-    ~700k distinct (item_id, bonus_key) pairs is a realistic real-world
-    count (Draenor). `executemany()` inserting them row-by-row did not
-    return within 90s. Registering a pyarrow Table and `CREATE TABLE AS
-    SELECT` from it ingests natively; the same 700k rows loaded in 0.23s."""
-    pairs = con.execute("""
-        SELECT DISTINCT item_id, bonus_key FROM sales
-        UNION
-        SELECT DISTINCT item_id, bonus_key FROM snaps
-        WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps) AND buyout IS NOT NULL
-        UNION
-        SELECT DISTINCT item_id, bonus_key FROM listings
-    """).fetchall()
-    item_ids = [p[0] for p in pairs]
-    bonus_keys = [p[1] for p in pairs]
-    market_keys = [
-        _market_key(bk, base_levels.get(iid),
-                    frozenset(noise_by_item[iid]) if iid in noise_by_item else None)
-        for iid, bk in pairs
-    ]
-
-    tbl = pa.table({"bkm_item_id": item_ids, "bkm_bonus_key": bonus_keys, "bkm_market_key": market_keys})
-    con.register("_bkm_source", tbl)
-    con.execute("CREATE OR REPLACE TEMP TABLE bonus_key_market_keys AS SELECT * FROM _bkm_source")
-    con.unregister("_bkm_source")
-
-
-def _populate_market_keys(con: duckdb.DuckDBPyConnection) -> None:
-    """Populates the `bonus_key_market_keys` temp table find_snipes() joins
-    against for every distinct (item_id, bonus_key) pair. Three steps, each
-    independently documented on its own helper: noise-bonus-id detection
-    (per-craft `b:` bonus ids that fragment one market into many, see
-    _detect_noise_bonus_ids), base_level resolution (needed for type-28
-    ilvl-plausibility pooling, see _resolve_base_levels), then computing
-    and bulk-loading the final market_key per pair (see
-    _load_market_key_table). Renamed from `_populate_base_levels`
-    (2026-07-25) once noise-bonus-id detection joined base_level as a
-    second responsibility -- split back into named steps here for
-    readability (2026-07-25, same day, no behavior change).
-
-    Noise detection + base_level resolution + market_key computation + bulk
-    load together: ~1.3s total on a realistic (~700k pair) realm, live-
-    verified."""
-    noise_by_item = _detect_noise_bonus_ids(con)
-    base_levels = _resolve_base_levels(con)
-    _load_market_key_table(con, noise_by_item, base_levels)
 
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
@@ -389,20 +149,44 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     tradeoff, not an oversight.
 
     Listings come from every scanned realm except the sell realm itself.
-    Match key is (item_id, market_key(bonus_key), pet_species_id,
-    pet_quality_id) -- market_key() (see fetch_snapshot.py) is a coarser
-    version of bonus_key that pools near-identical crafted-item rolls and
-    per-craft bonus-list noise into one market instead of matching the
-    exact roll, since Blizzard's undocumented per-craft modifiers otherwise
-    fragment what's really one liquid market into dozens of near-unique
-    buckets. The raw bonus_key is still carried through on the buy-side row
-    for display -- only the join/group keys use market_key. bonus_key/
-    market_key are both empty for every caged pet (82800), so without the
-    pet identity fields every pet species/quality would collapse into one
+    **Match key, changed 2026-07-26 (human product decision): purely
+    `(item_id, pet_species_id, pet_quality_id)`** -- bonus_key/modifier
+    variance (ilvl, sockets, crafted stat rolls, per-craft "instance" noise)
+    no longer affects whether two listings are treated as the same item for
+    pricing at all. `sell_now.cheapest_now` is the sell realm's overall
+    cheapest current listing for that item_id, full stop, across every
+    bonus_key it has; a buy-side listing matches it regardless of its own
+    bonus_key. The raw bonus_key is still carried through on the buy-side
+    row for display (dashboard.py's `_variant_label()` still shows "ilvl
+    NNN" etc. per row) -- only the matching/grouping stopped looking at it.
+
+    This replaces the previous `market_key(bonus_key)`-based matching (see
+    `fetch_snapshot.py`'s `market_key()` and its per-item noise-detection
+    machinery, still real code, just no longer called from here) after two
+    things came together: (1) a human product decision that bonus/ilvl
+    differences shouldn't gate a snipe match at all -- if it's the same
+    item_id, it's the same tradeable thing, full pooling, lowest price
+    wins; and (2) a confirmed live bug in the noise-detection heuristic
+    that motivated re-examining the whole approach: it only ran per item
+    above a 20-sample floor (`BONUS_NOISE_MIN_SAMPLES`), and since the
+    2026-07-25 retention change stopped accumulating multi-day history,
+    traced live on Draenor to ~2,011 of 12,219 items with bonus data
+    sitting under that floor (~1,223 of them showing the exact per-craft
+    noise shape the heuristic was built to catch, e.g. item 36322 at 19
+    samples) -- meaning fragmentation kept recurring silently for exactly
+    the lower-liquidity items this product cares most about. See
+    `HISTORY.md`'s "Bonus/ilvl matching removed" entry for the full trace
+    and discussion.
+
+    bonus_key is empty for every caged pet (82800), so without the pet
+    identity fields every pet species/quality would collapse into one
     bucket and get compared against whichever pet happens to be listed
-    cheapest. The pet fields are NULL for non-pet items, so this is a no-op
-    for ordinary gear -- joined with IS NOT DISTINCT FROM since NULL = NULL
-    is false in SQL and a plain USING join would drop every non-pet match.
+    cheapest -- that's still wrong (a poor-quality pet is not "the same
+    item" as a legendary one), so pet identity remains part of the match
+    key even though bonus_key no longer is. The pet fields are NULL for
+    non-pet items, so this is a no-op for ordinary gear -- joined with IS
+    NOT DISTINCT FROM since NULL = NULL is false in SQL and a plain USING
+    join would drop every non-pet match.
 
     max_appearance_sources (Phase 3, added 2026-07-23) filters to items whose
     transmog appearance is shared by at most N distinct item ids region-wide
@@ -442,14 +226,11 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     excluded entirely regardless of whether this filter is set -- with no
     percentile fallback left, there's simply no price to compare against.
 
-    Each returned row also carries `market_key` (added 2026-07-24,
-    previously computed for the join/matching but excluded from the output).
-    dashboard.html groups rows by this instead of the exact `bonus_key` --
-    real listings across different realms often share one market_key (same
-    price, same tradeable item) but never share an exact bonus_key (per-
-    instance modifiers), so grouping by the exact string was splitting one
-    genuinely-collapsible market into several separate table rows even
-    though the price shown for each was already identical."""
+    Each returned row carries the raw `bonus_key` (display only, see
+    above) plus `pet_species_id`/`pet_quality_id` -- dashboard.html groups
+    rows by `(item_id, pet_species_id, pet_quality_id)` now (2026-07-26,
+    replacing the old market_key-based grouping), since that's exactly
+    what determines whether two rows are "the same match" for pricing."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -471,32 +252,27 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         SELECT * FROM read_parquet('{(DATA / "listings" / "*.parquet").as_posix()}')
         WHERE cr_id != {int(sell_cr)} AND buyout IS NOT NULL
     """)
-    _populate_market_keys(con)
     res = con.execute(f"""
         WITH sell_now AS (
-            SELECT s.item_id, bkm.bkm_market_key AS market_key,
-                   s.pet_species_id, s.pet_quality_id,
-                   min(s.buyout * 1.0 / s.quantity) AS cheapest_now
-            FROM snaps s
-            LEFT JOIN bonus_key_market_keys bkm
-              ON s.item_id = bkm.bkm_item_id AND s.bonus_key = bkm.bkm_bonus_key
-            WHERE s.snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
-              AND s.buyout IS NOT NULL
-            GROUP BY s.item_id, bkm.bkm_market_key, s.pet_species_id, s.pet_quality_id
+            -- Overall cheapest current listing per item_id (+ pet identity),
+            -- across every bonus_key it has -- bonus/ilvl variance no longer
+            -- splits this into sub-buckets (see docstring above).
+            SELECT item_id, pet_species_id, pet_quality_id,
+                   min(buyout * 1.0 / quantity) AS cheapest_now
+            FROM snaps
+            WHERE snapshot_ts = (SELECT max(snapshot_ts) FROM snaps)
+              AND buyout IS NOT NULL
+            GROUP BY item_id, pet_species_id, pet_quality_id
         ),
         buy AS (
-            SELECT l.cr_id, l.item_id, l.bonus_key,
-                   bkm.bkm_market_key AS market_key,
-                   l.pet_species_id, l.pet_quality_id, l.auction_id,
-                   l.buyout * 1.0 / l.quantity AS buy_unit_price
-            FROM listings l
-            LEFT JOIN bonus_key_market_keys bkm
-              ON l.item_id = bkm.bkm_item_id AND l.bonus_key = bkm.bkm_bonus_key
+            SELECT cr_id, item_id, bonus_key, pet_species_id, pet_quality_id, auction_id,
+                   buyout * 1.0 / quantity AS buy_unit_price
+            FROM listings
             WHERE 1=1 {item_filter}
         ),
         matches AS (
             SELECT b.cr_id                                            AS buy_realm,
-                   b.item_id, b.bonus_key, b.market_key, b.pet_species_id, b.pet_quality_id, b.auction_id,
+                   b.item_id, b.bonus_key, b.pet_species_id, b.pet_quality_id, b.auction_id,
                    round(b.buy_unit_price / 10000, 2)                  AS buy_g,
                    round(n.cheapest_now / 10000, 2)                    AS sell_p_g,
                    round(b.buy_unit_price)::BIGINT                     AS buy_copper,
@@ -506,7 +282,6 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             FROM buy b
             JOIN sell_now n
               ON b.item_id = n.item_id
-             AND b.market_key IS NOT DISTINCT FROM n.market_key
              AND b.pet_species_id IS NOT DISTINCT FROM n.pet_species_id
              AND b.pet_quality_id IS NOT DISTINCT FROM n.pet_quality_id
             WHERE (n.cheapest_now * 0.95 - b.buy_unit_price) / (n.cheapest_now * 0.95)
@@ -515,12 +290,11 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         ),
         capped AS (
             SELECT *, ROW_NUMBER() OVER (
-                -- market_key, not the raw bonus_key -- caps per pooled
-                -- market (see market_key() above), so e.g. max_per_item=1
-                -- on a crafted item keeps its single best-discount listing
-                -- across all its near-identical crafted rolls, not one per
-                -- exact roll.
-                PARTITION BY item_id, market_key, pet_species_id, pet_quality_id
+                -- item_id (+ pet identity), not bonus_key -- caps per real
+                -- item now, so e.g. max_per_item=1 keeps a single best-
+                -- discount listing across every bonus/ilvl variant of that
+                -- item, not one per exact variant.
+                PARTITION BY item_id, pet_species_id, pet_quality_id
                 ORDER BY discount_pct DESC
             ) AS item_rank
             FROM matches

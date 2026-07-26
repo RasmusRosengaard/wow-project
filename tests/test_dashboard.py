@@ -197,13 +197,18 @@ def test_api_snipes_returns_rows_and_caveat(data_dir, monkeypatch):
     assert body["sell_realm_slug"] == f"realm-{SELL_CR}"
 
 
-def test_api_snipes_rows_carry_market_key_without_names(data_dir, monkeypatch):
-    """market_key must ride along even without names=true -- it's what
-    dashboard.html groups rows by, unrelated to the names/icon/quality
-    resolution names=true gates."""
+def test_api_snipes_rows_carry_pet_identity_without_names(data_dir, monkeypatch):
+    """pet_species_id/pet_quality_id (replacing market_key, 2026-07-26 --
+    see snipe_check.find_snipes()'s docstring) must ride along even without
+    names=true -- it's what dashboard.html groups rows by now, unrelated to
+    the names/icon/quality resolution names=true gates. Both None here
+    (item 101, non-pet) -- test_api_snipes_pet_variant_unaffected_by_ilvl_parsing
+    covers the pet case."""
     run_diff(monkeypatch)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
-    assert "market_key" in r.json()["rows"][0]
+    row = r.json()["rows"][0]
+    assert "pet_species_id" in row and row["pet_species_id"] is None
+    assert "pet_quality_id" in row and row["pet_quality_id"] is None
 
 
 def _user(is_superuser=False, subscription_status=None):
@@ -219,16 +224,16 @@ def test_snipe_cap_by_tier():
     assert dashboard._snipe_cap(_user()) == 250
     assert dashboard._snipe_cap(_user(subscription_status="past_due")) == 250
     assert dashboard._snipe_cap(_user(subscription_status="active")) == 2000
-    assert dashboard._snipe_cap(_user(is_superuser=True)) == 5000
+    assert dashboard._snipe_cap(_user(is_superuser=True)) == 10000
     # Superuser wins even with no/expired subscription -- matches
     # auth.has_active_subscription's existing "is_superuser OR active" logic.
-    assert dashboard._snipe_cap(_user(is_superuser=True, subscription_status=None)) == 5000
+    assert dashboard._snipe_cap(_user(is_superuser=True, subscription_status=None)) == 10000
 
 
 @pytest.mark.parametrize("is_superuser,subscription_status,expected_cap", [
     (False, None, 250),
     (False, "active", 2000),
-    (True, None, 5000),
+    (True, None, 10000),
 ])
 def test_api_snipes_clamps_top_to_tier_cap(data_dir, monkeypatch, is_superuser, subscription_status, expected_cap):
     """The client can request any `top` it likes (dashboard.html always asks
@@ -418,6 +423,11 @@ def test_api_snipes_pet_variant_unaffected_by_ilvl_parsing(tmp_path, monkeypatch
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.1})
     row = r.json()["rows"][0]
     assert row["variant"] == "pet:2/1"
+    # Backs dashboard.html's groupKey() (2026-07-26) -- without these, every
+    # pet species/quality would wrongly collapse into one display group
+    # since they all share item_id 82800.
+    assert row["pet_species_id"] == 2
+    assert row["pet_quality_id"] == 1
 
 
 def test_api_snipes_caveat_present_even_when_empty(data_dir, monkeypatch):

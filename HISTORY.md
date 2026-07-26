@@ -885,3 +885,98 @@ advanced correctly triggered a fresh fetch and rendered the updated data.
 
 No Python changed (`static/dashboard.html` only) — `pytest -q` unaffected,
 266 passing.
+
+## Bonus/ilvl matching removed from live pricing (2026-07-26, same session)
+
+Human report: "I think I encounter some sell/buy pricing bugs because of
+bonuses? Like an item should always show cheapest listings on any EU realm,
+if it's a snipe same as selling price = sell realm's lowest listings
+completely ignoring bonuses, as it is the same item."
+
+**Investigated live before touching anything** (this project's standing
+convention for matching-logic changes). Hypothesis: `snipe_check.
+_detect_noise_bonus_ids()`'s structural per-craft-noise test only ran per
+item above a 20-sample floor (`BONUS_NOISE_MIN_SAMPLES`), fed by `sales`
+(historical inferred sales) + `snaps` (latest snapshot only) + `listings`
+(region-wide current). Since 2026-07-25's retention change made `sales`
+permanently empty and `snaps` only ever the single latest snapshot, this
+sample pool shrank a lot from whatever it was calibrated against. Queried
+real Draenor data to check: of 12,219 items with any `b:` bonus data,
+**2,011 sat under the 20-sample floor**, and **1,223 of those showed the
+exact per-craft-noise shape** the heuristic was built to catch (e.g. item
+36322: 19 samples, 18 distinct bonus_keys, a stable companion id 6654
+paired with a different "instance" id 1678-1716 almost every time — the
+identical shape as the originally-documented item 36507 case, just never
+detected because this item's sample count landed one below the floor). At
+least 14 other items showed the same numeric-range pattern. Confirmed: the
+noise-detection heuristic was silently failing for a meaningful share of
+real items, specifically lower-liquidity ones -- exactly what this product
+cares about.
+
+Presented three fix directions (re-tune the sample floor; detect the
+recurring noise shape directly regardless of per-item sample count; just
+document and defer). **Human pushed further**: bonus differences shouldn't
+gate a match at all, full stop -- "it doesn't matter if an item has 1 or 2
+or different, it's the same item." Pushed back once with the concrete
+counter-case already in this project's own history (item 164353,
+Plundered Scalebane Claymore: real listings existed at both an implausible
+tier (28=186/189/289) and a genuinely different, more valuable tier
+(28=645/670) -- ignoring bonuses entirely would compare a cheap base
+listing against the sell realm's cheapest when that happens to be the
+upgraded version, or vice versa, silently proposing a bad trade). Human's
+final answer: **merge them together in one listing regardless, lowest
+price is the snipe, ilvl still displayed per row** -- an explicit,
+informed decision to accept that tradeoff, not an oversight.
+
+**Implementation** (`snipe_check.py`, `dashboard.py`, `static/dashboard.html`):
+- `find_snipes()`'s match key changed from `(item_id, market_key(bonus_key),
+  pet_species_id, pet_quality_id)` to plain `(item_id, pet_species_id,
+  pet_quality_id)`. `sell_now`'s `cheapest_now` is now the sell realm's
+  overall cheapest current listing for an item_id, across every bonus_key
+  it has. `max_per_item`'s `ROW_NUMBER()` partition changed to match.
+- Deleted four now-unreachable helpers from `snipe_check.py`:
+  `_detect_noise_bonus_ids()`, `_resolve_base_levels()`,
+  `_load_market_key_table()`, `_populate_market_keys()`, plus
+  `MAX_BASE_LEVEL_LOOKUPS_PER_CALL` and the now-dead `BONUS_NOISE_*`
+  constants + their large calibration comment in `fetch_snapshot.py` (sole
+  consumer gone; full methodology preserved above in this file's own
+  "Bonus-list noise detection" entry if ever needed again).
+  `fetch_snapshot.market_key()` itself is untouched and still real --
+  `diff_snapshots.relist_key()` (needs finer-than-item_id identity to
+  detect an actual relist) and `analyze.py`'s manual debugging macro are
+  its only remaining callers.
+- `dashboard.py`'s `/api/snipes` output dropped `market_key`, added
+  `pet_species_id`/`pet_quality_id` (previously computed internally but
+  never exposed) so the frontend can still tell pet species/quality apart
+  -- every caged pet shares one item_id (82800), so without these two
+  fields the new item_id-only grouping would have wrongly merged every
+  pet species into one display group (a latent bug that already existed
+  in the old `market_key`-based `groupKey()` too, since `market_key` was
+  always empty for pets same as `bonus_key` -- fixed as a side effect of
+  this change, not separately).
+- `static/dashboard.html`'s `groupKey()` changed from `market_key` to
+  `(item_id, pet_species_id, pet_quality_id)`.
+- The raw `bonus_key`/`variant_raw`/`variant` (ilvl or bonus-count summary)
+  path is completely unchanged -- `dashboard._variant_label()` still shows
+  a per-row ilvl when plausible, exactly as the human asked.
+
+**Tests**: removed/replaced five `tests/test_snipe_check.py` tests whose
+whole point was the old design's deliberate non-pooling (companion pair
+kept distinct, partition tiers kept distinct) -- under the new model these
+are supposed to merge, so the assertions were inverted, not just updated.
+Added `test_find_snipes_merges_price_tiers_using_overall_cheapest`
+(explicitly proves three real price tiers now collapse to the overall
+minimum) and `test_find_snipes_pools_bonus_list_noise_with_no_sample_floor`
+(the item-36507 shape now works with as few as 2 samples, no floor to
+clear). `tests/test_dashboard.py`'s market_key existence test replaced with
+one asserting `pet_species_id`/`pet_quality_id` ride along instead.
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 264 passing, both envs
+(net -2 from the prior 266: several old market_key-pooling tests collapsed
+into fewer, more direct ones under the simpler model).
+
+**Unrelated small request folded into the same session**: superuser tier
+cap raised from 5000 to 10000 (`dashboard.SNIPE_TIER_CAPS`), with
+`static/dashboard.html`'s `BATCH_TOP` raised to match (it's the ceiling the
+frontend ever requests -- leaving it at 5000 would have silently kept
+superuser responses capped at the old value regardless of the server-side
+change).

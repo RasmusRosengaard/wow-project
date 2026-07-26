@@ -159,73 +159,6 @@ def ilvl_plausible(claimed: int, base_level: int | None) -> bool:
             and claimed <= ILVL_ABSOLUTE_MAX)
 
 
-# Thresholds for snipe_check._populate_market_keys()'s per-item noise-bonus-
-# id detection (see market_key()'s noise_bonus_ids docstring).
-#
-# **A single frequency threshold was tried first and shown live to be
-# insufficient (2026-07-25, same day).** A 5%-only cutoff correctly caught
-# item 36507's clearly-noise values (<=4%) but left its 6-14%-frequency
-# noise untouched, since real dimensions on OTHER items (e.g. 109168's
-# socket/gem bonuses) also sit as low as 14-17% -- no single frequency band
-# separates "real" from "noise" across every item. Confirmed live: item
-# 36507's own reported cheap listing still didn't surface as a snipe with
-# the frequency-only version deployed.
-#
-# **Replaced with a structural test**: a value's frequency alone isn't
-# enough signal; whether it has a *partner* is. Real dimensions come in
-# recognizable shapes -- a companion pair that (almost) always appears
-# together (e.g. item 109168's two-part gem/socket bonus, 9145 paired with
-# 9148), or a small set of mutually-exclusive values that jointly cover
-# most of the item's listings (e.g. a binary quality flag summing to ~100%
-# of listings, or -- found investigating this exact fix -- item 244752's
-# five-value item-level-upgrade-track system, each track mutually exclusive
-# with the others, none individually below BASE_TAG_FREQ). Per-craft noise
-# (item 36507's ~17 near-random instance ids, and several similarly-shaped
-# items found by the same live investigation: 82070, 25218, 82194, 15009)
-# has neither shape -- each value stands alone, no reliable partner.
-#
-# A pure cardinality check ("few distinct values in the ambiguous band =
-# real, many = noise") was tried and rejected before this: it correctly
-# handled every single-dimension case, but broke on item 210108, which
-# legitimately has ~10 ambiguous-band values across several real paired
-# dimensions stacked together -- a large TOTAL count driven entirely by
-# real structure, not noise. The partner-based test judges each value on
-# its own relationship to the data, so it isn't fooled by an item simply
-# having several real dimensions at once.
-#
-# BASE_TAG_FREQ: a value this frequent is unambiguously a real, load-
-# bearing tag (present on nearly every listing) -- always kept, and
-# excluded from being used as evidence for any OTHER value's pairing (an
-# ever-present tag trivially "sums to a lot" with anything, which would
-# otherwise let genuine noise falsely pass the partition check against it
-# -- caught live during calibration).
-# COMPANION_THRESHOLD: how consistently two values must co-occur in the
-# SAME bonus_key for that co-occurrence to count as a real, structured
-# pairing rather than coincidence.
-# MAX_EXCLUSIVE_GROUP / MIN_EXCLUSIVE_COVERAGE: a value's "exclusive
-# partners" (other ambiguous-band values that never co-occur with it) count
-# as a real small partition only if there are few of them (a real tier/
-# quality system, not a big per-craft pool that also happens to never
-# repeat within one listing) AND together they explain most of the item's
-# observed listings.
-# MIN_SAMPLES: below this floor there isn't enough data to trust any of the
-# above -- nothing is stripped (same "not enough data means don't strip"
-# principle as an unknown base_level).
-#
-# Validated live 2026-07-25 against every real case found so far: three
-# per-craft-noise items (36507, 82070, 25218, plus 82194/15009 sharing the
-# same shape) fully and correctly stripped down to their one real tag; six
-# real multi-value items (109168, 114813, 210108, 244752, 239675, 240947,
-# 244718, 244591 -- tier systems, quality flags, and paired gem/socket
-# bonuses) fully preserved with zero false-positive stripping.
-BONUS_NOISE_MIN_SAMPLES = 20
-BONUS_NOISE_LOW_FREQUENCY = 0.05
-BONUS_NOISE_BASE_TAG_FREQUENCY = 0.80
-BONUS_NOISE_COMPANION_THRESHOLD = 0.7
-BONUS_NOISE_MAX_EXCLUSIVE_GROUP = 8
-BONUS_NOISE_MIN_EXCLUSIVE_COVERAGE = 0.8
-
-
 def market_key(bk: str, base_level: int | None = None,
                noise_bonus_ids: frozenset[int] | None = None) -> str:
     """Coarser version of bonus_key for MATCHING/GROUPING only -- sold-price
@@ -263,16 +196,17 @@ def market_key(bk: str, base_level: int | None = None,
     m:42/44, just expressed as a bonus_lists id instead of a modifier. This
     can't be a fixed global ignore-list like MARKET_IGNORE_MODIFIER_TYPES,
     though: a raw bonus id is just a number, not a typed field, so the same
-    id could mean something completely different on a different item (see
-    snipe_check._populate_market_keys() for how this set is determined --
-    document-frequency based, per item: a value that repeats across a large
-    fraction of an item's own listings is almost certainly a real,
-    price-relevant dimension -- socket count, a quality-tier flag, a gem
-    choice -- and MUST NOT be stripped; a value that shows up in only a
-    handful out of hundreds is almost certainly per-craft noise). None
-    (default, and every caller without item-specific frequency data handy)
-    means "don't strip anything from the b: segment" -- same "unknown means
-    don't strip" principle as base_level.
+    id could mean something completely different on a different item.
+    **Nothing currently computes a non-None value for this parameter** --
+    the structural per-item detection that used to (`snipe_check.
+    _detect_noise_bonus_ids()`, document-frequency/companion/partition
+    based) was removed 2026-07-26 along with market_key-based pricing (see
+    CLAUDE.md's "What this project is" for the human decision and the bug
+    that prompted re-examining it; the full methodology is preserved in
+    HISTORY.md's "Bonus-list noise detection" entry). `relist_key()`, the
+    only remaining real caller, always passes None. None means "don't strip
+    anything from the b: segment" -- same "unknown means don't strip"
+    principle as base_level.
 
     Mirrored as a SQL macro in analyze.connect() for DuckDB-side grouping
     (sold-price/current-lowest queries) rather than shared as a single
@@ -282,9 +216,8 @@ def market_key(bk: str, base_level: int | None = None,
     transform. The two implementations are kept honest by
     tests/test_market_key.py, which runs the same vectors through both and
     asserts identical results -- **except** noise_bonus_ids, which is
-    Python-only (see snipe_check.py's "why Python, not SQL" note): the SQL
-    macro only ever receives base_level, matching its pre-existing 2-arg
-    signature."""
+    Python-only and unused in practice now (see above): the SQL macro only
+    ever receives base_level, matching its pre-existing 2-arg signature."""
     if not bk:
         return bk
     ignore_types = set(MARKET_IGNORE_MODIFIER_TYPES)

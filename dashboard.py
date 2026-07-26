@@ -172,14 +172,16 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         "item_id": r["item_id"],
         "variant": variant,
         "variant_raw": r["bonus_key"] or None,
-        # The coarser pooled key snipe_check.find_snipes() already matched/
-        # priced this row against (see its docstring) -- dashboard.html
-        # groups table rows by this instead of variant_raw, since real
-        # listings across different realms often share a market_key (and,
-        # provably, the same sell price) without sharing an exact bonus_key.
-        # Empty for pets, same as bonus_key -- doesn't change the existing
-        # (separate, not addressed here) pet-species grouping behavior.
-        "market_key": r["market_key"],
+        # pet_species_id/pet_quality_id (added 2026-07-26 alongside the
+        # matching change -- see snipe_check.find_snipes()'s docstring):
+        # matching/grouping is now (item_id, pet_species_id, pet_quality_id)
+        # -- bonus/ilvl no longer distinguishes a match at all, so
+        # dashboard.html groups rows by these instead of the old market_key.
+        # Every caged pet shares one item_id (82800), so without these two
+        # fields every pet species/quality would wrongly collapse into one
+        # display group; NULL for ordinary gear, a no-op there.
+        "pet_species_id": r["pet_species_id"],
+        "pet_quality_id": r["pet_quality_id"],
         "buy_g": r["buy_g"],
         # sell_p_g/sell_copper is the sell realm's current cheapest live
         # listing (changed 2026-07-25 -- see snipe_check.find_snipes()'s
@@ -247,7 +249,7 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
 # headroom. The client always requests the same generous top (dashboard.html's
 # BATCH_TOP); the server is what actually enforces the real per-tier ceiling,
 # so the frontend doesn't need to know its own tier ahead of time.
-SNIPE_TIER_CAPS = {"free": 250, "subscribed": 2000, "superuser": 5000}
+SNIPE_TIER_CAPS = {"free": 250, "subscribed": 2000, "superuser": 10000}
 
 
 def _snipe_cap(user: User) -> int:
@@ -305,17 +307,21 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
                                        max_per_item=max_per_item,
                                        top=top, sort=sort)
 
-    # find_snipes() can now make blocking Blizzard API calls mid-query
-    # (_populate_market_keys(), added 2026-07-25 for type-28 ilvl pooling,
-    # renamed same day once it also took on noise-bonus-id detection --
-    # see snipe_check.py) on top of its own DuckDB work. Both are
-    # synchronous/blocking; running them directly in this async route body
-    # would freeze the *entire* single-process server for every other
-    # request (including /api/status) for as long as this one call takes --
-    # confirmed live 2026-07-25 as a real outage after a fresh deploy hit a
-    # cold NameCache and had to resolve many never-before-seen items
-    # sequentially. to_thread() keeps the rest of the app responsive while
-    # this one request does its (possibly slow, first-time) work.
+    # find_snipes() can still make blocking Blizzard API calls mid-query --
+    # when max_appearance_sources is set, _filter_by_appearance() calls
+    # NameCache().inventory_type() per candidate row, a cache-miss fallback
+    # to a real API call (see item_names.py). (Before 2026-07-26 this route
+    # also ran _populate_market_keys()'s base-level/noise-bonus-id
+    # resolution here -- removed along with market_key-based matching, see
+    # snipe_check.find_snipes()'s docstring; that was the original trigger
+    # for needing to_thread() below, confirmed live 2026-07-25 as a real
+    # outage after a fresh deploy hit a cold NameCache and had to resolve
+    # many never-before-seen items sequentially, freezing the *entire*
+    # single-process server for every other request. Still true today for
+    # the appearance-filter path, so to_thread() stays.) Running any of
+    # this directly in this async route body would freeze the whole server
+    # for as long as it takes -- to_thread() keeps the rest of the app
+    # responsive while this one request does its (possibly slow) work.
     rows = await asyncio.to_thread(_run_query)
 
     # names=true's per-row NameCache lookups (name/icon/quality/item_class/...)

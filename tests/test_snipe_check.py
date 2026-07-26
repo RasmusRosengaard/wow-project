@@ -21,7 +21,7 @@ import appearance
 import diff_snapshots
 import item_names
 import snipe_check
-from fetch_snapshot import SCHEMA, market_key
+from fetch_snapshot import SCHEMA
 from scan_region import LISTING_SCHEMA
 
 SELL_CR = 9999
@@ -148,20 +148,6 @@ def test_find_snipes_works_without_diff_ever_running(data_dir):
     assert len(rows) == 1
     assert rows[0]["item_id"] == 101
     assert rows[0]["sell_p_g"] == pytest.approx(2.0)
-
-
-def test_find_snipes_rows_carry_market_key(data_dir, monkeypatch):
-    """market_key (added 2026-07-24, previously computed for the join but
-    excluded from the output) is what dashboard.html now groups rows by
-    instead of the exact bonus_key -- real listings across different realms
-    often share a market_key (same price) without sharing an exact
-    bonus_key (per-instance modifiers), so the frontend needs this to
-    collapse them into one group instead of splitting an already-identically
-    -priced market into separate rows."""
-    run_diff(monkeypatch)
-    con = analyze.connect(SELL_CR)
-    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
-    assert rows[0]["market_key"] == market_key(rows[0]["bonus_key"] or "")
 
 
 def test_find_snipes_does_not_conflate_pet_species(tmp_path, monkeypatch):
@@ -297,13 +283,18 @@ def test_find_snipes_max_per_item_caps_and_keeps_best_discounts(tmp_path, monkey
     assert {r["auction_id"] for r in capped} == {100, 101}
 
 
-def test_find_snipes_pools_near_identical_crafted_rolls(tmp_path, monkeypatch):
-    """Reproduces the real production case (item 238014, Sun-Blessed Sickle,
-    2026-07-23): a crafted item's per-craft stat roll/serial (modifier types
-    42/44) fragmented what should be one liquid market into dozens of
-    near-unique exact bonus_keys. The sell realm's current listing (roll_d)
-    and the buy-side listing (roll_c) have completely different exact rolls
-    but must still pool to the same market_key and match."""
+def test_find_snipes_ignores_bonus_variance_regardless_of_shape(tmp_path, monkeypatch):
+    """Matching changed 2026-07-26 (human product decision, see
+    find_snipes()'s docstring): item_id alone is the match key now --
+    bonus_key/ilvl differences no longer matter at all, replacing the old
+    market_key()-based pooling. Reproduces the real production case (item
+    238014, Sun-Blessed Sickle) that originally motivated market_key(): a
+    crafted item's per-craft stat roll (modifier type 42) meant the sell
+    realm's current listing (roll_d) and the buy-side listing (roll_c)
+    never shared an exact bonus_key. Under the old design this needed
+    market_key() to recognize both rolls as "the same market"; now it needs
+    nothing -- any bonus_key difference is irrelevant to matching by
+    construction."""
     monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
     monkeypatch.setattr(analyze, "DATA", tmp_path)
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
@@ -335,43 +326,33 @@ def test_find_snipes_pools_near_identical_crafted_rolls(tmp_path, monkeypatch):
     r = rows[0]
     assert r["item_id"] == 500
     assert r["bonus_key"] == roll_c          # exact listing roll still shown for display
-    assert r["market_key"] == market_key(roll_c) == market_key(roll_d)
     assert r["sell_p_g"] == pytest.approx(2.1)   # the sell realm's current listing (roll_d), 21_000 copper
 
 
-def test_find_snipes_pools_near_identical_bonus_list_noise(tmp_path, monkeypatch):
+def test_find_snipes_pools_bonus_list_noise_with_no_sample_floor(tmp_path, monkeypatch):
     """Reproduces the real production case (item 36507, Iron-Molded Fist,
-    reported 2026-07-25): a genuinely cheap listing on another realm never
-    matched the sell realm's own listing because every listing carried a
-    different per-craft "instance" bonus_lists id alongside one shared,
-    stable id -- the same fragmentation shape as the already-handled
-    m:42/44 crafted-roll case, just expressed via `b:` instead of `m:`.
-    market_key()'s static ignore-list can't fix this (a raw bonus id isn't
-    a typed field the way a modifier type is); _populate_market_keys()'s
-    structural (companion/partition) detection has to recognize the
-    varying id as noise from the data itself -- here, each noise id sits
-    below BONUS_NOISE_LOW_FREQUENCY on its own, so this specific test only
-    exercises that simple low-frequency floor, not the companion/partition
-    logic (see the two tests below for that). Needs BONUS_NOISE_MIN_SAMPLES
-    (20) real samples for the detection to trigger at all -- below that
-    floor nothing would be stripped, matching the "not enough data means
-    don't strip" default for base_level. All N variants are simultaneously
-    live listings (not historical sales -- pricing no longer looks at
-    sales), which also happens to be exactly what feeds the noise-detection
-    sample."""
+    reported 2026-07-25) with far fewer samples than the old design ever
+    needed. Under the previous market_key()-based approach, per-craft
+    "instance" bonus_lists id noise like this only got detected/stripped
+    above a 20-sample floor (BONUS_NOISE_MIN_SAMPLES) -- traced live
+    2026-07-26 to silently fail on ~1,223 real items sitting under that
+    floor since the 2026-07-25 retention change stopped accumulating the
+    historical samples the heuristic depended on (see HISTORY.md). With
+    item_id-only matching there's no sample floor to clear at all -- a
+    single buy-side listing (auction_id=100 below) matches regardless."""
     monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
     monkeypatch.setattr(analyze, "DATA", tmp_path)
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
 
     STABLE_ID = 9000
-    N = 22  # >= BONUS_NOISE_MIN_SAMPLES; each noise id then appears ~1/23 (~4.3%) < 5%
 
     snap_dir = tmp_path / "snapshots" / str(SELL_CR)
     snap_dir.mkdir(parents=True)
     prev = [snap_row(9999, T0, item_id=103)]
+    # Only 2 samples -- well under the old 20-sample floor.
     curr = [snap_row(9999, T1, item_id=103)] + [
         snap_row(i, T1, item_id=600, bonus_key=f"b:{7000 + i},{STABLE_ID}", buyout=20_000)
-        for i in range(N)
+        for i in range(2)
     ]
     for ts, rows_ in ((T0, prev), (T1, curr)):
         pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
@@ -394,73 +375,22 @@ def test_find_snipes_pools_near_identical_bonus_list_noise(tmp_path, monkeypatch
     r = rows[0]
     assert r["item_id"] == 600
     assert r["bonus_key"] == f"b:8500,{STABLE_ID}"   # exact listing roll still shown for display
-    assert r["market_key"] == f"b:{STABLE_ID}"        # noise id stripped, stable id kept
     assert r["sell_p_g"] == pytest.approx(2.0)         # pooled current listing price (20_000 copper)
 
 
-def test_find_snipes_keeps_companion_bonus_pair_distinct(tmp_path, monkeypatch):
-    """A frequency-only cutoff (the first version of this fix, shipped and
-    live-reverted the same day) can't tell noise from a real dimension when
-    both sit in the same ambiguous frequency band -- e.g. item 109168's
-    real two-part gem/socket bonus (9145 always paired with 9148) sat at
-    just 8.7% document frequency, comparable to some of item 36507's actual
-    noise. The fix that replaced it: two values that reliably co-occur
-    together in the same bonus_key (a "companion" pair) are real and must
-    stay distinct, never pooled away -- regardless of how low their
-    individual frequency is. Here, listings carrying the companion pair are
-    genuinely currently listed for 5x what listings without it are; if the
-    pair were wrongly stripped, both groups would incorrectly pool into one
-    blended (and wrong) sell price."""
-    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
-    monkeypatch.setattr(analyze, "DATA", tmp_path)
-    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
-
-    STABLE_ID = 9000
-
-    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
-    snap_dir.mkdir(parents=True)
-    prev = [snap_row(9999, T0, item_id=103)]
-    curr = (
-        [snap_row(9999, T1, item_id=103)]
-        + [snap_row(i, T1, item_id=700, bonus_key=f"b:{STABLE_ID},9001,9002", buyout=100_000)
-           for i in range(15)]
-        + [snap_row(100 + i, T1, item_id=700, bonus_key=f"b:{STABLE_ID}", buyout=20_000)
-           for i in range(10)]
-    )
-    for ts, rows_ in ((T0, prev), (T1, curr)):
-        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
-
-    listings_dir = tmp_path / "listings"
-    listings_dir.mkdir(parents=True)
-    # Cheap listing WITH the companion pair -- must match against the
-    # 100_000-copper group (its own real market), not the 20_000-copper
-    # base-tag-only group, which would happen if 9001/9002 got pooled away.
-    buy_rows = [listing_row(BUY_CR_A, item_id=700, buyout=50_000, auction_id=100,
-                            bonus_key=f"b:{STABLE_ID},9001,9002")]
-    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
-                   listings_dir / f"{BUY_CR_A}.parquet")
-
-    run_diff(monkeypatch)
-    con = analyze.connect(SELL_CR)
-    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
-    assert len(rows) == 1
-    r = rows[0]
-    assert r["item_id"] == 700
-    # 9001/9002 correctly kept -- market_key still carries them, not stripped
-    assert "9001" in r["market_key"] and "9002" in r["market_key"]
-    assert r["sell_p_g"] == pytest.approx(10.0)  # the WITH-pair group's own price, not 2.0
-
-
-def test_find_snipes_keeps_partition_bonus_values_distinct(tmp_path, monkeypatch):
-    """Reproduces item 244752's real shape: a small set of mutually-
-    exclusive bonus values (never co-occurring with each other) that
-    jointly cover nearly all of an item's listings -- a real item-level-
-    upgrade-track system. No single pair of these values sums close to
-    100% on its own (there are 3+ of them sharing the space), so this
-    specifically exercises the N-way partition detection, not just a
-    2-value companion/partition pair. Each tier is genuinely currently
-    listed at a different price; pooling them would blend three real
-    markets into one wrong sell price."""
+def test_find_snipes_merges_price_tiers_using_overall_cheapest(tmp_path, monkeypatch):
+    """Before 2026-07-26, a companion bonus pair or a mutually-exclusive
+    tier system (real production shapes: item 109168's paired gem/socket
+    bonus, item 244752's item-level-upgrade tiers) were deliberately kept
+    as separate markets by market_key(), since each tier is a genuinely
+    different, differently-priced version of the item. The human's
+    2026-07-26 decision explicitly reverses that for pricing: merge every
+    bonus/ilvl variant of an item into one listing, sell price = the
+    overall cheapest across all of them, with the individual variant still
+    shown per row for display (dashboard.py's _variant_label()/variant_raw,
+    unaffected by this change). Three price tiers here (20g/40g/80g); the
+    buy-side listing carries the priciest tier's bonus_key, but the sell
+    price must be the 20g tier's, not its own tier's 80g."""
     monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
     monkeypatch.setattr(analyze, "DATA", tmp_path)
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
@@ -470,25 +400,22 @@ def test_find_snipes_keeps_partition_bonus_values_distinct(tmp_path, monkeypatch
     snap_dir = tmp_path / "snapshots" / str(SELL_CR)
     snap_dir.mkdir(parents=True)
     prev = [snap_row(9999, T0, item_id=103)]
-    curr = (
-        [snap_row(9999, T1, item_id=103)]
-        + [snap_row(i, T1, item_id=800, bonus_key=f"b:{STABLE_ID},8100", buyout=20_000)
-           for i in range(16)]
-        + [snap_row(100 + i, T1, item_id=800, bonus_key=f"b:{STABLE_ID},8200", buyout=40_000)
-           for i in range(14)]
-        + [snap_row(200 + i, T1, item_id=800, bonus_key=f"b:{STABLE_ID},8300", buyout=80_000)
-           for i in range(10)]
-    )
+    curr = [
+        snap_row(9999, T1, item_id=103),
+        snap_row(1, T1, item_id=800, bonus_key=f"b:{STABLE_ID},8100", buyout=20_000),
+        snap_row(2, T1, item_id=800, bonus_key=f"b:{STABLE_ID},8200", buyout=40_000),
+        snap_row(3, T1, item_id=800, bonus_key=f"b:{STABLE_ID},8300", buyout=80_000),
+    ]
     for ts, rows_ in ((T0, prev), (T1, curr)):
         pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
 
     listings_dir = tmp_path / "listings"
     listings_dir.mkdir(parents=True)
-    # Cheap listing at tier 8200 -- must match against the 40_000-copper
-    # tier-8200 group specifically, not a blended price across all three
-    # tiers, which would happen if 8100/8200/8300 got pooled away.
-    buy_rows = [listing_row(BUY_CR_A, item_id=800, buyout=20_000, auction_id=100,
-                            bonus_key=f"b:{STABLE_ID},8200")]
+    # Buy-side listing carries the most expensive tier's bonus_key -- must
+    # still match against the sell realm's overall cheapest (8100, 20g),
+    # not get scoped to only its own tier.
+    buy_rows = [listing_row(BUY_CR_A, item_id=800, buyout=10_000, auction_id=100,
+                            bonus_key=f"b:{STABLE_ID},8300")]
     pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
                    listings_dir / f"{BUY_CR_A}.parquet")
 
@@ -498,8 +425,8 @@ def test_find_snipes_keeps_partition_bonus_values_distinct(tmp_path, monkeypatch
     assert len(rows) == 1
     r = rows[0]
     assert r["item_id"] == 800
-    assert "8200" in r["market_key"]  # tier value correctly kept, not stripped
-    assert r["sell_p_g"] == pytest.approx(4.0)  # tier 8200's own current listing (40_000 copper), not a blend
+    assert r["bonus_key"] == f"b:{STABLE_ID},8300"  # buy-side variant still shown for display
+    assert r["sell_p_g"] == pytest.approx(2.0)  # overall cheapest tier (20_000 copper), not the 8300 tier's 8g
 
 
 def test_find_snipes_respects_min_gold(data_dir, monkeypatch):
