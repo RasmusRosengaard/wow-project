@@ -166,12 +166,6 @@
   .step h3 { margin: 0; font-size: 0.98rem; font-weight: 700; }
   .step p { margin: 0; color: var(--text-dim); font-size: 0.86rem; line-height: 1.5; }
 
-  .closing {
-    text-align: center; display: flex; flex-direction: column; align-items: center; gap: 1.1rem;
-  }
-  .closing h2 { margin: 0; font-size: 1.5rem; font-weight: 800; }
-  .closing p { margin: 0; color: var(--text-dim); font-size: 0.92rem; max-width: 480px; }
-
   footer {
     border-top: 1px solid var(--hairline); padding: 1.6rem 1.5rem 2.5rem; text-align: center;
     font-size: 0.75rem; color: var(--text-dim);
@@ -266,7 +260,7 @@
       </div>
       <div class="step">
         <div class="n">2</div>
-        <h3>We scan every other EU realm</h3>
+        <h3>Scans every EU realm</h3>
         <p>Every connected realm's current listings, swept on the same schedule.
           No history needed on the buy side.</p>
       </div>
@@ -277,13 +271,6 @@
           Nothing else shows up.</p>
       </div>
     </div>
-  </section>
-
-  <section class="closing">
-    <h2>Every account gets real data.</h2>
-    <p>Not a demo, not fake numbers behind a paywall. The free tier is capped, not faked.
-      No credit card to start.</p>
-    <a class="cta primary" href="/register" id="closing-cta">Create free account</a>
   </section>
 </main>
 
@@ -322,7 +309,6 @@ fetch("/api/me").then(r => {
   toDashboard(document.getElementById("nav-cta"), "Go to dashboard");
   document.getElementById("nav-login").remove();
   toDashboard(document.getElementById("hero-cta"), "Go to dashboard");
-  toDashboard(document.getElementById("closing-cta"), "Go to dashboard");
 }).catch(() => {});
 </script>
 </body>

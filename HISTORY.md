@@ -1107,3 +1107,17 @@ One more small request in the same pass: removed the "Most popular" badge
 from the Subscriber plan card on `pricing.html`, plus its now-unused
 `.plan-badge` CSS and the `position: relative` on `.plan.highlight` that
 existed only to anchor that badge.
+
+## Two more landing page copy edits (2026-07-26, same session)
+
+Removed the closing "Every account gets real data" section entirely
+(heading, paragraph, and its "Create free account" CTA) -- human request.
+Cleaned up its now-unused `.closing` CSS, and removed the dangling
+`#closing-cta` reference from the `/api/me` CTA-personalization script
+(the earlier round's logged-in-visitor handling), which would otherwise
+have called `.textContent`/`.href` on `null` once the element was gone --
+verified no console error after the fix by reloading in an actual browser.
+
+Reworded the "how it works" step 2 heading: "We scan every other EU
+realm" -> "Scans every EU realm" (human iterated on the exact phrasing
+mid-request, landing here). `pytest -q`: 265 passing, no Python touched.
