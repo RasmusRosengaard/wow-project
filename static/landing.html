@@ -224,8 +224,8 @@
   <div class="nav">
     <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
     <a href="/pricing">Pricing</a>
-    <a href="/login">Log in</a>
-    <a class="cta-primary" href="/register">Create free account</a>
+    <a href="/login" id="nav-login">Log in</a>
+    <a class="cta-primary" href="/register" id="nav-cta">Create free account</a>
   </div>
 </div>
 
@@ -237,7 +237,7 @@
       your own realm's current price — not a guess, not an average. If it's flagged, it's
       already validated: buy it there, move it home through the warband bank, sell it here.</p>
     <div class="hero-ctas">
-      <a class="cta primary" href="/register">Create free account</a>
+      <a class="cta primary" href="/register" id="hero-cta">Create free account</a>
       <a class="cta secondary" href="/pricing">See pricing</a>
     </div>
 
@@ -310,7 +310,7 @@
     <h2>Every account gets real data.</h2>
     <p>Not a demo, not fake numbers behind a paywall. The free tier is capped, not faked —
       no credit card to start.</p>
-    <a class="cta primary" href="/register">Create free account</a>
+    <a class="cta primary" href="/register" id="closing-cta">Create free account</a>
   </section>
 </main>
 
@@ -337,11 +337,20 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
 });
 applyThemeButtonState();
 
-// A logged-in visitor landing on the marketing page (e.g. an old
-// bookmark, or clicking the brand mark from elsewhere) almost always
-// wants the actual tool, not the pitch -- send them straight to /snipes.
-// Silent/best-effort: a failed check just leaves the marketing page as is.
-fetch("/api/me").then(r => { if (r.ok) window.location.href = "/snipes"; }).catch(() => {});
+// A logged-in visitor landing here (an old bookmark, a shared link, or
+// just clicking the brand mark) should still be able to see the page --
+// forcing a redirect away from it would mean nobody signed in can ever
+// view their own marketing page. Instead, swap the sign-up CTAs for a
+// straight link into the tool once we know they're already logged in.
+// Silent/best-effort: a failed check just leaves the logged-out CTAs as is.
+fetch("/api/me").then(r => {
+  if (!r.ok) return;
+  const toDashboard = (el, label) => { el.textContent = label; el.href = "/snipes"; };
+  toDashboard(document.getElementById("nav-cta"), "Go to dashboard");
+  document.getElementById("nav-login").remove();
+  toDashboard(document.getElementById("hero-cta"), "Go to dashboard");
+  toDashboard(document.getElementById("closing-cta"), "Go to dashboard");
+}).catch(() => {});
 </script>
 </body>
 </html>

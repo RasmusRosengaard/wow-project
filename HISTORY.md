@@ -1013,10 +1013,15 @@ illustrative, not live data" so it can never be mistaken for real numbers
 `pricing.html` that a misleading hero mockup would have quietly
 contradicted). A numbered 3-step "how it works" section is used
 deliberately -- it's a genuine sequential process (pick realm → scan →
-results), not decorative numbering. A logged-in visitor landing on `/`
-(e.g. an old bookmark) gets silently redirected to `/snipes` via a
-background `/api/me` check, since a logged-in user hitting the marketing
-pitch almost always wants the tool instead.
+results), not decorative numbering. First pass silently redirected a
+logged-in visitor away from `/` straight to `/snipes` (checked `/api/me` in
+the background) -- **reversed the same session** on human feedback: a hard
+redirect means nobody signed in can ever actually see their own marketing
+page (a shared link, checking the pitch copy, etc.). Replaced with CTA
+personalization instead -- the same `/api/me` check swaps `#nav-cta`/
+`#hero-cta`/`#closing-cta` to "Go to dashboard" (pointing at `/snipes`) and
+removes the "Log in" nav link (`#nav-login`) when already authenticated,
+but the page itself always stays visible either way.
 
 **Two follow-up requests during the same build**, applied consistently
 across all seven other static pages (`dashboard.html`, `login.html`,
