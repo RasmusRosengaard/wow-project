@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Realm Arbitrage — cross-realm AH validation for World of Warcraft</title>
+<title>Realm Arbitrage: cross-realm AH validation for World of Warcraft</title>
 <meta name="description" content="Realm Arbitrage checks every EU realm's live auction listings against your own realm's current price. If it's flagged, it's already validated.">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
@@ -111,43 +111,43 @@
   .cta.secondary { background: transparent; color: var(--ink); border-color: var(--hairline-strong); }
   .cta.secondary:hover { border-color: var(--ink); }
 
-  /* ---------- Signature: a static "sample ledger row", the real
-     product's own visual vocabulary (coin icons, quality ring,
-     discount%) doing the explaining instead of a generic illustration. ---------- */
-  .sample {
-    width: 100%; max-width: 640px; margin-top: 1rem;
+  /* ---------- Signature: a real excerpt of the actual ledger table
+     (dashboard.html's own table/item-cell/item-icon/money/coin markup and
+     class names, reused verbatim) instead of a paraphrased mockup -- this
+     is what the tool actually looks like, not an illustration of it. ---------- */
+  .sample-wrap {
+    width: 100%; max-width: 640px; margin-top: 1rem; text-align: left;
     background: var(--card); border: 1px solid var(--hairline); border-radius: 8px;
-    padding: 1rem 1.2rem 1.2rem; text-align: left;
-    box-shadow: 0 12px 32px rgba(20,22,26,0.06);
+    overflow: hidden; box-shadow: 0 12px 32px rgba(20,22,26,0.06);
   }
-  :root[data-theme="dark"] .sample { box-shadow: 0 12px 32px rgba(0,0,0,0.3); }
+  :root[data-theme="dark"] .sample-wrap { box-shadow: 0 12px 32px rgba(0,0,0,0.3); }
   .sample-label {
     font-size: 0.64rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--text-dim); margin-bottom: 0.7rem;
+    color: var(--text-dim); padding: 0.8rem 1rem 0.6rem;
   }
-  .sample-row { display: flex; align-items: center; gap: 0.85rem; }
-  .sample-icon {
-    width: 40px; height: 40px; border-radius: 5px; flex-shrink: 0;
+  .sample-wrap table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  .sample-wrap th, .sample-wrap td { padding: 0.55rem 0.9rem; text-align: right; border-bottom: 1px solid var(--hairline); }
+  .sample-wrap th:first-child, .sample-wrap td:first-child,
+  .sample-wrap th:nth-child(2), .sample-wrap td:nth-child(2),
+  .sample-wrap th:nth-child(3), .sample-wrap td:nth-child(3) { text-align: left; }
+  .sample-wrap th {
+    color: var(--text-dim); font-weight: 700; white-space: nowrap;
+    text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.66rem;
+    border-bottom: 1px solid var(--hairline-strong);
+  }
+  .sample-wrap tbody tr:last-child td { border-bottom: none; }
+  .item-cell { display: flex; align-items: center; gap: 0.5rem; }
+  .item-icon {
+    width: 28px; height: 28px; border-radius: 4px; flex-shrink: 0;
+    border: 1px solid var(--hairline-strong); box-shadow: inset 0 0 0 3px var(--q, transparent);
     background: linear-gradient(135deg, #b48a3a, #8a6624);
-    box-shadow: inset 0 0 0 3px #a335ee;
   }
-  .sample-item { flex: 1; min-width: 0; }
-  .sample-name { font-weight: 700; font-size: 0.92rem; }
-  .sample-route {
-    font-size: 0.76rem; color: var(--text-dim); margin-top: 0.15rem;
-    display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
-  }
-  .sample-prices { text-align: right; flex-shrink: 0; }
-  .sample-buy { font-size: 0.78rem; color: var(--text-dim); }
-  .sample-sell { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.15rem; }
-  .sample-discount {
-    margin-top: 0.3rem; display: inline-block; font-weight: 700; font-size: 0.95rem;
-    color: var(--verified);
-  }
+  .money { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .money-part { display: inline-flex; align-items: center; gap: 3px; margin-right: 7px; }
+  .discount-cell { color: var(--verified); font-weight: 700; }
   .coin {
-    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
     box-shadow: inset -1px -1px 1px rgba(0,0,0,0.35), inset 1px 1px 1px rgba(255,255,255,0.5);
-    margin: 0 1px;
   }
   .coin-gold { background: radial-gradient(circle at 35% 30%, #f3d78a, var(--coin-gold) 55%, #a3821f); }
 
@@ -166,22 +166,6 @@
   .step h3 { margin: 0; font-size: 0.98rem; font-weight: 700; }
   .step p { margin: 0; color: var(--text-dim); font-size: 0.86rem; line-height: 1.5; }
 
-  .compare { display: flex; gap: 1.4rem; flex-wrap: wrap; }
-  .compare > div {
-    flex: 1 1 260px; background: var(--card); border: 1px solid var(--hairline);
-    border-radius: 8px; padding: 1.2rem 1.3rem;
-  }
-  .compare .them { color: var(--text-dim); }
-  .compare .us { border-color: var(--verified); }
-  .compare .label {
-    font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-    margin-bottom: 0.5rem;
-  }
-  .compare .them .label { color: var(--text-dim); }
-  .compare .us .label { color: var(--verified); }
-  .compare p { margin: 0; font-size: 0.88rem; line-height: 1.55; }
-  .compare .us p { color: var(--ink); }
-
   .closing {
     text-align: center; display: flex; flex-direction: column; align-items: center; gap: 1.1rem;
   }
@@ -196,8 +180,8 @@
 
   @media (max-width: 720px) {
     .steps { grid-template-columns: 1fr; }
-    .sample-row { flex-wrap: wrap; }
-    .sample-prices { text-align: left; margin-left: 52px; }
+    .sample-wrap table { min-width: 480px; }
+    .sample-wrap { overflow-x: auto; }
   }
 </style>
 </head>
@@ -234,27 +218,37 @@
     <div class="eyebrow">Cross-realm AH validation for World of Warcraft</div>
     <h1>Somewhere in the EU, this is cheaper.</h1>
     <p class="sub">Realm Arbitrage checks every EU realm's live auction listings against
-      your own realm's current price — not a guess, not an average. If it's flagged, it's
+      your own realm's current price. Not a guess, not an average. If it's flagged, it's
       already validated: buy it there, move it home through the warband bank, sell it here.</p>
     <div class="hero-ctas">
       <a class="cta primary" href="/register" id="hero-cta">Create free account</a>
       <a class="cta secondary" href="/pricing">See pricing</a>
     </div>
 
-    <div class="sample">
-      <div class="sample-label">Example listing — illustrative, not live data</div>
-      <div class="sample-row">
-        <div class="sample-icon" aria-hidden="true"></div>
-        <div class="sample-item">
-          <div class="sample-name">Ashbringer's Lesser Cousin</div>
-          <div class="sample-route">Listed on <b>Silvermoon</b> &rarr; your realm <b>Draenor</b></div>
-        </div>
-        <div class="sample-prices">
-          <div class="sample-buy">Buy <span class="money">45<span class="coin coin-gold"></span></span></div>
-          <div class="sample-sell">Your realm's price <span class="money">210<span class="coin coin-gold"></span></span></div>
-          <div class="sample-discount">78.5% below your realm</div>
-        </div>
-      </div>
+    <div class="sample-wrap">
+      <div class="sample-label">Example listing: illustrative, not live data · sell realm: Draenor</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Buy realm</th>
+            <th>Item</th>
+            <th>Variant</th>
+            <th>Buy</th>
+            <th>Sell price</th>
+            <th>Discount %</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Silvermoon</td>
+            <td><div class="item-cell"><div class="item-icon" style="--q:#a335ee" aria-hidden="true"></div><span>Ashbringer's Lesser Cousin</span></div></td>
+            <td class="mono">ilvl 636</td>
+            <td><span class="money"><span class="money-part">45<span class="coin coin-gold"></span></span></span></td>
+            <td><span class="money"><span class="money-part">210<span class="coin coin-gold"></span></span></span></td>
+            <td class="discount-cell">78.5</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -273,8 +267,8 @@
       <div class="step">
         <div class="n">2</div>
         <h3>We scan every other EU realm</h3>
-        <p>Every connected realm's current listings, swept on the same schedule —
-          no history needed on the buy side.</p>
+        <p>Every connected realm's current listings, swept on the same schedule.
+          No history needed on the buy side.</p>
       </div>
       <div class="step">
         <div class="n">3</div>
@@ -285,31 +279,10 @@
     </div>
   </section>
 
-  <section>
-    <div class="section-head">
-      <h2>Not another sniper</h2>
-      <p>Existing tools compare one listing to another listing. That's not the price that matters.</p>
-    </div>
-    <div class="compare">
-      <div class="them">
-        <div class="label">TSM / Auctionator</div>
-        <p>Flag an item as cheap because it's priced below other listings of the same
-          item — wherever those happen to be. That comparison can be fiction: cheap
-          next to what, exactly?</p>
-      </div>
-      <div class="us">
-        <div class="label">Realm Arbitrage</div>
-        <p>Flags an item only when it's priced below what you'd actually get selling it
-          on your own realm, right now. The number you're compared against is real,
-          because it's the same number you'd charge.</p>
-      </div>
-    </div>
-  </section>
-
   <section class="closing">
     <h2>Every account gets real data.</h2>
-    <p>Not a demo, not fake numbers behind a paywall. The free tier is capped, not faked —
-      no credit card to start.</p>
+    <p>Not a demo, not fake numbers behind a paywall. The free tier is capped, not faked.
+      No credit card to start.</p>
     <a class="cta primary" href="/register" id="closing-cta">Create free account</a>
   </section>
 </main>

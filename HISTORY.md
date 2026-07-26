@@ -1063,3 +1063,47 @@ unlike `landing.html`'s navbar (the marketing frontpage), which keeps
 `Pricing` regardless of login state -- a deliberate distinction the human
 was explicit about ("not the navbar on the frontpage"). No Python touched
 either time; `pytest -q`: 265 passing throughout.
+
+## Landing/pricing page polish pass (2026-07-26, same session)
+
+Four more human requests against the pages just shipped, handled in one
+pass:
+
+1. **`pricing.html`'s "Log in" nav link was unconditionally shown, even to
+   an already-authenticated visitor** landing there from `/` (clicking
+   "See pricing" while logged in). Fixed the same way `landing.html`
+   already personalizes its own CTAs: on load, `fetch("/api/me")` and
+   remove `#nav-login` if the session is active -- no nav link put back in
+   its place, since the "Dashboard" link on this page was deliberately
+   removed earlier in the session, not an oversight to restore. Verified
+   both states in an actual browser.
+2. **The hero's "sample listing" was a paraphrased custom card, not the
+   real thing** -- human asked for it to actually look like the sniper.
+   Rebuilt using `dashboard.html`'s own table/`item-cell`/`item-icon`/
+   `money`/`coin` markup and class names verbatim (headers: Buy realm/
+   Item/Variant/Buy/Sell price/Discount %, a real quality-ring icon, real
+   gold-coin formatting), with one caption row still marking it "Example
+   listing: illustrative, not live data" so it's never mistaken for a real
+   query result. This changed `test_index_serves_landing_page`'s
+   distinguishing assertion: it used to check for the *absence* of any
+   `<table>` element to tell the landing page apart from the real
+   dashboard, which broke once the landing page legitimately grew its own
+   table -- switched both route tests to check for `id="rows"` (the real
+   dynamic ledger body) instead, which only ever exists on the actual tool.
+3. **Removed the entire "Not another sniper" TSM/Auctionator comparison
+   section** (human request) -- its now-unused `.compare` CSS removed
+   alongside it.
+4. **Removed every em-dash from `landing.html`'s visible copy** (human
+   request) -- replaced with periods or colons depending on the sentence,
+   never restructured to lose meaning. Hyphenated compound words
+   ("cross-realm", etc.) were left untouched -- the request was about
+   dash-as-punctuation, not legitimate hyphenation.
+
+`pytest -q`/`env -u DATABASE_URL pytest -q`: 265 passing, both envs.
+Verified in an actual browser throughout (the real-table sample listing,
+and both logged-in/logged-out states of `pricing.html`'s nav).
+
+One more small request in the same pass: removed the "Most popular" badge
+from the Subscriber plan card on `pricing.html`, plus its now-unused
+`.plan-badge` CSS and the `position: relative` on `.plan.highlight` that
+existed only to anchor that badge.

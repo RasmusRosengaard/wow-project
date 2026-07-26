@@ -575,17 +575,19 @@ def test_pricing_page_served_without_auth():
 
 def test_index_serves_landing_page():
     """/ became the public marketing landing page (2026-07-26) -- the
-    sniper tool itself moved to /snipes, see the test below."""
+    sniper tool itself moved to /snipes, see the test below. Distinguished
+    by id="rows" (the real dynamic ledger body), not by <table> presence --
+    the landing page legitimately has its own static sample table too."""
     r = client.get("/")
     assert r.status_code == 200
     assert b"Realm Arbitrage" in r.content
-    assert b"<table" not in r.content
+    assert b'id="rows"' not in r.content
 
 
 def test_snipes_serves_dashboard_html():
     r = client.get("/snipes")
     assert r.status_code == 200
-    assert b"<table" in r.content
+    assert b'id="rows"' in r.content
     assert b"Realm Arbitrage" in r.content
 
 

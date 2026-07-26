@@ -80,12 +80,7 @@
     flex: 1 1 300px; background: var(--card); border: 1px solid var(--hairline);
     border-radius: 8px; padding: 1.6rem; display: flex; flex-direction: column; gap: 1.1rem;
   }
-  .plan.highlight { border: 1px solid var(--bullion); position: relative; }
-  .plan-badge {
-    position: absolute; top: -0.65rem; left: 1.4rem; background: var(--bullion); color: #fff;
-    font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-    padding: 0.2rem 0.6rem; border-radius: 999px;
-  }
+  .plan.highlight { border: 1px solid var(--bullion); }
   .plan-name { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
   .plan-price {
     font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
@@ -144,7 +139,7 @@
   </div>
   <div class="nav">
     <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
-    <a href="/login">Log in</a>
+    <a href="/login" id="nav-login">Log in</a>
   </div>
 </div>
 
@@ -170,7 +165,6 @@
       </div>
 
       <div class="plan highlight">
-        <span class="plan-badge">Most popular</span>
         <div class="plan-name">Subscriber</div>
         <div class="plan-price">€4.99 <span>/ month</span></div>
         <ul>
@@ -230,6 +224,13 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
   applyThemeButtonState();
 });
 applyThemeButtonState();
+
+// This page is public (visited logged-out or logged-in), but "Log in" was
+// unconditionally shown regardless of actual session state -- misleading
+// for an already-authenticated visitor. Hide it once /api/me confirms a
+// session; no nav link put back in its place (the "Dashboard" nav link
+// here was deliberately removed already, see CLAUDE.md).
+fetch("/api/me").then(r => { if (r.ok) document.getElementById("nav-login")?.remove(); }).catch(() => {});
 </script>
 </body>
 </html>
