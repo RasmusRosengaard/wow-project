@@ -1048,3 +1048,18 @@ header confirmed to have no `seal-label`/"Validated Data" text and a real
 `pytest -q`/`env -u DATABASE_URL pytest -q`: 265 passing (new
 `test_index_serves_landing_page` replacing the old `test_index_serves_html`,
 plus a new `test_snipes_serves_dashboard_html`).
+
+**Two more small follow-ups, same session**: (1) landing page's auto-
+redirect for logged-in visitors reversed after human feedback ("shouldn't
+logged-in users just have a different landing page?") -- a hard redirect
+meant nobody signed in could ever actually see the page. Replaced with CTA
+personalization: the same `/api/me` check swaps `#nav-cta`/`#hero-cta`/
+`#closing-cta` to "Go to dashboard" and removes `#nav-login`, but the page
+itself always stays visible. Verified both states in an actual browser
+(stubbed `/api/me` for logged-in, unstubbed 404 for logged-out). (2)
+Removed the `Pricing` nav link from `dashboard.html`'s own topbar --
+that navbar is only ever seen by already-logged-in users inside the tool,
+unlike `landing.html`'s navbar (the marketing frontpage), which keeps
+`Pricing` regardless of login state -- a deliberate distinction the human
+was explicit about ("not the navbar on the frontpage"). No Python touched
+either time; `pytest -q`: 265 passing throughout.
