@@ -41,6 +41,7 @@ Requires: diff_snapshots.py already run for --sell (data/events/{sell}.parquet)
 and scan_region.py already run (data/listings/*.parquet).
 """
 import argparse
+from collections import defaultdict
 from pathlib import Path
 
 import duckdb
@@ -85,6 +86,14 @@ SORT_COLUMNS = {
     "discount": "discount_pct DESC",
     "gold": "sell_p_g DESC",
 }
+# Python-side equivalent of SORT_COLUMNS, used to re-sort after
+# _apply_class_quotas() recombines per-bucket slices (each individually
+# still in the SQL query's original order, but the buckets themselves are
+# concatenated in class_quotas dict order, not discount/gold order).
+SORT_KEYS = {
+    "discount": "discount_pct",
+    "gold": "sell_p_g",
+}
 
 CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
           "listed), so it can ride the warband bank to your sell realm -- just "
@@ -115,6 +124,74 @@ SELL_PRICE_SCAM_MULTIPLE = 500
 # applied to them -- excluded from max_appearance_sources results below.
 NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
 
+# Mirrors dashboard.html's ITEM_CLASS_FILTERS exactly, same bucket keys and
+# same item_class/item_subclass rules -- so a class_quotas key here means
+# the same category a human sees when they check that box client-side.
+# "mount" needs both fields since it's a subclass (5) under the generic
+# Miscellaneous class (15), not its own item_class -- a class-15 item with
+# a different subclass matches no bucket at all (falls through to None,
+# see _class_bucket()), same as any item_class not listed here.
+CLASS_BUCKET_RULES: dict[str, tuple[int, int | None]] = {
+    "weapon": (2, None),
+    "armor": (4, None),
+    "container": (1, None),
+    "profession": (19, None),
+    "housing": (20, None),
+    "battlepet": (17, None),
+    "quest": (12, None),
+    "mount": (15, 5),
+}
+
+# Per-bucket resolution cap for _apply_class_quotas()'s NameCache.ensure_many()
+# call -- bounds a single request's worst-case latency the same way
+# collect_all.py's PREWARM_BASE_LEVEL_CAP and dashboard.py's earlier
+# ensure_many() calls already do (see "Real production outage" in
+# CLAUDE.md): resolving thousands of never-before-seen items one at a time
+# is exactly the shape that froze the dashboard for minutes before. An item
+# left unresolved this round just doesn't get a chance to fill its bucket's
+# quota yet -- collect_all.py's background prewarm converges the cache over
+# time regardless of user traffic, so this self-heals.
+CLASS_QUOTA_RESOLVE_LIMIT = 2000
+
+
+def _class_bucket(item_class: int | None, item_subclass: int | None) -> str | None:
+    """Which class_quotas bucket (if any) this item_class/item_subclass pair
+    falls into -- None means "not in any quota'd bucket," which
+    _apply_class_quotas() treats as excluded, same as an explicit 0 quota."""
+    for bucket, (cls, subcls) in CLASS_BUCKET_RULES.items():
+        if item_class == cls and (subcls is None or item_subclass == subcls):
+            return bucket
+    return None
+
+
+def _apply_class_quotas(rows: list[dict], class_quotas: dict[str, int]) -> list[dict]:
+    """Caps each item-class bucket at class_quotas[bucket] best-discount rows
+    (rows arrive already sorted by the SQL query's ORDER BY, so slicing keeps
+    the best ones), instead of letting a saturated category (near-100%-
+    discount decoy/troll listings, see SELL_PRICE_SCAM_MULTIPLE's history)
+    crowd out every other category's real, lower-but-genuine snipes from the
+    batch entirely -- confirmed live 2026-07-27: a real Housing snipe existed
+    at 88.1% discount but never reached the dashboard because the top
+    BATCH_TOP rows by raw discount% were saturated end-to-end by decoy
+    pricing in other categories. A bucket with no quota entry (or quota 0)
+    is excluded entirely -- e.g. the free tier deliberately shows no
+    Containers/Profession/Quest items at all, a human product decision, not
+    an oversight."""
+    names = NameCache()
+    item_ids = list({r["item_id"] for r in rows})
+    names.ensure_many(item_ids, limit=CLASS_QUOTA_RESOLVE_LIMIT)
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        bucket = _class_bucket(names.item_class(r["item_id"]), names.item_subclass(r["item_id"]))
+        if bucket is not None:
+            buckets[bucket].append(r)
+    names.save()
+    result = []
+    for bucket, quota in class_quotas.items():
+        if quota > 0:
+            result.extend(buckets.get(bucket, [])[:quota])
+    return result
+
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
@@ -122,6 +199,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 min_sell_now: float | None = None,
                 max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
+                class_quotas: dict[str, int] | None = None,
                 top: int = 50, sort: str = "discount") -> list[dict]:
     """**Pricing model, replaced 2026-07-25 (human product decision)**: the
     sell price for an item/variant is simply the sell realm's own current
@@ -272,7 +350,28 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     (unlike the mean, which only backs an internal threshold check) -- a
     single other realm having its own outlier listing skews a mean far more
     than a median, and the whole point of showing this figure is to be a
-    trustworthy "what does this actually cost around the region" number."""
+    trustworthy "what does this actually cost around the region" number.
+
+    **class_quotas** (added 2026-07-27, human request): a {bucket: max_rows}
+    dict (bucket keys match dashboard.html's ITEM_CLASS_FILTERS -- weapon/
+    armor/container/profession/housing/battlepet/quest/mount, see
+    CLASS_BUCKET_RULES) that caps each item-class bucket independently
+    instead of one flat top-N by discount% -- see _apply_class_quotas()'s
+    docstring for the real production case (a genuine 88.1%-discount Housing
+    snipe crowded out entirely by decoy-priced listings elsewhere) that
+    motivated this. None (the default) preserves the exact prior behavior --
+    CLI callers that don't pass this are unaffected. When set, the SQL
+    candidate pool is fetched much wider than `top` (see sql_limit below)
+    since a sparse bucket (e.g. Mounts) may need to search deep past where a
+    flat top-N cutoff would have already truncated to find enough of its
+    own candidates; item_class/item_subclass are resolved per candidate via
+    NameCache (bounded by CLASS_QUOTA_RESOLVE_LIMIT, same worst-case-latency
+    reasoning as collect_all.py's prewarm cap), and a bucket with no entry
+    (or an explicit 0) is excluded entirely -- e.g. the free tier
+    deliberately omits Containers/Profession/Quest, a human product
+    decision. The combined, requota'd result is re-sorted by the same `sort`
+    order before the final `top` truncation (a safety net only -- the
+    quotas are expected to sum to roughly `top` by construction)."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -289,6 +388,12 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     # could get filtered down to near-nothing before the appearance check
     # ever runs.
     sql_limit = int(top) if max_appearance_sources is None else max(int(top) * 20, 1000)
+    if class_quotas is not None:
+        # A sparse bucket (e.g. Mounts) may need to search well past where a
+        # flat top-N by discount% would already have cut off -- 10x the
+        # combined quota budget, capped at 20,000 to keep the query/row-
+        # materialization cost bounded regardless of how big `top` itself is.
+        sql_limit = max(sql_limit, min(sum(class_quotas.values()) * 10, 20000))
     con.execute(f"""
         CREATE OR REPLACE VIEW listings AS
         SELECT * FROM read_parquet('{(DATA / "listings" / "*.parquet").as_posix()}')
@@ -383,6 +488,13 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     cols = [d[0] for d in res.description]
     rows = [dict(zip(cols, row)) for row in res.fetchall()]
     rows = _filter_by_appearance(rows, max_appearance_sources)
+    if class_quotas is not None:
+        rows = _apply_class_quotas(rows, class_quotas)
+        # Buckets were concatenated in class_quotas dict order, not
+        # discount/gold order -- re-sort before the final top truncation
+        # below (a safety net: the quotas are expected to sum to roughly
+        # `top` by construction, not exceed it, but don't rely on that).
+        rows.sort(key=lambda r: r[SORT_KEYS[sort]], reverse=True)
     return rows[: int(top)]
 
 

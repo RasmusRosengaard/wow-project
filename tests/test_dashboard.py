@@ -100,6 +100,24 @@ def isolate_item_names_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def default_item_class_stub(monkeypatch):
+    """snipe_check.find_snipes()'s class_quotas (added 2026-07-27) resolves
+    item_class for every row regardless of names=true -- a row whose class
+    can't be resolved falls into no quota bucket at all (see
+    snipe_check._class_bucket()) and gets silently excluded from results.
+    Without this default, every test's fixture item would vanish from
+    /api/snipes' response the instant class_quotas became unconditional,
+    since the real _fetch_item_details() hits the live Blizzard API (no
+    token in CI) and returns None. Armor (class 4) is a stable, always-
+    quota'd bucket at every tier -- a test that cares about a specific
+    item_class calls stub_item_details() itself later in the test body,
+    which overrides this."""
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {"name": None, "quality": None, "level": None,
+                                          "inventory_type": None, "item_class": 4, "item_subclass": 2})
+
+
+@pytest.fixture(autouse=True)
 def isolate_appearance_cache(tmp_path, monkeypatch):
     """find_snipes() instantiates a real appearance.AppearanceCache, which
     reads CACHE_PATH (data/appearances.json) unless redirected -- same
@@ -109,10 +127,15 @@ def isolate_appearance_cache(tmp_path, monkeypatch):
 
 
 def stub_item_details(monkeypatch, name="Stub Item", quality="EPIC", level=600,
-                      icon="https://example/icon.jpg", item_class=None, item_subclass=None,
+                      icon="https://example/icon.jpg", item_class=4, item_subclass=2,
                       inventory_type=None):
     """item_names.NameCache hits the live Blizzard API -- stub the network
-    edge so names=true tests stay offline and deterministic."""
+    edge so names=true tests stay offline and deterministic. item_class/
+    item_subclass default to Armor (a stable, always-quota'd class_quotas
+    bucket, see default_item_class_stub above) rather than None -- a test
+    that doesn't care about item_class shouldn't have its row silently
+    excluded by class-quota bucketing; a test that does care passes its own
+    values explicitly (e.g. test_api_snipes_carries_item_class_when_names_resolved)."""
     monkeypatch.setattr(item_names, "_fetch_item_details",
                         lambda item_id: {"name": name, "quality": quality, "level": level,
                                          "item_class": item_class, "item_subclass": item_subclass,
@@ -228,6 +251,27 @@ def test_snipe_cap_by_tier():
     # Superuser wins even with no/expired subscription -- matches
     # auth.has_active_subscription's existing "is_superuser OR active" logic.
     assert dashboard._snipe_cap(_user(is_superuser=True, subscription_status=None)) == 10000
+
+
+def test_class_quotas_by_tier_sum_to_the_tier_cap():
+    """dashboard._class_quotas() (added 2026-07-27, human-specified numbers):
+    each tier's per-bucket quotas must sum to exactly that tier's own
+    SNIPE_TIER_CAPS ceiling, not more (would silently over-fetch past what
+    the tier is supposed to see) or less (would waste part of the budget on
+    nothing). Free tier deliberately has no quest/profession/container
+    entries at all -- a human product decision (see FREE_CLASS_QUOTAS'
+    module comment), not a gap to fill in."""
+    assert dashboard._class_quotas(_user()) == dashboard.FREE_CLASS_QUOTAS
+    assert sum(dashboard.FREE_CLASS_QUOTAS.values()) == dashboard.SNIPE_TIER_CAPS["free"]
+    assert "quest" not in dashboard.FREE_CLASS_QUOTAS
+    assert "profession" not in dashboard.FREE_CLASS_QUOTAS
+    assert "container" not in dashboard.FREE_CLASS_QUOTAS
+
+    assert dashboard._class_quotas(_user(subscription_status="active")) == dashboard.SUBSCRIBED_CLASS_QUOTAS
+    assert sum(dashboard.SUBSCRIBED_CLASS_QUOTAS.values()) == dashboard.SNIPE_TIER_CAPS["subscribed"]
+
+    assert dashboard._class_quotas(_user(is_superuser=True)) == dashboard.SUPERUSER_CLASS_QUOTAS
+    assert sum(dashboard.SUPERUSER_CLASS_QUOTAS.values()) == dashboard.SNIPE_TIER_CAPS["superuser"]
 
 
 @pytest.mark.parametrize("is_superuser,subscription_status,expected_cap", [

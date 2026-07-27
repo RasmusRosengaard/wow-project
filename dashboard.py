@@ -274,6 +274,38 @@ def _snipe_cap(user: User) -> int:
     return SNIPE_TIER_CAPS["free"]
 
 
+# Per-tier item-class quotas (added 2026-07-27, human-specified numbers) --
+# passed to snipe_check.find_snipes()'s class_quotas param so a saturated
+# category can't crowd every other one out of the batch (see
+# snipe_check._apply_class_quotas()'s docstring for the real Housing case
+# that motivated this). Free tier deliberately shows no Containers/
+# Profession/Quest items at all (its 5 quotas sum to exactly its 250 cap) --
+# a human product decision, not an oversight. Subscribed/superuser keep
+# fixed floors for quest/profession/container (100/100/20, not scaled --
+# free tier has zero of these to scale a ratio from) and scale the
+# remaining budget using free tier's own weapon/armor/housing/mount/
+# battlepet ratios (40%/40%/16%/2%/2%).
+FREE_CLASS_QUOTAS = {
+    "weapon": 100, "armor": 100, "housing": 40, "mount": 5, "battlepet": 5,
+}
+SUBSCRIBED_CLASS_QUOTAS = {
+    "quest": 100, "profession": 100, "container": 20,
+    "weapon": 711, "armor": 712, "housing": 285, "mount": 36, "battlepet": 36,
+}
+SUPERUSER_CLASS_QUOTAS = {
+    "quest": 100, "profession": 100, "container": 20,
+    "weapon": 3911, "armor": 3912, "housing": 1565, "mount": 196, "battlepet": 196,
+}
+
+
+def _class_quotas(user: User) -> dict[str, int]:
+    if user.is_superuser:
+        return SUPERUSER_CLASS_QUOTAS
+    if user.subscription_status == "active":
+        return SUBSCRIBED_CLASS_QUOTAS
+    return FREE_CLASS_QUOTAS
+
+
 async def _enforce_realm_lock(user: User, sell: int, session: AsyncSession) -> None:
     """Free tier only (SNIPE_TIER_CAPS) -- to bound how many distinct
     expensive DuckDB queries a non-paying account can generate, it's locked
@@ -319,6 +351,7 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
                                        min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
                                        max_appearance_sources=max_appearance_sources,
                                        max_per_item=max_per_item,
+                                       class_quotas=_class_quotas(user),
                                        top=top, sort=sort)
 
     # find_snipes() can still make blocking Blizzard API calls mid-query --

@@ -667,6 +667,158 @@ def test_find_snipes_region_median_uses_median_not_mean(tmp_path, monkeypatch):
     assert all(r["region_median_copper"] == 20_000 for r in rows)
 
 
+def _stub_item_classes(monkeypatch, mapping: dict[int, tuple[int | None, int | None]]):
+    """mapping: item_id -> (item_class, item_subclass). Used by class_quotas
+    tests to control which bucket (snipe_check._class_bucket()) each test
+    item resolves into, without hitting the live Blizzard API."""
+    monkeypatch.setattr(
+        item_names, "_fetch_item_details",
+        lambda item_id: {
+            "name": None, "quality": None, "level": None, "inventory_type": None,
+            "item_class": mapping.get(item_id, (None, None))[0],
+            "item_subclass": mapping.get(item_id, (None, None))[1],
+        })
+
+
+def test_find_snipes_class_quotas_prevent_one_category_crowding_out_another(tmp_path, monkeypatch):
+    """Reproduces the real production complaint (2026-07-27): a saturated
+    category (here Weapons, standing in for the decoy-listing-heavy
+    categories seen live) fills every slot of a small top-N budget purely by
+    raw discount%, so a real, lower-but-genuine snipe in another category
+    (Housing) never appears at all. With class_quotas={"weapon": 2,
+    "housing": 1} and top=3, the single Housing row must survive even
+    though its ~47% discount ranks below all 5 of the ~99%-discount Weapon
+    rows -- proving the quota, not raw rank, decides what's kept."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    WEAPON_ITEM, HOUSING_ITEM = 700, 701
+    _stub_item_classes(monkeypatch, {WEAPON_ITEM: (2, None), HOUSING_ITEM: (20, None)})
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [
+        snap_row(9999, T1, item_id=103),
+        snap_row(1, T1, item_id=WEAPON_ITEM, buyout=100_000),   # 10g sell reference
+        snap_row(2, T1, item_id=HOUSING_ITEM, buyout=100_000),  # 10g sell reference
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    # 5 near-100%-discount Weapon listings across 5 different realms --
+    # would fill an unquota'd top=3 entirely by themselves.
+    buy_rows = [listing_row(1000 + i, WEAPON_ITEM, buyout=1_000, auction_id=100 + i)
+                for i in range(5)]
+    # One real, qualifying (~47% discount) Housing listing.
+    buy_rows.append(listing_row(2000, HOUSING_ITEM, buyout=50_000, auction_id=200))
+    for r in buy_rows:
+        pq.write_table(pa.Table.from_pylist([r], schema=LISTING_SCHEMA),
+                       listings_dir / f"{r['cr_id']}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+
+    # Without quotas, Housing is crowded out entirely by the 5 Weapon rows.
+    unquota_rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, top=3)
+    assert all(r["item_id"] == WEAPON_ITEM for r in unquota_rows)
+    assert len(unquota_rows) == 3
+
+    # With quotas, Housing survives despite its much lower discount%.
+    quota_rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, top=3,
+                                         class_quotas={"weapon": 2, "housing": 1})
+    assert len(quota_rows) == 3
+    by_item = [r["item_id"] for r in quota_rows]
+    assert by_item.count(WEAPON_ITEM) == 2
+    assert by_item.count(HOUSING_ITEM) == 1
+
+
+def test_find_snipes_class_quotas_excludes_unlisted_categories(tmp_path, monkeypatch):
+    """A bucket with no entry in class_quotas at all (not even 0) is
+    excluded entirely -- matches the free tier's real design (deliberately
+    shows no Containers/Profession/Quest items, see dashboard.py's
+    FREE_CLASS_QUOTAS), not just an oversight for buckets nobody thought of."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    QUEST_ITEM = 800
+    _stub_item_classes(monkeypatch, {QUEST_ITEM: (12, None)})  # Quest, not in the quota dict below
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [snap_row(9999, T1, item_id=103),
+            snap_row(1, T1, item_id=QUEST_ITEM, buyout=100_000)]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(BUY_CR_A, QUEST_ITEM, buyout=1_000, auction_id=100)], schema=LISTING_SCHEMA),
+        listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, top=10,
+                                   class_quotas={"weapon": 10})  # no "quest" key at all
+    assert rows == []
+
+
+def test_find_snipes_class_quotas_mount_is_a_subclass_of_misc(tmp_path, monkeypatch):
+    """Mounts (item_class 15, item_subclass 5) are a subclass of the generic
+    Miscellaneous class, not their own item_class -- a class-15 item with a
+    DIFFERENT subclass (ordinary Miscellaneous junk) must not accidentally
+    match the "mount" bucket, and with no bucket of its own must be excluded
+    the same as any other unlisted category."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    MOUNT_ITEM, MISC_ITEM = 900, 901
+    _stub_item_classes(monkeypatch, {MOUNT_ITEM: (15, 5), MISC_ITEM: (15, 99)})
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [
+        snap_row(9999, T1, item_id=103),
+        snap_row(1, T1, item_id=MOUNT_ITEM, buyout=100_000),
+        snap_row(2, T1, item_id=MISC_ITEM, buyout=100_000),
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([
+        listing_row(BUY_CR_A, MOUNT_ITEM, buyout=1_000, auction_id=100),
+        listing_row(BUY_CR_A, MISC_ITEM, buyout=1_000, auction_id=101),
+    ], schema=LISTING_SCHEMA), listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, top=10,
+                                   class_quotas={"mount": 10})
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == MOUNT_ITEM
+
+
+def test_find_snipes_class_quotas_none_is_identical_to_omitting_it(data_dir, monkeypatch):
+    """class_quotas=None (the default) must produce byte-identical results
+    to not passing it at all -- every existing test in this file relies on
+    that, but this makes the equivalence explicit."""
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    default_rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
+    explicit_none_rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, class_quotas=None)
+    assert default_rows == explicit_none_rows
+
+
 def test_find_snipes_reports_appearance_sources_without_filtering(data_dir, monkeypatch):
     """With no max_appearance_sources set, appearance_sources is attached to
     every row for display but nothing gets dropped -- including items the

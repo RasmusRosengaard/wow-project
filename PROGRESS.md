@@ -50,9 +50,8 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
 1. **Marketing** — explicitly named the next step (2026-07-26), superseding
    the product/code backlog below in priority. Starting from a blank page;
    see "Next up" #1.
-2. A fix for decoy-listing discount% crowding out entire legitimate
-   categories from the batch cap (confirmed live 2026-07-26 on Draenor —
-   see "Next up").
+2. ~~A fix for decoy-listing discount% crowding out entire legitimate
+   categories from the batch cap~~ — **resolved 2026-07-27**, see "Next up" #2.
 3. Restricted Stripe key (still the full `sk_live_...` secret). Human-only, not scheduled.
 4. Email verification for new registrations, to stop spam/throwaway free-tier accounts.
 5. TSM/Auctionator buylist export idea (parked, no design work).
@@ -74,7 +73,7 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
    settled/shareable before spending effort driving traffic to it — flag
    to the human if anything about it still feels unfinished before this
    starts in earnest.
-2. **Decoy-listing discount% is crowding entire legitimate categories out of
+2. **RESOLVED 2026-07-27** — **Decoy-listing discount% is crowding entire legitimate categories out of
    the dashboard's batch cap** (confirmed live 2026-07-26, via `railway ssh`
    against production data on Draenor — see `HISTORY.md` for the full trace
    once it's written up, or re-derive with the same technique: `find_snipes()`
@@ -103,15 +102,29 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
      reversed reflexively). **2026-07-27 update**: a human decision was made
      on this specific question — flag, don't exclude (`sell_price_suspect`,
      see "Known gaps / risks" below and `snipe_check.py`'s
-     `SELL_PRICE_SCAM_MULTIPLE`). That decision stands; it does not resolve
-     this batch-crowding item, which remains open.
+     `SELL_PRICE_SCAM_MULTIPLE`). That decision stands, and on its own it
+     didn't resolve this batch-crowding item — the `class_quotas` mechanism
+     below (also shipped 2026-07-27) is what actually did.
    - Raise `BATCH_TOP` and/or restructure the batch fetch to guarantee some
      minimum representation per item-class/category, so one flooded
-     category can't zero out another.
+     category can't zero out another. **Done 2026-07-27**: this is the
+     direction that shipped. `snipe_check.find_snipes()`'s new `class_quotas`
+     param (see `CLAUDE.md`'s `snipe_check.py` row) caps each item-class
+     bucket independently instead of one flat top-N by discount% —
+     `dashboard.py`'s `_class_quotas(user)` supplies human-specified,
+     per-tier numbers (free: weapon 100/armor 100/housing 40/mount 5/
+     battlepet 5, summing to exactly its 250 cap, deliberately zero quest/
+     profession/container; subscribed/superuser add fixed floors for those
+     three plus the free tier's own ratios scaled up — see `CLAUDE.md` for
+     the exact numbers). `BATCH_TOP` itself was left at 10000, not raised
+     further, at explicit human request ("we want most items as possible").
    - First confirm the suspected root cause directly: sample a handful of
      the 99-100% discount rows and check whether they're genuinely single-
      copy, wildly-off-market troll listings (as suspected) rather than
      something else entirely — don't design a fix before that's verified.
+     Confirmed 2026-07-27 via `sell_price_suspect`/`region_median_g` and
+     direct production sampling (Draenor item 36519 and others) — yes,
+     decoy/troll pricing, exactly as suspected.
 3. **Restricted Stripe key** — swap the full `sk_live_...` secret for a key
    restricted to Checkout/Customers/Subscriptions/Webhooks. **Human-only,
    asked explicitly**: do not rotate/swap this live credential without the
@@ -211,10 +224,14 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   lower-discount snipe unless the user manually checks "hide flagged".
   Reintroducing an actual exclusion was considered and explicitly rejected
   in favor of surfacing the signal (see `snipe_check.py`'s
-  `SELL_PRICE_SCAM_MULTIPLE` comment) — if the crowding-out problem needs
-  solving on its own, it still needs one of "Next up" #1's other directions
-  (raise `BATCH_TOP` further, guarantee per-category representation), not
-  just this flag.
+  `SELL_PRICE_SCAM_MULTIPLE` comment) — the crowding-out problem needed
+  solving on its own, and **was, the same day**: `find_snipes()`'s new
+  `class_quotas` param caps each item-class bucket independently instead of
+  one flat top-N by discount%, so a saturated category (whether or not any
+  of its rows individually clear the 500x `sell_price_suspect` bar) can no
+  longer zero out another category's real, lower-discount snipes. See
+  `CLAUDE.md`'s `snipe_check.py`/`dashboard.py` rows for the exact
+  per-tier numbers (human-specified, not scaled/decided by the assistant).
 - Sale-inference classification (`inferred_sale` especially) has never been
   checked against real seller behavior — Phase 0's gate was skipped. No
   longer on the pricing path, and no longer runs automatically at all
