@@ -118,6 +118,15 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
      three plus the free tier's own ratios scaled up — see `CLAUDE.md` for
      the exact numbers). `BATCH_TOP` itself was left at 10000, not raised
      further, at explicit human request ("we want most items as possible").
+     **A first version of this shipped and was corrected the same day**: it
+     widened the SQL `LIMIT` to a fixed ceiling (20,000) and bucketed in
+     Python afterward, which turned out not to actually guarantee anything
+     — live-verified on Draenor that 450,568 rows qualify region-wide, and
+     the first genuine Housing candidate sat at rank 39,524, past that
+     ceiling. The fix (still 2026-07-27): rank per bucket as a real SQL
+     `ROW_NUMBER() OVER (PARTITION BY bucket ...)` window function over the
+     *entire*, untruncated candidate set — see `CLAUDE.md`'s
+     `snipe_check.py` row for the mechanism.
    - First confirm the suspected root cause directly: sample a handful of
      the 99-100% discount rows and check whether they're genuinely single-
      copy, wildly-off-market troll listings (as suspected) rather than

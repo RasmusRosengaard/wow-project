@@ -736,6 +736,56 @@ def test_find_snipes_class_quotas_prevent_one_category_crowding_out_another(tmp_
     assert by_item.count(HOUSING_ITEM) == 1
 
 
+def test_find_snipes_class_quotas_finds_sparse_bucket_candidate_at_any_depth(tmp_path, monkeypatch):
+    """Reproduces the exact bug in the *first* class_quotas implementation
+    (same day, 2026-07-27, fixed before ever shipping to a real user beyond
+    this investigation): that version widened the SQL LIMIT to a fixed
+    ceiling and bucketed in Python afterward -- confirmed live on Draenor
+    that this doesn't actually guarantee anything, since 450,568 rows
+    qualified region-wide and the first genuine Housing candidate sat at
+    rank 39,524, past any reasonable fixed widening. This test reproduces
+    that shape at a smaller, tractable scale: 30 near-100%-discount Weapon
+    rows rank strictly above the single ~47%-discount Housing row -- deep
+    enough that any fixed "search this far and give up" cutoff smaller than
+    31 would miss it, but the real SQL-side ranking (no row-count
+    truncation before class_rank is computed) must not."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    WEAPON_ITEM, HOUSING_ITEM = 750, 751
+    _stub_item_classes(monkeypatch, {WEAPON_ITEM: (2, None), HOUSING_ITEM: (20, None)})
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [
+        snap_row(9999, T1, item_id=103),
+        snap_row(1, T1, item_id=WEAPON_ITEM, buyout=100_000),
+        snap_row(2, T1, item_id=HOUSING_ITEM, buyout=100_000),
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    buy_rows = [listing_row(1000 + i, WEAPON_ITEM, buyout=1_000, auction_id=100 + i)
+                for i in range(30)]  # 30 rows, all ranking above the Housing row below
+    buy_rows.append(listing_row(2000, HOUSING_ITEM, buyout=50_000, auction_id=200))
+    for r in buy_rows:
+        pq.write_table(pa.Table.from_pylist([r], schema=LISTING_SCHEMA),
+                       listings_dir / f"{r['cr_id']}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, top=31,
+                                   class_quotas={"weapon": 30, "housing": 1})
+    assert len(rows) == 31
+    by_item = [r["item_id"] for r in rows]
+    assert by_item.count(WEAPON_ITEM) == 30
+    assert by_item.count(HOUSING_ITEM) == 1
+
+
 def test_find_snipes_class_quotas_excludes_unlisted_categories(tmp_path, monkeypatch):
     """A bucket with no entry in class_quotas at all (not even 0) is
     excluded entirely -- matches the free tier's real design (deliberately
