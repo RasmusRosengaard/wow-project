@@ -90,6 +90,23 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
           "listed), so it can ride the warband bank to your sell realm -- just "
           "don't equip/use it before moving it, or it may bind to that character.")
 
+# A sell-realm reference price standing this far above the *average* current
+# price for the same item across the rest of the scanned region is far more
+# likely to be a troll/camped listing than a real cross-realm gap -- real
+# gaps run in the tens of percent (that's the whole product), not multiples
+# of the regional average. Traced live 2026-07-27 on Draenor item 36519
+# (Moonlit Katana): its only 4 current listings, across 4 different
+# bonus_keys, were all priced at exactly 139,846g75s while Undermine Exchange
+# showed ~1,500g as the real going rate elsewhere -- the signature of one
+# seller camping every variant at a single joke price. Deliberately high
+# (500x) and non-authoritative: a flagged row is NOT excluded from results
+# (human product decision, 2026-07-27) -- it's surfaced with
+# `sell_price_suspect=True` so the human can judge for themselves rather
+# than the system silently hiding data on a heuristic that (like every prior
+# one in this project, see market_key()'s noise-detection history) could
+# itself have a blind spot.
+SELL_PRICE_SCAM_MULTIPLE = 500
+
 # Blizzard's real inventory_type.type values for profession tool/accessory
 # slots (confirmed live 2026-07-23 against real items -- Mining Pick,
 # Blacksmith Hammer, Fishing Pole all return PROFESSION_TOOL; the newer
@@ -230,7 +247,32 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     above) plus `pet_species_id`/`pet_quality_id` -- dashboard.html groups
     rows by `(item_id, pet_species_id, pet_quality_id)` now (2026-07-26,
     replacing the old market_key-based grouping), since that's exactly
-    what determines whether two rows are "the same match" for pricing."""
+    what determines whether two rows are "the same match" for pricing.
+
+    **sell_price_suspect** (added 2026-07-27): True when the sell realm's
+    reference price (`cheapest_now`) is more than `SELL_PRICE_SCAM_MULTIPLE`
+    times the *average* current cheapest-per-realm price for the same item
+    across the rest of the scanned region (`region_stats.region_avg_cheapest`,
+    built from the same `buy` rows already loaded here -- no new data
+    source). This is a non-authoritative flag, not a filter: a suspect row
+    is still returned like any other, since it's a heuristic and every prior
+    heuristic in this project (see market_key()'s noise-detection history)
+    has eventually had a real blind spot -- the human decision (2026-07-27)
+    was to surface the signal and let the dashboard/CLI user judge, not to
+    silently drop rows on it. See SELL_PRICE_SCAM_MULTIPLE's module-level
+    comment for the real production case (Draenor item 36519) that
+    motivated this.
+
+    **region_median_g/region_median_copper** (added 2026-07-27, human
+    request): the *median* (not mean) of the same per-other-realm cheapest
+    listings used for sell_price_suspect above, shown to the user as "the
+    EU median price" for the item -- purely informational display, doesn't
+    gate or filter anything. Median rather than the mean here specifically
+    because this number is shown directly to a human as a reference point
+    (unlike the mean, which only backs an internal threshold check) -- a
+    single other realm having its own outlier listing skews a mean far more
+    than a median, and the whole point of showing this figure is to be a
+    trustworthy "what does this actually cost around the region" number."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -270,6 +312,31 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             FROM listings
             WHERE 1=1 {item_filter}
         ),
+        region_realm_floor AS (
+            -- Cheapest listing per *other* realm for this item -- the same
+            -- rows already loaded as snipe candidates below, reused as an
+            -- independent cross-check rather than a new data source.
+            SELECT cr_id, item_id, pet_species_id, pet_quality_id,
+                   min(buy_unit_price) AS realm_cheapest
+            FROM buy
+            GROUP BY cr_id, item_id, pet_species_id, pet_quality_id
+        ),
+        region_stats AS (
+            -- Average and median of those per-realm cheapest listings --
+            -- "the average/median EU price for this item", not a statistic
+            -- over every individual auction (which would over-weight realms
+            -- with more sellers). The average powers sell_price_suspect
+            -- (established 2026-07-27, kept as-is); the median is a
+            -- separate, purely informational display value (added
+            -- 2026-07-27, human request) -- less skewed by one other realm
+            -- itself having an outlier listing, so it's the more honest
+            -- "typical EU price" to show a user than the mean would be.
+            SELECT item_id, pet_species_id, pet_quality_id,
+                   avg(realm_cheapest) AS region_avg_cheapest,
+                   median(realm_cheapest) AS region_median_cheapest
+            FROM region_realm_floor
+            GROUP BY item_id, pet_species_id, pet_quality_id
+        ),
         matches AS (
             SELECT b.cr_id                                            AS buy_realm,
                    b.item_id, b.bonus_key, b.pet_species_id, b.pet_quality_id, b.auction_id,
@@ -278,12 +345,20 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                    round(b.buy_unit_price)::BIGINT                     AS buy_copper,
                    round(n.cheapest_now)::BIGINT                       AS sell_copper,
                    round(100.0 * (n.cheapest_now * 0.95 - b.buy_unit_price)
-                         / (n.cheapest_now * 0.95), 1)                 AS discount_pct
+                         / (n.cheapest_now * 0.95), 1)                 AS discount_pct,
+                   (n.cheapest_now > rs.region_avg_cheapest * {SELL_PRICE_SCAM_MULTIPLE})
+                                                                        AS sell_price_suspect,
+                   round(rs.region_median_cheapest / 10000, 2)          AS region_median_g,
+                   round(rs.region_median_cheapest)::BIGINT             AS region_median_copper
             FROM buy b
             JOIN sell_now n
               ON b.item_id = n.item_id
              AND b.pet_species_id IS NOT DISTINCT FROM n.pet_species_id
              AND b.pet_quality_id IS NOT DISTINCT FROM n.pet_quality_id
+            JOIN region_stats rs
+              ON b.item_id = rs.item_id
+             AND b.pet_species_id IS NOT DISTINCT FROM rs.pet_species_id
+             AND b.pet_quality_id IS NOT DISTINCT FROM rs.pet_quality_id
             WHERE (n.cheapest_now * 0.95 - b.buy_unit_price) / (n.cheapest_now * 0.95)
                   >= {float(min_discount)}
                   {price_filter}
@@ -343,7 +418,7 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
     names = NameCache() if resolve_names else None
     name_col = "name" if resolve_names else "item_id"
     hdr = (f"{'buy_realm':>9} {name_col:>28} {'variant':>14} {'buy_g':>10} {'sell_p_g':>10} "
-           f"{'disc%':>7} {'appear':>7}")
+           f"{'eu_med_g':>10} {'disc%':>7} {'appear':>7} {'flag':>5}")
     print(hdr)
     for r in rows:
         if r["pet_species_id"] is not None:
@@ -352,9 +427,10 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
             variant = r["bonus_key"] or "-"
         label = names.get(r["item_id"], r["pet_species_id"]) if names else str(r["item_id"])
         appear = r["appearance_sources"] if r["appearance_sources"] is not None else "-"
+        flag = "⚠" if r.get("sell_price_suspect") else "-"
         print(f"{r['buy_realm']:>9} {label:>28.28} {variant:>14} "
-              f"{r['buy_g']:>10.2f} {r['sell_p_g']:>10.2f} "
-              f"{r['discount_pct']:>7.1f} {appear:>7}")
+              f"{r['buy_g']:>10.2f} {r['sell_p_g']:>10.2f} {r['region_median_g']:>10.2f} "
+              f"{r['discount_pct']:>7.1f} {appear:>7} {flag:>5}")
     if names:
         names.save()
     else:

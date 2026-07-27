@@ -100,7 +100,11 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
      read as "the sell realm's current cheapest listing" (reintroduces some
      of the classification complexity that was deliberately removed
      2026-07-25 — needs to be weighed against that decision, not just
-     reversed reflexively).
+     reversed reflexively). **2026-07-27 update**: a human decision was made
+     on this specific question — flag, don't exclude (`sell_price_suspect`,
+     see "Known gaps / risks" below and `snipe_check.py`'s
+     `SELL_PRICE_SCAM_MULTIPLE`). That decision stands; it does not resolve
+     this batch-crowding item, which remains open.
    - Raise `BATCH_TOP` and/or restructure the batch fetch to guarantee some
      minimum representation per item-class/category, so one flooded
      category can't zero out another.
@@ -194,6 +198,23 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   up" #1 for the full trace and open directions. `BATCH_TOP`/the superuser
   tier cap were both raised to 10000 the same day (unrelated request), not
   independently re-measured against this specific saturation issue.
+  **Partial mitigation shipped 2026-07-26** (traced live via a user report
+  on Draenor item 36519, Moonlit Katana, ~93x the real Undermine Exchange
+  price): `snipe_check.find_snipes()` now flags (`sell_price_suspect`) any
+  row whose sell-realm reference price is over `SELL_PRICE_SCAM_MULTIPLE`
+  (500x) the *average* price for that item across the rest of the scanned
+  region, surfaced as a `⚠` in the dashboard and CLI plus a "hide flagged"
+  checkbox (unchecked by default). **This does not fix the crowding-out
+  effect above** — a human decision, not an oversight: a flagged row is
+  deliberately still included and still sorted by its (possibly inflated)
+  discount%, so it can still occupy a `fetchBatch()` slot ahead of a real,
+  lower-discount snipe unless the user manually checks "hide flagged".
+  Reintroducing an actual exclusion was considered and explicitly rejected
+  in favor of surfacing the signal (see `snipe_check.py`'s
+  `SELL_PRICE_SCAM_MULTIPLE` comment) — if the crowding-out problem needs
+  solving on its own, it still needs one of "Next up" #1's other directions
+  (raise `BATCH_TOP` further, guarantee per-category representation), not
+  just this flag.
 - Sale-inference classification (`inferred_sale` especially) has never been
   checked against real seller behavior — Phase 0's gate was skipped. No
   longer on the pricing path, and no longer runs automatically at all

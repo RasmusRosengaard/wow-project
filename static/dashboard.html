@@ -202,6 +202,10 @@
     background: var(--q, transparent); border: 1px solid var(--hairline-strong);
     vertical-align: middle; flex-shrink: 0;
   }
+  /* Warning icon for sell_price_suspect rows (see snipe_check.py's
+     SELL_PRICE_SCAM_MULTIPLE) -- amber in both themes since it's a caution
+     signal, not a status tied to the light/dark palette. */
+  .suspect-flag { color: #d97706; margin-right: 0.3rem; cursor: help; }
   .group-toggle {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--text-dim);
     border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.68rem; cursor: pointer;
@@ -303,6 +307,9 @@
     <label class="auto-label">
       <input id="unique_appearance" type="checkbox"> Unique transmog only
     </label>
+    <label class="auto-label" title="Sell realm's reference price is far above (500x+) the average price seen for this item elsewhere in the region -- likely a troll/camped listing, not a real price. Unchecked by default: nothing is hidden unless you ask.">
+      <input id="hide_suspect" type="checkbox"> Hide flagged (suspect price) listings
+    </label>
     <div>
       <div class="filters-heading">Item class</div>
       <div class="item-class-filters">
@@ -343,6 +350,7 @@
           <th data-sort="variant">Variant <span class="dir"></span></th>
           <th data-sort="buy">Buy <span class="dir"></span></th>
           <th data-sort="gold">Sell price <span class="dir"></span></th>
+          <th data-sort="eu_median">EU median <span class="dir"></span></th>
           <th data-sort="discount">Discount % <span class="dir"></span></th>
         </tr>
       </thead>
@@ -467,13 +475,14 @@ const QUALITY_FILTERS = [
   { key: "legendary", label: "Legendary", test: r => r.quality === "LEGENDARY" },
 ];
 
-const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "discount"]);
+const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "eu_median", "discount"]);
 const SORT_VALUE = {
   buy_realm: r => (r.buy_realm_name || "").toLowerCase(),
   item: r => (r.name || String(r.item_id)).toLowerCase(),
   variant: r => (r.variant || "").toLowerCase(),
   buy: r => r.buy_copper,
   gold: r => r.sell_copper,
+  eu_median: r => r.region_median_copper,
   discount: r => r.discount_pct,
 };
 
@@ -543,6 +552,7 @@ function applyFilters(rows) {
   const maxGold = maxGoldRaw ? Number(maxGoldRaw) * 10000 : null;
   const minSellNow = minSellNowRaw ? Number(minSellNowRaw) * 10000 : null;
   const uniqueOnly = $("unique_appearance").checked;
+  const hideSuspect = $("hide_suspect").checked;
   const activeClasses = ITEM_CLASS_FILTERS.filter(c => $(`class_${c.key}`).checked);
   const activeQualities = QUALITY_FILTERS.filter(q => $(`quality_${q.key}`).checked);
 
@@ -560,6 +570,11 @@ function applyFilters(rows) {
     // which aren't part of the visible paperdoll model at all -- mirrors
     // snipe_check.find_snipes' server-side --max-appearance-sources exactly.
     if (uniqueOnly && !(r.appearance_sources === 1 && !r.is_profession_item)) return false;
+    // sell_price_suspect (see snipe_check.SELL_PRICE_SCAM_MULTIPLE) is a
+    // non-authoritative flag, never dropped server-side -- this checkbox is
+    // the only place a suspect row can actually get hidden, and only when
+    // the user asks for it.
+    if (hideSuspect && r.sell_price_suspect) return false;
     // No class checked = no class filtering (show everything); any checked
     // = row must match at least one.
     if (activeClasses.length && !activeClasses.some(c => c.test(r))) return false;
@@ -635,6 +650,7 @@ function showTooltip(row, x, y) {
     <div class="tt-row"><span class="lbl">Buy realm</span><span>${row.buy_realm_name}</span></div>
     <div class="tt-row"><span class="lbl">Buy price</span>${formatMoney(row.buy_copper)}</div>
     <div class="tt-row"><span class="lbl">Sell price</span>${formatMoney(row.sell_copper)}</div>
+    <div class="tt-row"><span class="lbl">EU median</span>${formatMoney(row.region_median_copper)}</div>
     <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
     ${row.appearance_sources != null
       ? `<div class="tt-row"><span class="lbl">Appearance</span><span>${row.appearance_sources === 1 ? "unique look" : `shared by ${row.appearance_sources} items`}</span></div>`
@@ -700,13 +716,22 @@ function buildRowHtml(row, idx, group, isSub) {
   const toggle = (group && group.rows.length > 1)
     ? `<button class="group-toggle" data-group="${group.key}" title="${group.rows.length} listings for this item -- click to see them all, best first">${openGroups.has(group.key) ? "&#9652;" : "&#9662;"} ${group.rows.length}</button>`
     : "";
+  // sell_price_suspect: sell realm's reference price is far above (500x+)
+  // the region average -- likely a troll/camped listing, not a real price.
+  // Never hidden by default (see hide_suspect checkbox/applyFilters) -- just
+  // flagged so the human can judge, same reasoning as SELL_PRICE_SCAM_MULTIPLE's
+  // comment in snipe_check.py.
+  const suspectFlag = row.sell_price_suspect
+    ? `<span class="suspect-flag" title="Sell reference price is 500x+ the region average for this item -- likely a troll/camped listing on your sell realm, not a real price">&#9888;</span>`
+    : "";
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
       <td><div class="item-cell" data-row="${idx}">${icon}<span>${row.name ?? row.item_id}</span>${toggle}</div></td>
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
-      <td class="num">${formatMoney(row.sell_copper)}</td>
+      <td class="num">${suspectFlag}${formatMoney(row.sell_copper)}</td>
+      <td class="num">${formatMoney(row.region_median_copper)}</td>
       <td class="num">${row.discount_pct.toFixed(1)}</td>
     </tr>`;
 }
@@ -916,6 +941,10 @@ LIVE_FILTER_IDS.forEach(id => $(id).addEventListener("input", () => {
   renderTable();
 }));
 $("unique_appearance").addEventListener("change", () => {
+  hideTooltip();
+  renderTable();
+});
+$("hide_suspect").addEventListener("change", () => {
   hideTooltip();
   renderTable();
 });

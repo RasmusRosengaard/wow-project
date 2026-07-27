@@ -193,6 +193,20 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         "buy_copper": r["buy_copper"],
         "sell_copper": r["sell_copper"],
         "discount_pct": r["discount_pct"],
+        # Non-authoritative flag (added 2026-07-27, see
+        # snipe_check.SELL_PRICE_SCAM_MULTIPLE): sell realm's reference price
+        # is >500x the region average for this item -- likely a troll/camped
+        # listing, not a real regional gap. Never filters the row out server-
+        # side; dashboard.html's "hide flagged" checkbox applies it entirely
+        # client-side, same pattern as its other filters.
+        "sell_price_suspect": r["sell_price_suspect"],
+        # EU median (added 2026-07-27, human request): the median (not mean --
+        # see snipe_check.find_snipes()'s docstring for why median specifically)
+        # current cheapest listing for this item across the rest of the
+        # scanned region. Purely informational display column, doesn't gate
+        # or filter anything.
+        "region_median_g": r["region_median_g"],
+        "region_median_copper": r["region_median_copper"],
     }
     if names is not None:
         out["name"] = names.get(r["item_id"], r["pet_species_id"])
