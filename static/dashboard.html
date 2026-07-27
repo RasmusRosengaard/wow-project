@@ -439,9 +439,37 @@ function loadCache(sell, items) {
   } catch (e) { return null; }
 }
 function saveCache(sell, items, payload) {
+  // A CACHE_VERSION bump orphans every old-version entry -- loadCache() only
+  // ever reads under the *current* version, so a stale one can never be
+  // used again, but it doesn't disappear from localStorage on its own.
+  // Purge every other-version key before writing, not just on logout
+  // (clearAllCaches()), or it just sits there consuming quota forever.
   try {
-    localStorage.setItem(cacheKey(sell, items), JSON.stringify(payload));
-  } catch (e) { /* storage full/unavailable -- cache is a perf optimization only, fail soft */ }
+    Object.keys(localStorage)
+      .filter(k => k.startsWith("snipe_cache_v") && !k.startsWith(`snipe_cache_v${CACHE_VERSION}_`))
+      .forEach(k => localStorage.removeItem(k));
+  } catch (e) { /* nothing to clean up if localStorage itself is unavailable */ }
+  // A full BATCH_TOP=10000-row batch, at up to ~1KB/row once names=true's
+  // icon URLs/labels are included, can exceed the browser's per-origin
+  // localStorage quota outright -- confirmed live 2026-07-27 on Draenor
+  // (11.12MB for 10,000 rows, several MB over quota even with the orphaned-
+  // key purge above already applied). Silently failing to cache at all
+  // meant every load painted from nothing and read as a cold "Loading
+  // latest data..." forever, since the write that would have fixed that
+  // never succeeded either. Retry with progressively fewer rows instead of
+  // giving up outright -- a partial cache is still useful for instant-paint
+  // purposes, and the next real fetch always replaces it with the true
+  // current batch regardless of how many rows made it in here.
+  let rows = payload.rows;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      localStorage.setItem(cacheKey(sell, items), JSON.stringify({...payload, rows}));
+      return;
+    } catch (e) {
+      if (rows.length === 0) return;  // give up, nothing left to trim
+      rows = rows.slice(0, Math.ceil(rows.length / 2));
+    }
+  }
 }
 function clearAllCaches() {
   try {
