@@ -415,8 +415,13 @@ const BATCH_TOP = 10000;
 // entirely when Blizzard hasn't actually published anything new -- see
 // checkForUpdates() below. CACHE_VERSION bumps if the cached row shape ever
 // changes, so an old cache from a previous version of this page can't get
-// rendered against code that expects different fields.
-const CACHE_VERSION = 1;
+// rendered against code that expects different fields. Bumped to 2
+// (2026-07-27): sell_price_suspect/region_median_g/region_median_copper
+// were added to the row shape -- a cache from before that shipped would
+// otherwise repaint with those fields missing (NaN in the EU median
+// column, a suspect flag that never shows/hides) until it happened to
+// expire or the sell realm/item filter changed.
+const CACHE_VERSION = 2;
 // Safety net, not the primary freshness signal: even if last_modified still
 // matches, force a real refetch once a cache is this old, in case the
 // status endpoint itself is stuck/wrong for some other reason. Comfortably
@@ -805,14 +810,28 @@ async function fetchBatch() {
   if (fetchInFlight) return;  // an equivalent fetch is already running -- let it finish rather than piling another slow query on top (see fetchInFlight's declaration above)
   const items = $("items").value.trim();
   renderFromCache(sell, items);  // instant paint from last-known-good while the real fetch is in flight
+  // A background refresh (rows already on screen -- the 60s auto-refresh
+  // timer found checkForUpdates()'s status check genuinely advanced, e.g.
+  // Blizzard's ~hourly publish landed) shouldn't dim/block the table the
+  // same way a cold load with nothing to show yet does -- human feedback,
+  // 2026-07-27: this happening roughly once an hour, often with no visibly
+  // different result, read as an unwarranted interruption rather than a
+  // helpful "loading" signal. Only a load starting from a blank table gets
+  // the blocking treatment.
+  const isBackgroundRefresh = cachedRows.length > 0;
   fetchInFlight = true;
-  setLoading(true);
+  if (!isBackgroundRefresh) setLoading(true);
   try {
     const r = await fetch(`/api/snipes?${batchParams().toString()}`);
     // 402 is no longer possible here -- /api/snipes only requires login now
     // (the free tier, see dashboard.py's SNIPE_TIER_CAPS), not a subscription.
     if (r.status === 401) { window.location.href = "/login"; return; }
     if (!r.ok) {
+      // A background refresh failing (transient network blip, server
+      // hiccup) shouldn't blank out data that was already good on screen --
+      // just leave it and let the next 60s tick try again. Only a cold load
+      // with nothing cached shows the error state.
+      if (isBackgroundRefresh) return;
       const err = await r.json().catch(() => ({detail: r.statusText}));
       cachedRows = [];
       openGroups.clear();
