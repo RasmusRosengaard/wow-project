@@ -303,7 +303,6 @@
       <label>Min sell price (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
       <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
     </div>
-    <label>Item ids (csv) <input id="items" type="text" placeholder="optional"></label>
     <label class="auto-label">
       <input id="unique_appearance" type="checkbox"> Unique transmog only
     </label>
@@ -380,7 +379,7 @@ let timer = null;
 // the server last returned (loosest possible thresholds, a big BATCH_TOP);
 // every filter in the rail re-slices/re-filters this in the browser, same
 // pattern the client-side sort fix already established. Only a sell-realm
-// switch, an items-csv change, or the 60s auto-refresh timer re-fetches.
+// switch or the 60s auto-refresh timer re-fetches.
 let cachedRows = [];
 // Guards against overlapping fetchBatch() calls -- real production issue,
 // 2026-07-25: on a cold item-name cache, a single /api/snipes call could
@@ -429,16 +428,16 @@ const CACHE_VERSION = 2;
 // the normal case.
 const MAX_CACHE_AGE_MS = 2 * 60 * 60 * 1000;
 
-function cacheKey(sell, items) {
-  return `snipe_cache_v${CACHE_VERSION}_${sell}_${items || ""}`;
+function cacheKey(sell) {
+  return `snipe_cache_v${CACHE_VERSION}_${sell}`;
 }
-function loadCache(sell, items) {
+function loadCache(sell) {
   try {
-    const raw = localStorage.getItem(cacheKey(sell, items));
+    const raw = localStorage.getItem(cacheKey(sell));
     return raw ? JSON.parse(raw) : null;
   } catch (e) { return null; }
 }
-function saveCache(sell, items, payload) {
+function saveCache(sell, payload) {
   // A CACHE_VERSION bump orphans every old-version entry -- loadCache() only
   // ever reads under the *current* version, so a stale one can never be
   // used again, but it doesn't disappear from localStorage on its own.
@@ -463,7 +462,7 @@ function saveCache(sell, items, payload) {
   let rows = payload.rows;
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      localStorage.setItem(cacheKey(sell, items), JSON.stringify({...payload, rows}));
+      localStorage.setItem(cacheKey(sell), JSON.stringify({...payload, rows}));
       return;
     } catch (e) {
       if (rows.length === 0) return;  // give up, nothing left to trim
@@ -616,12 +615,14 @@ function applyFilters(rows) {
   });
 }
 
-// Only the params that actually change *which* rows are candidates at the
-// SQL/join level -- sell realm and item-id restriction. Every threshold that
-// used to narrow the SQL query (min_discount, min_gold/max_gold,
-// min_sell_now, max_appearance_sources, max_per_item) is deliberately NOT
-// sent here anymore; the batch is fetched as loose as possible (see
-// BATCH_TOP) and applyFilters() reproduces all of them client-side instead.
+// Only the param that actually changes *which* rows are candidates at the
+// SQL/join level -- sell realm. Every threshold that used to narrow the SQL
+// query (min_discount, min_gold/max_gold, min_sell_now, max_appearance_sources,
+// max_per_item) is deliberately NOT sent here anymore; the batch is fetched
+// as loose as possible (see BATCH_TOP) and applyFilters() reproduces all of
+// them client-side instead. The item-id restriction (items=csv) was removed
+// 2026-07-27 (human request) -- see cacheKey()/renderFromCache() etc, which
+// dropped the corresponding parameter.
 function batchParams() {
   const p = new URLSearchParams();
   p.set("sell", $("sell").value);
@@ -629,7 +630,6 @@ function batchParams() {
   p.set("top", String(BATCH_TOP));
   p.set("sort", "discount");
   p.set("names", "true");  // always on -- names/icons aren't worth making optional
-  if ($("items").value.trim()) p.set("items", $("items").value.trim());
   return p;
 }
 
@@ -809,12 +809,12 @@ function setLoading(isLoading) {
   $("loading-indicator").style.display = isLoading ? "flex" : "none";
 }
 
-// Paints the last-known batch for (sell, items) from localStorage, if any --
-// used both on page load and right before fetchBatch()'s own network call,
-// so a realm switch or a page refresh never shows a blank table while the
-// real request is in flight. Returns true if it painted something.
-function renderFromCache(sell, items) {
-  const cached = loadCache(sell, items);
+// Paints the last-known batch for sell from localStorage, if any -- used
+// both on page load and right before fetchBatch()'s own network call, so a
+// realm switch or a page refresh never shows a blank table while the real
+// request is in flight. Returns true if it painted something.
+function renderFromCache(sell) {
+  const cached = loadCache(sell);
   if (!cached) return false;
   currentRegion = cached.region;
   currentSellSlug = cached.sellRealmSlug;
@@ -826,18 +826,17 @@ function renderFromCache(sell, items) {
 
 // The only real "give me fresh data" network round-trip -- fetches one
 // loose, generously-sized batch (see batchParams()/BATCH_TOP) for the
-// current sell realm + item-id restriction, then caches it to localStorage.
-// Only ever called by checkForUpdates() below (a realm switch, an items-csv
-// change, the 60s timer, or initial page load all go through that first --
-// see its own comment) once it's decided a real fetch is actually needed --
-// never by a filter-rail threshold changing (those call renderTable()
-// directly instead, see the listeners wired at the bottom).
+// current sell realm, then caches it to localStorage. Only ever called by
+// checkForUpdates() below (a realm switch, the 60s timer, or initial page
+// load all go through that first -- see its own comment) once it's decided
+// a real fetch is actually needed -- never by a filter-rail threshold
+// changing (those call renderTable() directly instead, see the listeners
+// wired at the bottom).
 async function fetchBatch() {
   const sell = $("sell").value;
   if (!sell) return;
   if (fetchInFlight) return;  // an equivalent fetch is already running -- let it finish rather than piling another slow query on top (see fetchInFlight's declaration above)
-  const items = $("items").value.trim();
-  renderFromCache(sell, items);  // instant paint from last-known-good while the real fetch is in flight
+  renderFromCache(sell);  // instant paint from last-known-good while the real fetch is in flight
   // A background refresh (rows already on screen -- the 60s auto-refresh
   // timer found checkForUpdates()'s status check genuinely advanced, e.g.
   // Blizzard's ~hourly publish landed) shouldn't dim/block the table the
@@ -878,7 +877,7 @@ async function fetchBatch() {
     renderTable();
     const status = await loadStatus(sell);
     if (status) {
-      saveCache(sell, items, {
+      saveCache(sell, {
         rows: data.rows, region: data.region, sellRealmSlug: data.sell_realm_slug,
         lastModified: status.last_modified, fetchedAt: Date.now(),
       });
@@ -900,10 +899,9 @@ async function fetchBatch() {
 async function checkForUpdates() {
   const sell = $("sell").value;
   if (!sell) return;
-  const items = $("items").value.trim();
   const status = await loadStatus(sell);
   if (!status) { await fetchBatch(); return; }  // status check itself failed -- fall back to a real fetch rather than silently doing nothing
-  const cached = loadCache(sell, items);
+  const cached = loadCache(sell);
   if (cached && cached.lastModified === status.last_modified
       && (Date.now() - cached.fetchedAt) < MAX_CACHE_AGE_MS) {
     return;  // nothing new since our cache -- skip the DuckDB query entirely
@@ -955,27 +953,25 @@ function scheduleAuto() {
 }
 $("auto").addEventListener("change", scheduleAuto);
 
-// Realm switch and an item-id restriction change what's even in the
-// candidate pool at the SQL/join level -- these are the only filter-rail
-// inputs that still trigger a real fetch. "change" (not "input") on the
-// items text field so it fires on blur/Enter, not every keystroke.
+// A realm switch changes what's even in the candidate pool at the SQL/join
+// level -- the only filter-rail input that still triggers a real fetch (the
+// item-id restriction that used to be the other one was removed 2026-07-27,
+// human request).
 //
 // Goes through checkForUpdates() (paint-from-cache, then a cheap
 // /api/status check), not fetchBatch() directly -- switching back to a
-// realm/item-filter combo already cached and still fresh (same
-// last_modified) used to re-run the full expensive /api/snipes query
-// anyway, since fetchBatch() paints from cache but always re-fetches
-// regardless (fixed 2026-07-26 -- same "don't query if nothing's new"
-// idea the 60s timer and initial page load already used, just never
-// extended to a manual switch).
-async function onCandidatePoolChange() {
+// realm already cached and still fresh (same last_modified) used to re-run
+// the full expensive /api/snipes query anyway, since fetchBatch() paints
+// from cache but always re-fetches regardless (fixed 2026-07-26 -- same
+// "don't query if nothing's new" idea the 60s timer and initial page load
+// already used, just never extended to a manual switch).
+async function onSellRealmChange() {
   const sell = $("sell").value;
   if (!sell) return;
-  renderFromCache(sell, $("items").value.trim());
+  renderFromCache(sell);
   await checkForUpdates();
 }
-$("sell").addEventListener("change", onCandidatePoolChange);
-$("items").addEventListener("change", onCandidatePoolChange);
+$("sell").addEventListener("change", onSellRealmChange);
 
 // Every other threshold in the rail is a pure re-filter of the already-
 // cached batch -- see applyFilters()/renderTable(). "input" fires live as
@@ -1146,7 +1142,7 @@ function applyFreeTierRealmLock(lockedSellRealm) {
     // fetch is even necessary. On a brand-new browser/first-ever visit
     // there's nothing to paint, and checkForUpdates() falls through to a
     // real fetchBatch() itself.
-    renderFromCache(sell, $("items").value.trim());
+    renderFromCache(sell);
     await checkForUpdates();
   }
   scheduleAuto();
