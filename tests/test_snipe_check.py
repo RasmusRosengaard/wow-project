@@ -245,6 +245,51 @@ def test_find_snipes_sort_gold_orders_by_sell_price(tmp_path, monkeypatch):
     assert [r["item_id"] for r in gold_order] == [105, 101]  # higher sell_p_g first
 
 
+def test_find_snipes_ties_break_on_cheapest_buy_price(tmp_path, monkeypatch):
+    """discount_pct is rounded to 1 decimal at the SQL level, so a camped/
+    troll sell-realm listing can make many genuinely-different buy prices
+    all round to the exact same displayed discount% (confirmed live, human
+    report 2026-07-28: a real ~9,999,999g troll-priced item tied dozens of
+    rows at 100.0%, and with no secondary sort key their relative order was
+    an arbitrary DB scan order, not sorted by anything visible). Once tied,
+    rows must resolve to cheapest buy price first."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(3, T0, item_id=103)]
+    curr = [
+        snap_row(3, T1, item_id=103),
+        # A troll-priced "current cheapest listing": 999,999,900 copper
+        # (99,999.99g) -- so far above any real buy price that several very
+        # different buy prices below all round to the identical 100.0%
+        # discount_pct.
+        snap_row(10, T1, item_id=101, buyout=999_999_900),
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    buy_rows = [
+        # All three round to discount_pct == 100.0 against the troll price
+        # above, despite being genuinely different buy prices (30g/10g/5g).
+        listing_row(BUY_CR_A, item_id=101, buyout=300_000, auction_id=100),
+        listing_row(BUY_CR_A, item_id=101, buyout=50_000, auction_id=101),
+        listing_row(BUY_CR_A, item_id=101, buyout=100_000, auction_id=102),
+    ]
+    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
+                   listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
+    assert [r["discount_pct"] for r in rows] == [100.0, 100.0, 100.0]
+    assert [r["buy_g"] for r in rows] == [5.0, 10.0, 30.0]  # cheapest first, tie broken
+
+
 def test_find_snipes_max_per_item_caps_and_keeps_best_discounts(tmp_path, monkeypatch):
     """One item with three qualifying listings at different discounts --
     max_per_item=2 should keep only the two highest-discount ones (cheapest

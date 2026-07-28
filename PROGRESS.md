@@ -245,6 +245,20 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   longer zero out another category's real, lower-discount snipes. See
   `CLAUDE.md`'s `snipe_check.py`/`dashboard.py` rows for the exact
   per-tier numbers (human-specified, not scaled/decided by the assistant).
+  **A second, distinct symptom of the same troll-listing risk fixed
+  2026-07-28** (human report on Draenor, item "Bent Staff" priced at
+  ~9,999,999g): `discount_pct` is rounded to 1 decimal at the SQL level, so
+  a single troll-priced sell reference can make dozens of genuinely-
+  different buy prices all round to the exact same displayed discount% —
+  with no secondary sort key anywhere in the pipeline (SQL `ORDER BY`,
+  `dashboard.html`'s `compareRows()`, or its per-group sort), their
+  relative display order was an arbitrary DB scan order, not sorted by
+  anything visible. Fixed by adding cheapest-buy-price-first as a
+  tiebreaker in all three places (`snipe_check.SORT_COLUMNS`,
+  `dashboard.html`'s `compareRows()`/`tiebreak()`, and `buildGroups()`'s
+  within-group sort) — human-specified tiebreak semantics, not decided by
+  the assistant. Doesn't address the underlying troll-reference-price risk
+  itself, only the ordering artifact it exposed.
 - Sale-inference classification (`inferred_sale` especially) has never been
   checked against real seller behavior — Phase 0's gate was skipped. No
   longer on the pricing path, and no longer runs automatically at all

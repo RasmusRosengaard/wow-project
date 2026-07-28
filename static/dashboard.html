@@ -520,18 +520,31 @@ const SORT_VALUE = {
   discount: r => r.discount_pct,
 };
 
+// Ties on the primary sort column always resolve to cheapest buy price
+// first, regardless of sortDir (added 2026-07-28, human decision, mirrors
+// snipe_check.SORT_COLUMNS' secondary "buy_g ASC" -- discount_pct is
+// rounded to 1 decimal server-side, so a single camped/troll sell-realm
+// listing can make dozens of genuinely-different buy prices all round to
+// the exact same displayed discount%, leaving their relative order
+// undefined without this). Deliberately NOT flipped by sortDir -- it's a
+// tiebreak, not a sortable column of its own.
+function tiebreak(a, b) {
+  return a.buy_copper - b.buy_copper;
+}
+
 function compareRows(a, b) {
   const val = SORT_VALUE[sort];
   const va = val(a), vb = val(b);
   // Nulls always sort last, regardless of asc/desc -- "unknown" isn't a
   // high or low value, it's just missing.
-  if (va == null && vb == null) return 0;
+  if (va == null && vb == null) return tiebreak(a, b);
   if (va == null) return 1;
   if (vb == null) return -1;
   const cmp = (typeof va === "number" && typeof vb === "number")
     ? va - vb
     : String(va).localeCompare(String(vb));
-  return sortDir === "asc" ? cmp : -cmp;
+  if (cmp !== 0) return sortDir === "asc" ? cmp : -cmp;
+  return tiebreak(a, b);
 }
 
 // Multiple listings can snipe the same item/variant (different buy realms,
@@ -567,8 +580,12 @@ function buildGroups(rows) {
   // Within a group, "biggest snipe" always means highest discount% -- that's
   // fixed regardless of which column the overall table is currently sorted
   // by, since it's what makes one listing the group's best representative.
+  // Ties (see tiebreak()'s comment -- discount_pct is rounded to 1 decimal,
+  // so a camped/troll sell price can tie dozens of rows at once) fall back
+  // to cheapest buy price first, same as the top-level table sort.
   return order.map(key => {
-    let groupRows = map.get(key).slice().sort((a, b) => b.discount_pct - a.discount_pct);
+    let groupRows = map.get(key).slice()
+      .sort((a, b) => (b.discount_pct - a.discount_pct) || tiebreak(a, b));
     if (maxPerItem) groupRows = groupRows.slice(0, maxPerItem);
     return { key, rows: groupRows };
   });

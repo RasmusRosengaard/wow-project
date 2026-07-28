@@ -82,9 +82,16 @@ def parse_items(items: str | None, items_file: str | None) -> list[int] | None:
     return ids or None
 
 
+# Secondary tiebreaker (buy_g ASC, cheapest first) added 2026-07-28, human
+# decision: discount_pct is rounded to 1 decimal at the SQL level, so a
+# camped/troll sell-realm listing (e.g. a joke 9,999,999g price) can make
+# dozens of genuinely-different-priced buy listings all round to the exact
+# same displayed discount% -- with no secondary key, their relative order
+# was whatever the scan happened to return, not sorted by anything visible.
+# Cheapest-first is the most actionable tiebreak among equally-good deals.
 SORT_COLUMNS = {
-    "discount": "discount_pct DESC",
-    "gold": "sell_p_g DESC",
+    "discount": "discount_pct DESC, buy_g ASC",
+    "gold": "sell_p_g DESC, buy_g ASC",
 }
 
 CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
