@@ -279,22 +279,35 @@ def _snipe_cap(user: User) -> int:
 # category can't crowd every other one out of the batch (see
 # snipe_check._apply_class_quotas()'s docstring for the real Housing case
 # that motivated this). Free tier deliberately shows no Containers/
-# Profession/Quest items at all (its 5 quotas sum to exactly its 250 cap) --
+# Profession/Quest items at all (its 6 quotas sum to exactly its 250 cap) --
 # a human product decision, not an oversight. Subscribed/superuser keep
 # fixed floors for quest/profession/container (100/100/20, not scaled --
 # free tier has zero of these to scale a ratio from) and scale the
 # remaining budget using free tier's own weapon/armor/housing/mount/
-# battlepet ratios (40%/40%/16%/2%/2%).
+# battlepet/recipe ratios (20%/40%/16%/2%/2%/20%).
+#
+# Recipe added 2026-07-28 (human decision): free tier's weapon quota was cut
+# from 100 to 50 to make room for an equal 50 recipes (confirmed live via
+# GET /data/wow/item-class/index that Recipe is item_class 9, distinct from
+# Profession's 19 -- see snipe_check.CLASS_BUCKET_RULES), rather than raising
+# the 250 free-tier cap itself. Subscribed/superuser weapon+recipe were
+# rescaled the same way (each now 20% of the scaled budget instead of
+# weapon's old 40%) -- one unit trimmed from weapon in both tiers, same as
+# the pre-existing rounding-remainder convention below, to keep each tier's
+# quotas summing to exactly its SNIPE_TIER_CAPS value.
 FREE_CLASS_QUOTAS = {
-    "weapon": 100, "armor": 100, "housing": 40, "mount": 5, "battlepet": 5,
+    "weapon": 50, "armor": 100, "housing": 40, "mount": 5, "battlepet": 5,
+    "recipe": 50,
 }
 SUBSCRIBED_CLASS_QUOTAS = {
     "quest": 100, "profession": 100, "container": 20,
-    "weapon": 711, "armor": 712, "housing": 285, "mount": 36, "battlepet": 36,
+    "weapon": 355, "armor": 712, "housing": 285, "mount": 36, "battlepet": 36,
+    "recipe": 356,
 }
 SUPERUSER_CLASS_QUOTAS = {
     "quest": 100, "profession": 100, "container": 20,
-    "weapon": 3911, "armor": 3912, "housing": 1565, "mount": 196, "battlepet": 196,
+    "weapon": 1955, "armor": 3912, "housing": 1565, "mount": 196, "battlepet": 196,
+    "recipe": 1956,
 }
 
 

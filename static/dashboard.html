@@ -320,6 +320,7 @@
         <label class="auto-label"><input id="class_battlepet" type="checkbox"> Battle pets</label>
         <label class="auto-label"><input id="class_quest" type="checkbox"> Quest items</label>
         <label class="auto-label"><input id="class_mount" type="checkbox"> Mounts</label>
+        <label class="auto-label"><input id="class_recipe" type="checkbox"> Recipes</label>
       </div>
     </div>
     <div>
@@ -492,6 +493,7 @@ const ITEM_CLASS_FILTERS = [
   { key: "battlepet",  label: "Battle pets",  test: r => r.item_class === 17 },
   { key: "quest",      label: "Quest items",  test: r => r.item_class === 12 },
   { key: "mount",      label: "Mounts",       test: r => r.item_class === 15 && r.item_subclass === 5 },
+  { key: "recipe",     label: "Recipes",      test: r => r.item_class === 9 },
 ];
 
 // Blizzard's quality tier names (item_names.py's quality(), same tier

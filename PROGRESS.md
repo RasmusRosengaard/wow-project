@@ -112,11 +112,15 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
      param (see `CLAUDE.md`'s `snipe_check.py` row) caps each item-class
      bucket independently instead of one flat top-N by discount% —
      `dashboard.py`'s `_class_quotas(user)` supplies human-specified,
-     per-tier numbers (free: weapon 100/armor 100/housing 40/mount 5/
-     battlepet 5, summing to exactly its 250 cap, deliberately zero quest/
-     profession/container; subscribed/superuser add fixed floors for those
-     three plus the free tier's own ratios scaled up — see `CLAUDE.md` for
-     the exact numbers). `BATCH_TOP` itself was left at 10000, not raised
+     per-tier numbers (free: weapon 50/armor 100/housing 40/mount 5/
+     battlepet 5/recipe 50, summing to exactly its 250 cap, deliberately zero
+     quest/profession/container; subscribed/superuser add fixed floors for
+     those three plus the free tier's own ratios scaled up — see `CLAUDE.md`
+     for the exact numbers). **`recipe` bucket added 2026-07-28** (item_class
+     9, confirmed live, distinct from Profession's 19 — recipes had no
+     bucket at all before this): free tier's `weapon` quota was halved from
+     100 to fund an equal 50 `recipe`, and every other tier's weapon/recipe
+     split was rescaled the same way. `BATCH_TOP` itself was left at 10000, not raised
      further, at explicit human request ("we want most items as possible").
      **A first version of this shipped and was corrected the same day**: it
      widened the SQL `LIMIT` to a fixed ceiling (20,000) and bucketed in

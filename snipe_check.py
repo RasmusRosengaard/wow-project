@@ -132,6 +132,7 @@ CLASS_BUCKET_RULES: dict[str, tuple[int, int | None]] = {
     "battlepet": (17, None),
     "quest": (12, None),
     "mount": (15, 5),
+    "recipe": (9, None),
 }
 
 # Per-call resolution cap for _register_class_quota_maps()'s
