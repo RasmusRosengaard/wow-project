@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Forum — Realm Arbitrage</title>
+<title>Snipe Board — Realm Arbitrage</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
   (function () {
@@ -68,7 +68,7 @@
 
   .shell { display: flex; justify-content: center; padding: 2rem 1.5rem; }
   .wrap { max-width: 640px; width: 100%; display: flex; flex-direction: column; gap: 1.1rem; }
-  .lede { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin: 0; }
+  .toolbar { display: flex; justify-content: flex-end; }
   .card {
     background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
     padding: 1.25rem; display: flex; flex-direction: column; gap: 0.9rem;
@@ -82,14 +82,17 @@
   .btn-primary {
     background: var(--bullion); border: 1px solid var(--bullion-dim); color: #1a1200;
     border-radius: 4px; padding: 0.55rem 1rem; font-weight: 700; font-size: 0.85rem;
-    cursor: pointer; align-self: flex-start;
+    cursor: pointer;
   }
   .btn-primary:hover { background: var(--bullion-dim); }
   .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-  .login-hint {
-    font-size: 0.85rem; color: var(--text-dim);
+  .btn-secondary {
+    background: transparent; border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 4px; padding: 0.55rem 1rem; font-weight: 700; font-size: 0.85rem;
+    cursor: pointer; font-family: inherit;
   }
-  .login-hint a { color: var(--bullion); font-weight: 600; }
+  .btn-secondary:hover { border-color: var(--bullion); }
+  .form-actions { display: flex; gap: 0.6rem; }
   .form-error { color: var(--alert); font-size: 0.8rem; display: none; }
 
   .posts { display: flex; flex-direction: column; gap: 1rem; }
@@ -97,7 +100,10 @@
     background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
     overflow: hidden;
   }
-  .post img { display: block; width: 100%; max-height: 480px; object-fit: contain; background: var(--paper); }
+  .post img {
+    display: block; width: 100%; max-height: 480px; object-fit: contain;
+    background: var(--paper); cursor: zoom-in;
+  }
   .post-meta {
     padding: 0.7rem 0.9rem; display: flex; flex-direction: column; gap: 0.15rem;
     border-top: 1px solid var(--hairline);
@@ -106,6 +112,15 @@
   .post-sub { font-size: 0.75rem; color: var(--text-dim); display: flex; gap: 0.5rem; }
   .empty, .error { color: var(--text-dim); font-size: 0.85rem; padding: 0.5rem 0; }
   .error { color: var(--alert); }
+
+  dialog { border: none; padding: 0; background: transparent; }
+  dialog::backdrop { background: rgba(10, 11, 13, 0.72); }
+  #post-dialog .card { width: min(90vw, 460px); }
+  #lightbox { max-width: 96vw; max-height: 96vh; }
+  #lightbox img {
+    display: block; max-width: 96vw; max-height: 96vh; cursor: zoom-out;
+    border-radius: 4px;
+  }
 </style>
 </head>
 <body>
@@ -140,21 +155,9 @@
 </div>
 <div class="shell">
 <div class="wrap">
-  <h2 style="margin:0;font-size:1.1rem;font-weight:800;letter-spacing:-0.01em;">Forum</h2>
-  <p class="lede">Snipes other players found, posted with a screenshot. Anyone can browse; log in to post your own.</p>
-
-  <div class="card" id="post-card" style="display:none;">
-    <label>Title (optional)
-      <input type="text" id="post-title" maxlength="200" placeholder="e.g. 4g Netherweave Bag on Draenor">
-    </label>
-    <label>Screenshot
-      <input type="file" id="post-image" accept="image/png,image/jpeg,image/webp,image/gif" required>
-    </label>
-    <div class="form-error" id="post-error"></div>
-    <button class="btn-primary" id="post-submit">Post it</button>
-  </div>
-  <div class="card" id="login-card">
-    <div class="login-hint"><a href="/login">Log in</a> (or <a href="/register">create a free account</a>) to post a snipe.</div>
+  <div class="toolbar">
+    <button class="btn-primary" id="open-post" style="display:none;">+ Post a snipe</button>
+    <a class="btn-secondary" href="/login" id="login-to-post">Log in to post</a>
   </div>
 
   <div class="posts" id="posts"></div>
@@ -162,6 +165,27 @@
   <div class="error" id="load-error" style="display:none;"></div>
 </div>
 </div>
+
+<dialog id="post-dialog">
+  <div class="card">
+    <label>Title (optional)
+      <input type="text" id="post-title" maxlength="200" placeholder="e.g. 4g Netherweave Bag on Draenor">
+    </label>
+    <label>Screenshot
+      <input type="file" id="post-image" accept="image/png,image/jpeg,image/webp,image/gif" required>
+    </label>
+    <div class="form-error" id="post-error"></div>
+    <div class="form-actions">
+      <button class="btn-primary" id="post-submit">Post it</button>
+      <button class="btn-secondary" id="post-cancel" type="button">Cancel</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="lightbox">
+  <img id="lightbox-img" src="" alt="">
+</dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -187,7 +211,7 @@ async function loadPosts() {
     $("empty").style.display = data.posts.length ? "none" : "block";
     $("posts").innerHTML = data.posts.map(p => `
       <div class="post">
-        <img src="${p.image_url}" alt="${escapeHtml(p.title || "posted snipe")}" loading="lazy">
+        <img src="${p.image_url}" alt="${escapeHtml(p.title || "posted snipe")}" loading="lazy" data-full="${p.image_url}">
         <div class="post-meta">
           ${p.title ? `<div class="post-title">${escapeHtml(p.title)}</div>` : ""}
           <div class="post-sub">
@@ -203,6 +227,28 @@ async function loadPosts() {
     $("load-error").style.display = "block";
   }
 }
+
+// Zoom: click any posted screenshot to open it full-size in a modal; click
+// the image again (or press Escape, native <dialog> behavior) to close.
+$("posts").addEventListener("click", (e) => {
+  const img = e.target.closest("img[data-full]");
+  if (!img) return;
+  $("lightbox-img").src = img.dataset.full;
+  $("lightbox").showModal();
+});
+$("lightbox").addEventListener("click", () => $("lightbox").close());
+
+function resetPostForm() {
+  $("post-title").value = "";
+  $("post-image").value = "";
+  $("post-error").style.display = "none";
+}
+
+$("open-post").addEventListener("click", () => {
+  resetPostForm();
+  $("post-dialog").showModal();
+});
+$("post-cancel").addEventListener("click", () => $("post-dialog").close());
 
 $("post-submit").addEventListener("click", async () => {
   const title = $("post-title").value;
@@ -226,8 +272,7 @@ $("post-submit").addEventListener("click", async () => {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.detail || "Couldn't post that.");
     }
-    $("post-title").value = "";
-    fileInput.value = "";
+    $("post-dialog").close();
     await loadPosts();
   } catch (e) {
     errEl.textContent = e.message;
@@ -240,8 +285,8 @@ $("post-submit").addEventListener("click", async () => {
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
   if (me && me.ok) {
-    $("post-card").style.display = "flex";
-    $("login-card").style.display = "none";
+    $("open-post").style.display = "inline-block";
+    $("login-to-post").style.display = "none";
     $("nav-login").remove();
   }
   await loadPosts();

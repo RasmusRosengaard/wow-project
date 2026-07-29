@@ -153,9 +153,9 @@ def test_list_posts_respects_limit(isolate_forum_image_dir):
     assert len(feed) == 2
 
 
-def test_forum_page_served_without_auth():
+def test_snipe_board_page_served_without_auth():
     _drop_auth_override()
-    r = client.get("/forum", follow_redirects=False)
+    r = client.get("/snipe-board", follow_redirects=False)
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
 

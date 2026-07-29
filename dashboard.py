@@ -572,12 +572,15 @@ def log_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "log.html")
 
 
-@app.get("/forum")
-def forum_page() -> FileResponse:
-    """Public page, no auth check -- forum.html itself decides what to show
-    (post form vs. read-only feed) based on /api/me, same client-side-gate
-    convention as /snipes."""
-    return FileResponse(ROOT / "static" / "forum.html")
+@app.get("/snipe-board")
+def snipe_board_page() -> FileResponse:
+    """Public page, no auth check -- snipeboard.html itself decides what to
+    show (post button vs. "log in to post" link) based on /api/me, same
+    client-side-gate convention as /snipes. Named "Snipe Board" (renamed
+    2026-07-29 from an initial "Forum") -- backing module/routes stay
+    forum.py/`/api/forum/*` (module name doesn't need to track the
+    user-facing label, same precedent as dashboard.py serving `/snipes`)."""
+    return FileResponse(ROOT / "static" / "snipeboard.html")
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
