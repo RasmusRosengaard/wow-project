@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import analyze
@@ -255,7 +256,31 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
         # dropdown before the user can even attempt a request that would
         # 403, rather than letting them find out by trying.
         "locked_sell_realm": user.locked_sell_realm,
+        # Public display name for the Snipe Board (see forum.py) -- None
+        # until the user has set one. snipeboard.html prompts for it inline
+        # the first time this account tries to post.
+        "nickname": user.nickname,
     }
+
+
+NICKNAME_MAX_LEN = 50
+
+
+class NicknameUpdate(BaseModel):
+    nickname: str
+
+
+@app.patch("/api/me/nickname")
+async def update_nickname(payload: NicknameUpdate, user: User = Depends(current_active_user),
+                          session: AsyncSession = Depends(get_async_session)) -> dict:
+    nickname = payload.nickname.strip()
+    if not nickname:
+        raise HTTPException(400, "nickname can't be empty")
+    if len(nickname) > NICKNAME_MAX_LEN:
+        raise HTTPException(400, f"nickname must be {NICKNAME_MAX_LEN} characters or fewer")
+    user.nickname = nickname
+    await session.commit()
+    return {"nickname": user.nickname}
 
 
 # Free tier, added 2026-07-25 (human decision): a logged-in-but-unsubscribed

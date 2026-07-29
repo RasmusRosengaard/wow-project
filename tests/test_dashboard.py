@@ -643,6 +643,38 @@ def test_api_config_reports_default_sell():
     assert r.json()["default_sell"] == 1403
 
 
+def test_api_me_includes_nickname_defaulting_to_none():
+    """Backs snipeboard.html's decision to prompt for a nickname the first
+    time an account tries to post (see forum.py) -- None until set."""
+    r = client.get("/api/me")
+    assert r.json()["nickname"] is None
+
+
+def test_update_nickname_sets_and_returns_it():
+    r = client.patch("/api/me/nickname", json={"nickname": "  Snipehunter  "})
+    assert r.status_code == 200
+    assert r.json()["nickname"] == "Snipehunter"  # stripped
+
+
+def test_update_nickname_rejects_empty():
+    r = client.patch("/api/me/nickname", json={"nickname": "   "})
+    assert r.status_code == 400
+
+
+def test_update_nickname_rejects_too_long():
+    r = client.patch("/api/me/nickname", json={"nickname": "x" * 51})
+    assert r.status_code == 400
+
+
+def test_update_nickname_requires_login():
+    dashboard.app.dependency_overrides.pop(auth.current_active_user, None)
+    try:
+        r = client.patch("/api/me/nickname", json={"nickname": "Snipehunter"})
+        assert r.status_code == 401
+    finally:
+        dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
+
+
 def test_parse_variant_extracts_ilvl_and_ignores_other_modifiers():
     assert dashboard._parse_variant("b:1,2,3|m:28=636,9=1") == {"ilvl": "636", "bonus_count": 3}
 

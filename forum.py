@@ -1,7 +1,12 @@
 """Forum: users post a snipe they found (an image, required, plus an
 optional title). Logged-out visitors can see every post; posting requires
-login. Deliberately minimal -- no editing, deleting, comments, or
-moderation queue, none of which were asked for.
+login and a nickname (set once via `PATCH /api/me/nickname` in dashboard.py
+-- posts used to display the account's real email publicly, human feedback
+after shipping said that's the wrong default; enforced here at post time
+rather than at registration, since that also naturally covers every account
+that registered before nicknames existed, not just new signups). Deliberately
+minimal -- no editing, deleting, comments, or moderation queue, none of which
+were asked for.
 
 Images are stored as plain files under DATA/forum_images/ on the same
 persistent Railway volume that already holds snapshots/listings (see
@@ -66,7 +71,10 @@ def _post_to_json(post: ForumPost) -> dict:
         "id": post.id,
         "title": post.title,
         "image_url": f"/forum/images/{post.image_filename}",
-        "author_email": post.author_email,
+        # author_email is intentionally not exposed here -- see the module
+        # docstring. Falls back for posts made before nicknames existed
+        # (author_nickname is nullable, see db.ForumPost).
+        "author_nickname": post.author_nickname or "Anonymous Sniper",
         "created_at": post.created_at.isoformat() if post.created_at else None,
     }
 
@@ -87,6 +95,11 @@ async def list_posts(limit: int = Query(50, ge=1, le=200),
 async def create_post(title: str | None = Form(None), image: UploadFile = File(...),
                       user: User = Depends(current_active_user),
                       session: AsyncSession = Depends(get_async_session)) -> dict:
+    if not user.nickname:
+        # Defense in depth -- snipeboard.html's dialog already prompts for a
+        # nickname before ever reaching this request, but that's a client-
+        # side convenience, not the enforcement boundary.
+        raise HTTPException(400, "set a nickname before posting")
     ext = ALLOWED_IMAGE_TYPES.get(image.content_type)
     if ext is None:
         raise HTTPException(400, f"unsupported image type {image.content_type!r} "
@@ -101,7 +114,8 @@ async def create_post(title: str | None = Form(None), image: UploadFile = File(.
     (IMAGE_DIR / filename).write_bytes(data)
 
     title = title.strip() if title and title.strip() else None
-    post = ForumPost(author_id=user.id, author_email=user.email, title=title, image_filename=filename)
+    post = ForumPost(author_id=user.id, author_email=user.email, author_nickname=user.nickname,
+                     title=title, image_filename=filename)
     session.add(post)
     await session.commit()
     await session.refresh(post)

@@ -144,6 +144,15 @@
     <div class="row" id="period-row" style="display:none;">
       <span class="lbl">Renews / ends</span><span id="period-end"></span>
     </div>
+    <div class="row" style="border-bottom:none; flex-direction:column; align-items:stretch; gap:0.5rem;">
+      <span class="lbl">Nickname (shown on Snipe Board posts instead of your email)</span>
+      <div style="display:flex; gap:0.5rem;">
+        <input type="text" id="nickname" maxlength="50" placeholder="e.g. Snipehunter"
+               style="flex:1; background:var(--paper); border:1px solid var(--hairline-strong); color:var(--ink); border-radius:3px; padding:0.5rem; font-size:0.85rem; font-family:inherit;">
+        <button id="nickname-save" style="width:auto; padding:0.5rem 0.9rem;">Save</button>
+      </div>
+    </div>
+    <div id="nickname-error" class="error"></div>
     <div id="error" class="error"></div>
     <div id="actions"></div>
   </div>
@@ -178,12 +187,36 @@ async function startPortal() {
   window.location.href = data.url;
 }
 
+async function saveNickname() {
+  const err = $("nickname-error");
+  err.textContent = "";
+  const nickname = $("nickname").value.trim();
+  if (!nickname) {
+    err.textContent = "Nickname can't be empty.";
+    return;
+  }
+  const r = await fetch("/api/me/nickname", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nickname }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't save that nickname.";
+    return;
+  }
+  const data = await r.json();
+  $("nickname").value = data.nickname;
+}
+
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
   if (!me || !me.ok) { window.location.href = "/login"; return; }
   const data = await me.json();
 
   $("email").textContent = data.email;
+  $("nickname").value = data.nickname || "";
+  $("nickname-save").addEventListener("click", saveNickname);
   $("status-badge").innerHTML = badge(data.subscription_status, data.is_superuser);
 
   if (data.subscription_current_period_end && !data.is_superuser) {

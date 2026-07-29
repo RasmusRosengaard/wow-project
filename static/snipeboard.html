@@ -168,6 +168,9 @@
 
 <dialog id="post-dialog">
   <div class="card">
+    <label id="nickname-field" style="display:none;">Nickname (shown on your posts instead of your email)
+      <input type="text" id="post-nickname" maxlength="50" placeholder="e.g. Snipehunter">
+    </label>
     <label>Title (optional)
       <input type="text" id="post-title" maxlength="200" placeholder="e.g. 4g Netherweave Bag on Draenor">
     </label>
@@ -215,7 +218,7 @@ async function loadPosts() {
         <div class="post-meta">
           ${p.title ? `<div class="post-title">${escapeHtml(p.title)}</div>` : ""}
           <div class="post-sub">
-            <span>${escapeHtml(p.author_email)}</span>
+            <span>${escapeHtml(p.author_nickname)}</span>
             <span>&middot;</span>
             <span>${timeAgo(p.created_at)}</span>
           </div>
@@ -238,10 +241,19 @@ $("posts").addEventListener("click", (e) => {
 });
 $("lightbox").addEventListener("click", () => $("lightbox").close());
 
+// Set on init() below from /api/me, and again the moment a nickname is
+// saved -- lets the dialog decide whether to ask for one at all without a
+// fresh /api/me round trip every time it opens.
+let currentNickname = null;
+
 function resetPostForm() {
   $("post-title").value = "";
   $("post-image").value = "";
   $("post-error").style.display = "none";
+  const needsNickname = !currentNickname;
+  $("nickname-field").style.display = needsNickname ? "flex" : "none";
+  $("post-nickname").value = "";
+  $("post-nickname").required = needsNickname;
 }
 
 $("open-post").addEventListener("click", () => {
@@ -260,13 +272,36 @@ $("post-submit").addEventListener("click", async () => {
     errEl.style.display = "block";
     return;
   }
-  const body = new FormData();
-  if (title) body.append("title", title);
-  body.append("image", fileInput.files[0]);
 
   const btn = $("post-submit");
   btn.disabled = true;
   try {
+    // A nickname is required before the first post ever lands (human
+    // decision: posts used to show the account's real email publicly) --
+    // enforced server-side too (see forum.create_post), this is just what
+    // lets it happen in the same dialog instead of a separate settings trip.
+    if (!currentNickname) {
+      const nickname = $("post-nickname").value.trim();
+      if (!nickname) {
+        errEl.textContent = "Pick a nickname first -- it's shown on your posts instead of your email.";
+        errEl.style.display = "block";
+        return;
+      }
+      const nickR = await fetch("/api/me/nickname", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nickname }),
+      });
+      if (!nickR.ok) {
+        const err = await nickR.json().catch(() => ({}));
+        throw new Error(err.detail || "Couldn't save that nickname.");
+      }
+      currentNickname = (await nickR.json()).nickname;
+    }
+
+    const body = new FormData();
+    if (title) body.append("title", title);
+    body.append("image", fileInput.files[0]);
     const r = await fetch("/api/forum/posts", { method: "POST", body });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
@@ -285,6 +320,8 @@ $("post-submit").addEventListener("click", async () => {
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
   if (me && me.ok) {
+    const meData = await me.json();
+    currentNickname = meData.nickname || null;
     $("open-post").style.display = "inline-block";
     $("login-to-post").style.display = "none";
     $("nav-login").remove();

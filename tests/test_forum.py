@@ -22,8 +22,10 @@ client = TestClient(dashboard.app)
 # the dependency override, never actually inserted via the DB, so the
 # column's server-side id default never fires. forum.create_post() needs a
 # real, non-None user.id to satisfy forum_post.author_id's FK/NOT NULL.
+# nickname is set here since forum.create_post() now requires one -- see
+# test_create_post_requires_nickname below for the no-nickname case.
 FAKE_USER = User(id=uuid.uuid4(), email="poster@example.com", hashed_password="x",
-                 is_active=True, is_superuser=False, is_verified=True)
+                 is_active=True, is_superuser=False, is_verified=True, nickname="Snipehunter")
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 32  # not a real decodable PNG -- content-type is what's validated, not pixels
 
@@ -52,7 +54,7 @@ def bypass_get_async_session(tmp_path):
             yield session
 
     dashboard.app.dependency_overrides[get_async_session] = override_get_async_session
-    yield
+    yield session_factory
     dashboard.app.dependency_overrides.pop(get_async_session, None)
     asyncio.run(engine.dispose())
 
@@ -83,13 +85,26 @@ def test_create_post_requires_login():
     assert r.status_code == 401
 
 
+def test_create_post_requires_nickname():
+    """forum.create_post() must reject a post from an account that's never
+    set a nickname -- the whole point of the feature (posts used to show the
+    account's real email publicly). snipeboard.html's dialog prompts for one
+    client-side, but that's a convenience; this is the real boundary."""
+    no_nickname_user = User(id=uuid.uuid4(), email="nonick@example.com", hashed_password="x",
+                            is_active=True, is_superuser=False, is_verified=True, nickname=None)
+    dashboard.app.dependency_overrides[auth.current_active_user] = lambda: no_nickname_user
+    r = client.post("/api/forum/posts", files={"image": ("snipe.png", io.BytesIO(PNG_BYTES), "image/png")})
+    assert r.status_code == 400
+
+
 def test_create_post_stores_image_and_returns_it_in_the_feed(isolate_forum_image_dir):
     r = client.post("/api/forum/posts", data={"title": "4g bag on Draenor"},
                     files={"image": ("snipe.png", io.BytesIO(PNG_BYTES), "image/png")})
     assert r.status_code == 200
     body = r.json()
     assert body["title"] == "4g bag on Draenor"
-    assert body["author_email"] == FAKE_USER.email
+    assert body["author_nickname"] == FAKE_USER.nickname
+    assert "author_email" not in body
     assert body["image_url"].startswith("/forum/images/")
     assert body["created_at"] is not None
 
@@ -158,6 +173,26 @@ def test_snipe_board_page_served_without_auth():
     r = client.get("/snipe-board", follow_redirects=False)
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+def test_legacy_post_without_a_nickname_falls_back_to_a_display_placeholder(bypass_get_async_session):
+    """author_nickname is nullable specifically because posts made before
+    this feature existed (e.g. the one real production post from before
+    2026-07-29) have none -- forum._post_to_json must not crash or show
+    "None" for those, and must never fall back to the real author_email."""
+    from db import ForumPost
+
+    async def _insert():
+        async with bypass_get_async_session() as session:
+            session.add(ForumPost(author_id=FAKE_USER.id, author_email=FAKE_USER.email,
+                                  author_nickname=None, title="pre-nickname post",
+                                  image_filename="legacy.png"))
+            await session.commit()
+    asyncio.run(_insert())
+
+    feed = client.get("/api/forum/posts").json()["posts"]
+    assert feed[0]["author_nickname"] == "Anonymous Sniper"
+    assert "author_email" not in feed[0]
 
 
 def test_uploaded_image_is_served_back():
