@@ -10,11 +10,13 @@ injection rather than env vars, so the test suite never needs a real
 Postgres.
 """
 import os
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 from fastapi import Depends
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
-from sqlalchemy import DateTime, Integer, String
+from fastapi_users_db_sqlalchemy.generics import GUID
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -40,6 +42,27 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # client input directly. NULL until a free-tier account's first query;
     # never enforced for an active subscription or superuser.
     locked_sell_realm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ForumPost(Base):
+    """A user-submitted "I found this snipe" post -- image required, title
+    optional (forum.py's product decision). author_email is captured at
+    creation time rather than joined from `user` on read, since a post
+    should keep showing who found it even if that account is later deleted;
+    author_id is kept alongside for a real relational link (e.g. a future
+    "my posts" view) but nothing currently reads it back."""
+    __tablename__ = "forum_post"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    author_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("user.id"), nullable=False)
+    author_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    image_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Set in Python (not a DB server_default) so the value is tz-aware and
+    # identical across the Postgres-in-production / SQLite-in-tests split
+    # this project already relies on (see this module's docstring).
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=lambda: datetime.now(timezone.utc))
 
 
 def _database_url() -> str:

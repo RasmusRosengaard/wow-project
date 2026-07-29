@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Auction House API Log — Realm Arbitrage</title>
+<title>Forum — Realm Arbitrage</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
   (function () {
@@ -74,24 +74,36 @@
     padding: 1.25rem; display: flex; flex-direction: column; gap: 0.9rem;
   }
   label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); display: flex; flex-direction: column; gap: 0.35rem; }
-  select {
+  input[type="text"], input[type="file"] {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
     border-radius: 3px; padding: 0.5rem; font-size: 0.9rem; font-family: inherit;
   }
-  select:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
-  .summary { font-size: 0.8rem; color: var(--text-dim); }
-  .summary strong { color: var(--bullion); font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
-  ul#times {
-    list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto;
+  input:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
+  .btn-primary {
+    background: var(--bullion); border: 1px solid var(--bullion-dim); color: #1a1200;
+    border-radius: 4px; padding: 0.55rem 1rem; font-weight: 700; font-size: 0.85rem;
+    cursor: pointer; align-self: flex-start;
+  }
+  .btn-primary:hover { background: var(--bullion-dim); }
+  .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+  .login-hint {
+    font-size: 0.85rem; color: var(--text-dim);
+  }
+  .login-hint a { color: var(--bullion); font-weight: 600; }
+  .form-error { color: var(--alert); font-size: 0.8rem; display: none; }
+
+  .posts { display: flex; flex-direction: column; gap: 1rem; }
+  .post {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
+    overflow: hidden;
+  }
+  .post img { display: block; width: 100%; max-height: 480px; object-fit: contain; background: var(--paper); }
+  .post-meta {
+    padding: 0.7rem 0.9rem; display: flex; flex-direction: column; gap: 0.15rem;
     border-top: 1px solid var(--hairline);
   }
-  ul#times li {
-    font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; font-size: 0.85rem;
-    padding: 0.45rem 0.2rem; border-bottom: 1px solid var(--hairline);
-    display: flex; justify-content: space-between; gap: 1rem;
-  }
-  ul#times li:nth-child(odd) { background: var(--paper); }
-  .ago { color: var(--text-dim); font-size: 0.78rem; }
+  .post-title { font-weight: 700; font-size: 0.95rem; }
+  .post-sub { font-size: 0.75rem; color: var(--text-dim); display: flex; gap: 0.5rem; }
   .empty, .error { color: var(--text-dim); font-size: 0.85rem; padding: 0.5rem 0; }
   .error { color: var(--alert); }
 </style>
@@ -121,76 +133,118 @@
   <div class="nav">
     <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
     <a href="/snipes">Dashboard</a>
-    <a href="/forum">Forum</a>
+    <a href="/log">Log</a>
     <a href="/pricing">Pricing</a>
+    <a href="/login" id="nav-login">Log in</a>
   </div>
 </div>
 <div class="shell">
 <div class="wrap">
-  <h2 style="margin:0;font-size:1.1rem;font-weight:800;letter-spacing:-0.01em;">Auction House API Log</h2>
-  <p class="lede">Log for when the collector has gotten new AH data from Blizzard.</p>
-  <div class="card">
-    <label>Realm
-      <select id="realm"></select>
+  <h2 style="margin:0;font-size:1.1rem;font-weight:800;letter-spacing:-0.01em;">Forum</h2>
+  <p class="lede">Snipes other players found, posted with a screenshot. Anyone can browse; log in to post your own.</p>
+
+  <div class="card" id="post-card" style="display:none;">
+    <label>Title (optional)
+      <input type="text" id="post-title" maxlength="200" placeholder="e.g. 4g Netherweave Bag on Draenor">
     </label>
-    <div class="summary" id="summary"></div>
-    <ul id="times"></ul>
-    <div class="empty" id="empty" style="display:none;">No snapshots recorded for this realm yet.</div>
-    <div class="error" id="error" style="display:none;"></div>
+    <label>Screenshot
+      <input type="file" id="post-image" accept="image/png,image/jpeg,image/webp,image/gif" required>
+    </label>
+    <div class="form-error" id="post-error"></div>
+    <button class="btn-primary" id="post-submit">Post it</button>
   </div>
+  <div class="card" id="login-card">
+    <div class="login-hint"><a href="/login">Log in</a> (or <a href="/register">create a free account</a>) to post a snipe.</div>
+  </div>
+
+  <div class="posts" id="posts"></div>
+  <div class="empty" id="empty" style="display:none;">No posts yet -- be the first.</div>
+  <div class="error" id="load-error" style="display:none;"></div>
 </div>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
 
-function timeAgo(seconds) {
-  const diff = Math.max(0, Date.now() / 1000 - seconds);
+function timeAgo(iso) {
+  const diff = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
   if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
   return `${Math.round(diff / 86400)}d ago`;
 }
 
-async function loadRealms() {
-  const r = await fetch("/api/log/realms");
-  const data = await r.json();
-  const sel = $("realm");
-  if (!data.realms.length) {
-    sel.innerHTML = `<option>no realms collected yet</option>`;
-    sel.disabled = true;
-    return null;
-  }
-  sel.innerHTML = data.realms.map(re => `<option value="${re.id}">${re.name}</option>`).join("");
-  return data.realms[0].id;
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
 }
 
-async function loadLog(sell) {
-  $("error").style.display = "none";
-  const r = await fetch(`/api/log?sell=${encodeURIComponent(sell)}`);
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    $("error").textContent = body.detail || "Couldn't load the log for this realm.";
-    $("error").style.display = "block";
-    $("summary").textContent = "";
-    $("times").innerHTML = "";
-    $("empty").style.display = "none";
+async function loadPosts() {
+  $("load-error").style.display = "none";
+  try {
+    const r = await fetch("/api/forum/posts");
+    if (!r.ok) throw new Error("request failed");
+    const data = await r.json();
+    $("empty").style.display = data.posts.length ? "none" : "block";
+    $("posts").innerHTML = data.posts.map(p => `
+      <div class="post">
+        <img src="${p.image_url}" alt="${escapeHtml(p.title || "posted snipe")}" loading="lazy">
+        <div class="post-meta">
+          ${p.title ? `<div class="post-title">${escapeHtml(p.title)}</div>` : ""}
+          <div class="post-sub">
+            <span>${escapeHtml(p.author_email)}</span>
+            <span>&middot;</span>
+            <span>${timeAgo(p.created_at)}</span>
+          </div>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    $("load-error").textContent = "Couldn't load posts.";
+    $("load-error").style.display = "block";
+  }
+}
+
+$("post-submit").addEventListener("click", async () => {
+  const title = $("post-title").value;
+  const fileInput = $("post-image");
+  const errEl = $("post-error");
+  errEl.style.display = "none";
+  if (!fileInput.files.length) {
+    errEl.textContent = "Pick a screenshot first.";
+    errEl.style.display = "block";
     return;
   }
-  const data = await r.json();
-  $("summary").innerHTML = `<strong>${data.count}</strong> new-data retrievals recorded for ${data.realm_name}`;
-  $("empty").style.display = data.timestamps.length ? "none" : "block";
-  $("times").innerHTML = data.timestamps.map(ts => `
-    <li>
-      <span>${new Date(ts * 1000).toLocaleString()}</span>
-      <span class="ago">${timeAgo(ts)}</span>
-    </li>
-  `).join("");
-}
+  const body = new FormData();
+  if (title) body.append("title", title);
+  body.append("image", fileInput.files[0]);
+
+  const btn = $("post-submit");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/forum/posts", { method: "POST", body });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || "Couldn't post that.");
+    }
+    $("post-title").value = "";
+    fileInput.value = "";
+    await loadPosts();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 (async function init() {
-  const first = await loadRealms();
-  if (first == null) return;
-  await loadLog(first);
-  $("realm").addEventListener("change", (e) => loadLog(e.target.value));
+  const me = await fetch("/api/me").catch(() => null);
+  if (me && me.ok) {
+    $("post-card").style.display = "flex";
+    $("login-card").style.display = "none";
+    $("nav-login").remove();
+  }
+  await loadPosts();
 })();
 
 function applyThemeButtonState() {

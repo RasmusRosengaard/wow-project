@@ -12,3 +12,4 @@ asyncpg>=0.29
 aiosqlite>=0.20
 alembic>=1.13
 stripe>=9
+python-multipart>=0.0.9

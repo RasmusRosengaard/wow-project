@@ -30,6 +30,7 @@ import analyze
 import billing
 import blizz
 import fetch_snapshot
+import forum
 import snipe_check
 from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users, has_active_subscription
 from db import User, get_async_session
@@ -112,6 +113,8 @@ app = FastAPI(title="Realm Arbitrage", lifespan=lifespan)
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
 app.include_router(billing.router)
+app.include_router(forum.router)
+app.include_router(forum.image_router)
 
 # Realm name/slug never changes -- cache in-process for the life of the
 # server rather than a file cache, to keep this dashboard-only concern out of
@@ -567,6 +570,14 @@ def log_page() -> FileResponse:
     """Public page, no auth check -- unlike every other page here, it must
     NOT redirect to /login on a 401 since its APIs never return one."""
     return FileResponse(ROOT / "static" / "log.html")
+
+
+@app.get("/forum")
+def forum_page() -> FileResponse:
+    """Public page, no auth check -- forum.html itself decides what to show
+    (post form vs. read-only feed) based on /api/me, same client-side-gate
+    convention as /snipes."""
+    return FileResponse(ROOT / "static" / "forum.html")
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
