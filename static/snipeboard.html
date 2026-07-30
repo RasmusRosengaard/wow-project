@@ -68,7 +68,15 @@
 
   .shell { display: flex; justify-content: center; padding: 2rem 1.5rem; }
   .wrap { max-width: 640px; width: 100%; display: flex; flex-direction: column; gap: 1.1rem; }
-  .toolbar { display: flex; justify-content: flex-end; }
+  .lede { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin: 0; }
+  /* Heading + lede on the left, the post control on the right of one row --
+     the button used to float alone in a right-aligned bar with no context. */
+  .page-head {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 1rem; flex-wrap: wrap;
+  }
+  .page-head .head-text { display: flex; flex-direction: column; gap: 0.3rem; }
+  .page-head h2 { margin: 0; font-size: 1.1rem; font-weight: 800; letter-spacing: -0.01em; }
   .card {
     background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
     padding: 1.25rem; display: flex; flex-direction: column; gap: 0.9rem;
@@ -149,15 +157,23 @@
     <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
     <a href="/snipes">Dashboard</a>
     <a href="/log">Log</a>
-    <a href="/pricing">Pricing</a>
+    <a href="/pricing" id="nav-pricing">Pricing</a>
+    <a href="/profile" id="nav-profile" style="display:none;">Profile</a>
     <a href="/login" id="nav-login">Log in</a>
+    <button id="nav-logout" style="display:none;">Log out</button>
   </div>
 </div>
 <div class="shell">
 <div class="wrap">
-  <div class="toolbar">
-    <button class="btn-primary" id="open-post" style="display:none;">+ Post a snipe</button>
-    <a class="btn-secondary" href="/login" id="login-to-post">Log in to post</a>
+  <div class="page-head">
+    <div class="head-text">
+      <h2>Snipe Board</h2>
+      <p class="lede">A community feed of snipes people actually found. Public to browse, log in to post one.</p>
+    </div>
+    <div>
+      <button class="btn-primary" id="open-post" style="display:none;">+ Post a snipe</button>
+      <a class="btn-secondary" href="/login" id="login-to-post">Log in to post</a>
+    </div>
   </div>
 
   <div class="posts" id="posts"></div>
@@ -324,10 +340,23 @@ $("post-submit").addEventListener("click", async () => {
     currentNickname = meData.nickname || null;
     $("open-post").style.display = "inline-block";
     $("login-to-post").style.display = "none";
+    // This page is public, so the default markup is the logged-out nav.
+    // Logged in, swap to the authenticated in-app nav dashboard.html uses:
+    // Pricing dropped, Profile + Log out added.
     $("nav-login").remove();
+    $("nav-pricing").remove();
+    $("nav-profile").style.display = "inline-block";
+    $("nav-logout").style.display = "inline-block";
   }
   await loadPosts();
 })();
+
+// Same endpoint/redirect as dashboard.html's #logout button. No snipe-cache
+// clearing here -- this page never writes one.
+$("nav-logout").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+  window.location.href = "/login";
+});
 
 function applyThemeButtonState() {
   const dark = document.documentElement.dataset.theme === "dark";

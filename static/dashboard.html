@@ -398,6 +398,11 @@ let displayRows = [];    // flattened, on-screen order (main + expanded sub-rows
 let openGroups = new Set();  // group keys the user has expanded to see every listing for that item/variant
 let currentRegion = null;
 let currentSellSlug = null;
+// Which sell realm cachedRows actually belongs to -- lets fetchBatch() tell
+// "quiet background refresh of the realm already on screen" apart from
+// "stale rows from whatever realm was selected before this one," which
+// cachedRows.length alone can't distinguish (see onSellRealmChange()).
+let cachedRowsSell = null;
 
 // The ceiling this client ever asks for -- the server (dashboard.py's
 // SNIPE_TIER_CAPS) is what actually enforces the real per-account limit
@@ -839,6 +844,7 @@ function renderFromCache(sell) {
   currentRegion = cached.region;
   currentSellSlug = cached.sellRealmSlug;
   cachedRows = cached.rows;
+  cachedRowsSell = sell;
   openGroups.clear();
   renderTable();
   return true;
@@ -865,7 +871,7 @@ async function fetchBatch() {
   // different result, read as an unwarranted interruption rather than a
   // helpful "loading" signal. Only a load starting from a blank table gets
   // the blocking treatment.
-  const isBackgroundRefresh = cachedRows.length > 0;
+  const isBackgroundRefresh = cachedRows.length > 0 && cachedRowsSell === sell;
   fetchInFlight = true;
   if (!isBackgroundRefresh) setLoading(true);
   try {
@@ -893,6 +899,7 @@ async function fetchBatch() {
     currentRegion = data.region;
     currentSellSlug = data.sell_realm_slug;
     cachedRows = data.rows;
+    cachedRowsSell = sell;
     openGroups.clear();  // fresh fetch -- collapse groups back to best-first summaries
     renderTable();
     const status = await loadStatus(sell);
@@ -988,7 +995,21 @@ $("auto").addEventListener("change", scheduleAuto);
 async function onSellRealmChange() {
   const sell = $("sell").value;
   if (!sell) return;
-  renderFromCache(sell);
+  // A realm with no cache yet must not leave the previously-selected realm's
+  // rows on screen -- renderFromCache() only overwrites cachedRows when it
+  // actually finds something, so a switch to an uncached realm used to leave
+  // the prior realm's rows (and cachedRowsSell) in place, which then made
+  // fetchBatch()'s isBackgroundRefresh check think this was a quiet
+  // same-realm refresh and skip the loading indicator entirely -- a real
+  // report: switching realms showed the old realm's items with no visible
+  // loading state while the new one fetched. Clearing here guarantees
+  // cachedRows is empty (or genuinely this realm's) before fetchBatch runs.
+  if (!renderFromCache(sell)) {
+    cachedRows = [];
+    cachedRowsSell = sell;
+    openGroups.clear();
+    renderTable();
+  }
   await checkForUpdates();
 }
 $("sell").addEventListener("change", onSellRealmChange);
