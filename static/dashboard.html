@@ -872,7 +872,17 @@ function renderFromCache(sell) {
 // a real fetch is actually needed -- never by a filter-rail threshold
 // changing (those call renderTable() directly instead, see the listeners
 // wired at the bottom).
-async function fetchBatch() {
+// knownLastModified: checkForUpdates() already has a fresh /api/status
+// result by the time it decides a real fetch is needed -- pass it through
+// instead of re-fetching /api/status a second time just to learn the same
+// value for saveCache(). That second call used to be the only thing
+// standing between a successful, on-screen /api/snipes result and it ever
+// getting cached: a real report, 2026-07-30 -- Scarshield Legion's data
+// loaded and displayed correctly twice in a row, yet had no localStorage
+// entry at all, meaning the post-fetch loadStatus() call silently failed
+// (or the row was never reached) both times and saveCache() was never
+// called, so every future visit redid the full expensive query forever.
+async function fetchBatch(knownLastModified) {
   const sell = $("sell").value;
   if (!sell) return;
   if (fetchInFlight) return;  // an equivalent fetch is already running -- let it finish rather than piling another slow query on top (see fetchInFlight's declaration above)
@@ -916,11 +926,15 @@ async function fetchBatch() {
     cachedRowsSell = sell;
     openGroups.clear();  // fresh fetch -- collapse groups back to best-first summaries
     renderTable();
-    const status = await loadStatus(sell);
-    if (status) {
+    // Use whatever the caller already knew rather than re-fetching /api/status
+    // a second time -- only falls back to a fresh call on the cold-start path
+    // where checkForUpdates()'s own status check failed and knownLastModified
+    // was never available to begin with (see this function's own comment).
+    const lastModified = knownLastModified ?? (await loadStatus(sell))?.last_modified;
+    if (lastModified) {
       saveCache(sell, {
         rows: data.rows, region: data.region, sellRealmSlug: data.sell_realm_slug,
-        lastModified: status.last_modified, fetchedAt: Date.now(),
+        lastModified, fetchedAt: Date.now(),
       });
     }
   } finally {
@@ -947,7 +961,7 @@ async function checkForUpdates() {
       && (Date.now() - cached.fetchedAt) < MAX_CACHE_AGE_MS) {
     return;  // nothing new since our cache -- skip the DuckDB query entirely
   }
-  await fetchBatch();
+  await fetchBatch(status.last_modified);
 }
 
 document.getElementById("rows").addEventListener("mouseover", (e) => {
