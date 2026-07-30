@@ -435,6 +435,15 @@ const CACHE_VERSION = 2;
 // the normal case.
 const MAX_CACHE_AGE_MS = 2 * 60 * 60 * 1000;
 
+// The realm dropdown otherwise has no memory of its own -- init() always
+// falls back to /api/config's site-wide default_sell (e.g. Draenor) on
+// every fresh page load, so navigating away (e.g. to Snipe Board) and back
+// silently reset a subscribed/superuser account's realm choice back to the
+// site default (a real report, 2026-07-30). A free-tier lock is a genuine
+// server-enforced constraint and always takes priority over this -- see
+// where LAST_SELL_KEY is read in init() below.
+const LAST_SELL_KEY = "last_sell_realm";
+
 function cacheKey(sell) {
   return `snipe_cache_v${CACHE_VERSION}_${sell}`;
 }
@@ -482,6 +491,11 @@ function clearAllCaches() {
     Object.keys(localStorage)
       .filter(k => k.startsWith("snipe_cache_v"))
       .forEach(k => localStorage.removeItem(k));
+    // Same reasoning as the snipe-cache purge above: localStorage is
+    // origin-scoped, not per-account, so a different user logging in on
+    // this browser shouldn't have their realm dropdown silently pre-filled
+    // with whatever the previous account last picked.
+    localStorage.removeItem(LAST_SELL_KEY);
   } catch (e) { /* nothing to clean up if localStorage itself is unavailable */ }
 }
 
@@ -995,6 +1009,7 @@ $("auto").addEventListener("change", scheduleAuto);
 async function onSellRealmChange() {
   const sell = $("sell").value;
   if (!sell) return;
+  try { localStorage.setItem(LAST_SELL_KEY, sell); } catch (e) {}
   // A realm with no cache yet must not leave the previously-selected realm's
   // rows on screen -- renderFromCache() only overwrites cachedRows when it
   // actually finds something, so a switch to an uncached realm used to leave
@@ -1167,11 +1182,18 @@ function applyFreeTierRealmLock(lockedSellRealm) {
     const cfg = await r.json();
     defaultSell = cfg.default_sell;
   } catch (e) { /* no default, user picks one */ }
-  // A real per-user lock always wins over the server's generic prefill. A
-  // free-tier account with no lock yet gets no default at all -- see
+  // A browser-remembered last pick beats the site-wide config default --
+  // see LAST_SELL_KEY's declaration above. Safe to read unconditionally even
+  // for a free-tier-unlocked account: populateRealmPicker() ignores
+  // defaultSell entirely when requirePick is true, so this can't defeat that
+  // flow's deliberate empty placeholder.
+  const rememberedSell = localStorage.getItem(LAST_SELL_KEY);
+  if (rememberedSell) defaultSell = rememberedSell;
+  // A real per-user lock always wins over both of the above. A free-tier
+  // account with no lock yet gets no default at all -- see
   // populateRealmPicker's requirePick param -- since silently pre-selecting
-  // the server's generic default and auto-querying it is exactly what was
-  // setting the lock without a genuine user choice.
+  // a default and auto-querying it is exactly what was setting the lock
+  // without a genuine user choice.
   const freeTierUnlocked = isFreeTier && meData.locked_sell_realm == null;
   if (isFreeTier && meData.locked_sell_realm != null) defaultSell = meData.locked_sell_realm;
   await populateRealmPicker(defaultSell, freeTierUnlocked);
