@@ -116,6 +116,14 @@
   <div class="switch">Already have an account? <a href="/login">Log in</a> &middot; <a href="/pricing">Pricing</a></div>
 </form>
 <script>
+// Same reasoning as login.html's own check -- an already-logged-in visitor
+// hitting /register directly used to just see the form again (2026-07-30
+// human request).
+(async function redirectIfAlreadyLoggedIn() {
+  const me = await fetch("/api/me").catch(() => null);
+  if (me && me.ok) window.location.href = "/snipes";
+})();
+
 document.getElementById("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = document.getElementById("submit");

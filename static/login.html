@@ -116,6 +116,15 @@
   <div class="switch">No account? <a href="/register">Register</a> &middot; <a href="/pricing">Pricing</a></div>
 </form>
 <script>
+// An already-logged-in visitor hitting /login directly used to just see the
+// form again with no redirect (2026-07-30 human request) -- mirrors the
+// reverse check every logged-in-only page already does (fetch /api/me,
+// redirect on the result) rather than introducing a new pattern.
+(async function redirectIfAlreadyLoggedIn() {
+  const me = await fetch("/api/me").catch(() => null);
+  if (me && me.ok) window.location.href = "/snipes";
+})();
+
 document.getElementById("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = document.getElementById("submit");

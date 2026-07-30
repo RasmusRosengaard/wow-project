@@ -49,7 +49,7 @@
 
   .topbar {
     display: flex; justify-content: space-between; align-items: center;
-    gap: 1rem; padding: 0.9rem 1.5rem; background: var(--card);
+    gap: 1rem; padding: 1rem 1.5rem; background: var(--card);
     border-bottom: 1px solid var(--hairline-strong);
   }
   .brand { display: flex; align-items: center; gap: 0.6rem; }
@@ -62,11 +62,14 @@
   .nav { display: flex; gap: 0.4rem; align-items: center; }
   .nav a, .nav button {
     background: transparent; border: 1px solid transparent; color: var(--text-dim);
-    border-radius: 3px; padding: 0.4rem 0.7rem; cursor: pointer; font-size: 0.8rem;
+    border-radius: 4px; padding: 0.45rem 0.8rem; cursor: pointer; font-size: 0.8rem;
     text-decoration: none; font-weight: 600; font-family: inherit;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
-  .nav a:hover, .nav button:hover { border-color: var(--hairline-strong); color: var(--ink); }
-  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.4rem 0.55rem; }
+  .nav a:hover, .nav button:hover { background: var(--paper); border-color: var(--hairline-strong); color: var(--ink); }
+  .nav a.active { color: var(--bullion); font-weight: 700; cursor: default; }
+  .nav a.active:hover { background: transparent; border-color: transparent; }
+  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
 
   .shell { display: flex; justify-content: center; padding: 2.5rem 1.5rem 3.5rem; }
   .wrap { max-width: 880px; width: 100%; display: flex; flex-direction: column; gap: 2rem; align-items: center; }

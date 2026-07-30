@@ -47,7 +47,7 @@
 
   .topbar {
     display: flex; justify-content: space-between; align-items: center;
-    gap: 1rem; padding: 0.9rem 1.5rem; background: var(--card);
+    gap: 1rem; padding: 1rem 1.5rem; background: var(--card);
     border-bottom: 1px solid var(--hairline-strong);
   }
   .brand { display: flex; align-items: center; gap: 0.6rem; }
@@ -60,11 +60,18 @@
   .nav { display: flex; gap: 0.4rem; align-items: center; }
   .nav a, .nav button {
     background: transparent; border: 1px solid transparent; color: var(--text-dim);
-    border-radius: 3px; padding: 0.4rem 0.7rem; cursor: pointer; font-size: 0.8rem;
+    border-radius: 4px; padding: 0.45rem 0.8rem; cursor: pointer; font-size: 0.8rem;
     text-decoration: none; font-weight: 600; font-family: inherit;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
-  .nav a:hover, .nav button:hover { border-color: var(--hairline-strong); color: var(--ink); }
-  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.4rem 0.55rem; }
+  .nav a:hover, .nav button:hover { background: var(--paper); border-color: var(--hairline-strong); color: var(--ink); }
+  /* The current page's own nav link -- shown, not omitted, so the nav's set
+     of items (and therefore its width/layout) never changes page to page --
+     an omitted self-link used to make the whole bar visibly shift depending
+     on which page you were on (2026-07-30 human report). */
+  .nav a.active { color: var(--bullion); font-weight: 700; cursor: default; }
+  .nav a.active:hover { background: transparent; border-color: transparent; }
+  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
 
   .shell { display: flex; justify-content: center; padding: 2rem 1.5rem; }
   .wrap { max-width: 640px; width: 100%; display: flex; flex-direction: column; gap: 1.1rem; }
@@ -122,7 +129,11 @@
     <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
     <a href="/snipes">Dashboard</a>
     <a href="/snipe-board">Snipe Board</a>
-    <a href="/pricing">Pricing</a>
+    <a href="/log" class="active">Log</a>
+    <a href="/pricing" id="nav-pricing">Pricing</a>
+    <a href="/profile" id="nav-profile" style="display:none;">Profile</a>
+    <a href="/login" id="nav-login">Log in</a>
+    <button id="nav-logout" style="display:none;">Log out</button>
   </div>
 </div>
 <div class="shell">
@@ -186,12 +197,31 @@ async function loadLog(sell) {
   `).join("");
 }
 
+// This is one of the deliberately-unauthenticated public routes (see
+// dashboard.py) -- the log itself is never gated. The nav still needs to
+// reflect auth state though: it used to be a hardcoded Dashboard/Snipe
+// Board/Pricing set regardless of login, so a logged-in visitor had no way
+// to reach Profile/Log out from this page, and Pricing stayed visible even
+// though every other logged-in page drops it (2026-07-30 human report).
 (async function init() {
+  const me = await fetch("/api/me").catch(() => null);
+  if (me && me.ok) {
+    $("nav-pricing").remove();
+    $("nav-login").remove();
+    $("nav-profile").style.display = "inline-block";
+    $("nav-logout").style.display = "inline-block";
+  }
   const first = await loadRealms();
   if (first == null) return;
   await loadLog(first);
   $("realm").addEventListener("change", (e) => loadLog(e.target.value));
 })();
+
+// Same endpoint/redirect as dashboard.html's #logout button.
+$("nav-logout").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+  window.location.href = "/login";
+});
 
 function applyThemeButtonState() {
   const dark = document.documentElement.dataset.theme === "dark";

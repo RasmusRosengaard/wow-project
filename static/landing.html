@@ -61,7 +61,7 @@
   a { color: inherit; }
   .topbar {
     display: flex; justify-content: space-between; align-items: center;
-    gap: 1rem; padding: 0.9rem 1.5rem; background: var(--card);
+    gap: 1rem; padding: 1rem 1.5rem; background: var(--card);
     border-bottom: 1px solid var(--hairline-strong);
   }
   .brand { display: flex; align-items: center; gap: 0.6rem; }
@@ -70,14 +70,15 @@
     text-transform: uppercase; color: var(--ink); font-family: inherit;
   }
   .seal { color: var(--verified); flex-shrink: 0; }
-  .nav { display: flex; gap: 0.5rem; align-items: center; }
+  .nav { display: flex; gap: 0.4rem; align-items: center; }
   .nav a, .nav button {
     background: transparent; border: 1px solid transparent; color: var(--text-dim);
-    border-radius: 3px; padding: 0.45rem 0.75rem; cursor: pointer; font-size: 0.82rem;
+    border-radius: 4px; padding: 0.45rem 0.8rem; cursor: pointer; font-size: 0.8rem;
     text-decoration: none; font-weight: 600; font-family: inherit;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
-  .nav a:hover, .nav button:hover { border-color: var(--hairline-strong); color: var(--ink); }
-  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.4rem 0.55rem; }
+  .nav a:hover, .nav button:hover { background: var(--paper); border-color: var(--hairline-strong); color: var(--ink); }
+  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
   .nav .cta-primary {
     background: var(--bullion); color: #fff; border-color: var(--bullion);
   }
