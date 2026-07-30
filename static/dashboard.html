@@ -471,20 +471,46 @@ function saveCache(sell, payload) {
   // key purge above already applied). Silently failing to cache at all
   // meant every load painted from nothing and read as a cold "Loading
   // latest data..." forever, since the write that would have fixed that
-  // never succeeded either. Retry with progressively fewer rows instead of
-  // giving up outright -- a partial cache is still useful for instant-paint
-  // purposes, and the next real fetch always replaces it with the true
-  // current batch regardless of how many rows made it in here.
+  // never succeeded either.
+  //
+  // Shrinking THIS realm's own row count only helps if THIS realm's data is
+  // what's filling the quota. Confirmed live 2026-07-30: a browser with 3
+  // other realms already cached (~5MB combined -- Twisting Nether, Draenor,
+  // Archimonde) could not write a Scarshield Legion cache at ALL, at any row
+  // count, because those other realms' full-size entries were what used up
+  // the quota, not Scarshield Legion's own payload -- shrinking a payload
+  // that isn't the problem never helps. Evict the least-recently-fetched
+  // *other* realm's cache first (LRU, not a blanket wipe) and retry at the
+  // same size before ever shrinking this realm's own data.
   let rows = payload.rows;
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 50; attempt++) {
     try {
       localStorage.setItem(cacheKey(sell), JSON.stringify({...payload, rows}));
       return;
     } catch (e) {
-      if (rows.length === 0) return;  // give up, nothing left to trim
+      if (evictOldestOtherCache(sell)) continue;  // freed space -- retry at the same size
+      if (rows.length === 0) return;  // nothing left to evict or shrink
       rows = rows.slice(0, Math.ceil(rows.length / 2));
     }
   }
+}
+
+// Removes the least-recently-fetched *other* realm's cache entry (by
+// fetchedAt) to free quota for the one saveCache() is currently trying to
+// write. Returns false once there's nothing else left to evict, at which
+// point saveCache() falls back to shrinking its own payload instead.
+function evictOldestOtherCache(excludeSell) {
+  const excludeKey = cacheKey(excludeSell);
+  let oldestKey = null, oldestTime = Infinity;
+  for (const k of Object.keys(localStorage)) {
+    if (!k.startsWith(`snipe_cache_v${CACHE_VERSION}_`) || k === excludeKey) continue;
+    let fetchedAt = -Infinity;  // a corrupt/unparseable entry is evicted first
+    try { fetchedAt = JSON.parse(localStorage.getItem(k)).fetchedAt || -Infinity; } catch (e) {}
+    if (fetchedAt < oldestTime) { oldestTime = fetchedAt; oldestKey = k; }
+  }
+  if (!oldestKey) return false;
+  localStorage.removeItem(oldestKey);
+  return true;
 }
 function clearAllCaches() {
   try {
