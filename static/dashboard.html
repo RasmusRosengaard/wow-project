@@ -170,9 +170,40 @@
     animation: spin 0.7s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; min-width: 640px; }
+  /* table-layout: fixed (2026-07-31, human report + live repro): with the
+     default auto layout, the browser sizes every column from the widest
+     content across *all* rows currently in the table, so applying a filter
+     (which changes the row set, e.g. realm names of varying length once the
+     buy-realm cell got a language tag) visibly shifted every column boundary
+     on every re-render -- and, since applyFilters()/renderTable() replace
+     the whole tbody on every filter change (see renderTable()'s docstring),
+     that full-table auto-width recompute over a large row set is real,
+     avoidable render cost, not just a visual annoyance. Fixed layout sizes
+     columns from the % widths below alone, independent of content, so a
+     filter change no longer triggers a layout recompute over the row set at
+     all -- just a repaint of the new rows into already-stable columns. */
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; min-width: 640px; table-layout: fixed; }
   th, td { padding: 0.55rem 0.7rem; text-align: right; border-bottom: 1px solid var(--hairline); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
+  /* Column widths (sums to 100%) -- order matches the <thead> in the markup:
+     Buy realm / Item / Variant / Buy / Sell price / EU median / Discount %.
+     Item gets the lion's share since it carries an icon + the longest text;
+     the three money columns match each other so their coin icons/figures
+     line up down the column. */
+  th:nth-child(1), td:nth-child(1) { width: 12%; }
+  th:nth-child(2), td:nth-child(2) { width: 26%; }
+  th:nth-child(3), td:nth-child(3) { width: 10%; }
+  th:nth-child(4), td:nth-child(4) { width: 14%; }
+  th:nth-child(5), td:nth-child(5) { width: 14%; }
+  th:nth-child(6), td:nth-child(6) { width: 14%; }
+  th:nth-child(7), td:nth-child(7) { width: 10%; }
+  /* Fixed layout no longer lets a cell grow to fit its content, so anything
+     that can run long needs an explicit truncation rule instead of silently
+     overflowing into the next column -- the existing hover tooltip (see
+     showTooltip()) already surfaces the untruncated realm/item name, so
+     truncating here doesn't lose information, just display width. */
+  td:nth-child(1), td:nth-child(3) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td:nth-child(4), td:nth-child(5), td:nth-child(6) { white-space: nowrap; overflow: hidden; }
   th {
     cursor: pointer; user-select: none; color: var(--text-dim); font-weight: 700;
     white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem;
@@ -183,8 +214,12 @@
   tbody tr:hover { background: var(--paper); }
   tbody tr.sub-row { background: var(--paper); }
   tbody tr.sub-row td { color: var(--text-dim); }
-  .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; }
+  .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; min-width: 0; }
   .item-cell a { display: flex; line-height: 0; }
+  /* A flex item's default min-width is auto (its content size), which would
+     stop this from ever shrinking below the full item name and defeat the
+     fixed-width column's truncation above -- min-width: 0 opts back in. */
+  .item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   /* Rarity as a colored frame around the icon art (like WoW's own UI),
      not the name's text color -- Blizzard's quality palette (near-white
      for Common, saturated green/cyan for others) was built for dark panels
@@ -224,6 +259,17 @@
   }
   .group-toggle:hover { border-color: var(--bullion); color: var(--bullion); }
   .empty { color: var(--text-dim); padding: 1.5rem 0; text-align: center; font-size: 0.85rem; }
+  /* "Show more" (see RENDER_PAGE_SIZE/renderLimit) -- a filter that matches
+     thousands of rows used to rebuild the whole tbody (thousands of DOM
+     rows) on every keystroke/checkbox click, measured live at ~1s per
+     re-render; this caps what's actually built to one page at a time. */
+  .show-more-btn {
+    display: block; margin: 1rem auto 0; padding: 0.5rem 1.2rem;
+    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--text-dim);
+    border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; transition: border-color 0.15s, color 0.15s;
+  }
+  .show-more-btn:hover { border-color: var(--bullion); color: var(--bullion); }
 
   /* ---------- Coin display ---------- */
   .money { white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -370,6 +416,7 @@
       <tbody id="rows"></tbody>
     </table>
     </div>
+    <button id="show-more" class="show-more-btn" style="display:none;"></button>
     <div id="empty" class="empty" style="display:none;">No snipes at these thresholds.</div>
   </main>
 </div>
@@ -868,7 +915,7 @@ function buildRowHtml(row, idx, group, isSub) {
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}${row.buy_realm_category ? " &middot; " + row.buy_realm_category : ""}">${row.buy_realm_name}${row.buy_realm_category ? ` <span class="realm-lang">${realmLangTag(row.buy_realm_category)}</span>` : ""}</td>
-      <td><div class="item-cell" data-row="${idx}">${icon}<span>${row.name ?? row.item_id}</span>${susFlag}${toggle}</div></td>
+      <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${row.name ?? row.item_id}</span>${susFlag}${toggle}</div></td>
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>
@@ -877,18 +924,35 @@ function buildRowHtml(row, idx, group, isSub) {
     </tr>`;
 }
 
+// How many top-level groups renderTable() actually builds DOM for on one
+// pass. Rebuilding the whole tbody (see below) for every group that matches
+// a threshold was measured live at ~1s for ~1,650 groups -- almost entirely
+// the innerHTML DOM-construction cost itself, not filtering/sorting (those
+// stayed under 15ms combined) -- so capping what gets built, not how the
+// build happens, is what actually fixes it. Groups are already sorted
+// best-first, so a page boundary here never hides a better match behind a
+// worse one -- it just defers building the DOM for rows past what's shown.
+const RENDER_PAGE_SIZE = 200;
+let renderLimit = RENDER_PAGE_SIZE;
+
 // Pure re-render of whatever's already in cachedRows -- no network call, so
 // every filter change, a column-header click, or expanding a group is
 // instant (the original "lag" fix was sort re-fetching on every click;
 // applyFilters() extends the same idea to every threshold in the rail).
-function renderTable() {
+// resetLimit=false (only the group-toggle handler and "Show more" itself
+// pass this) keeps the current page size instead of snapping back to the
+// first page -- expanding a group you're already looking at, or asking for
+// more rows, shouldn't throw away how far you'd scrolled.
+function renderTable(resetLimit = true) {
+  if (resetLimit) renderLimit = RENDER_PAGE_SIZE;
   const filtered = applyFilters(cachedRows);
   const groups = buildGroups(filtered);
   groups.sort((a, b) => compareRows(a.rows[0], b.rows[0]));
+  const pageGroups = groups.slice(0, renderLimit);
 
   displayRows = [];
   const html = [];
-  groups.forEach(group => {
+  pageGroups.forEach(group => {
     const best = group.rows[0];
     displayRows.push(best);
     html.push(buildRowHtml(best, displayRows.length - 1, group, false));
@@ -904,6 +968,15 @@ function renderTable() {
   $("empty").style.display = groups.length ? "none" : "block";
   $("empty").textContent = "No snipes at these thresholds.";
 
+  const remaining = groups.length - pageGroups.length;
+  const moreBtn = $("show-more");
+  if (remaining > 0) {
+    moreBtn.style.display = "block";
+    moreBtn.textContent = `Show ${Math.min(RENDER_PAGE_SIZE, remaining)} more (${remaining} of ${groups.length} not shown)`;
+  } else {
+    moreBtn.style.display = "none";
+  }
+
   document.querySelectorAll("th[data-sort]").forEach(th => {
     const active = th.dataset.sort === sort;
     th.classList.toggle("active", active);
@@ -911,6 +984,11 @@ function renderTable() {
     if (dirEl) dirEl.textContent = active ? (sortDir === "asc" ? "▲" : "▼") : "";
   });
 }
+
+$("show-more").addEventListener("click", () => {
+  renderLimit += RENDER_PAGE_SIZE;
+  renderTable(false);
+});
 
 function setLoading(isLoading) {
   $("table-wrap").classList.toggle("loading", isLoading);
@@ -1069,7 +1147,7 @@ document.getElementById("rows").addEventListener("click", (e) => {
   const key = btn.dataset.group;
   if (openGroups.has(key)) openGroups.delete(key); else openGroups.add(key);
   hideTooltip();
-  renderTable();
+  renderTable(false);  // expanding/collapsing a group already on screen shouldn't reset the page
 });
 
 document.querySelectorAll("th[data-sort]").forEach(th => {
