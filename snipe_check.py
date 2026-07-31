@@ -123,6 +123,57 @@ SELL_PRICE_SCAM_MULTIPLE = 500
 # applied to them -- excluded from max_appearance_sources results below.
 NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
 
+# Legacy/vendor jewelry (added 2026-07-31, experimental, human-requested):
+# neck/ring/trinket items from long-superseded expansions generate obvious
+# bait "100% discount" snipes -- unlike weapons/armor, these slots have no
+# transmog-appearance value at all (WoW's transmog system doesn't cover
+# neck/finger/trinket), so there's no collector-value angle that could make
+# an ancient one worth flagging the way a rare old weapon/armor look might
+# be. Confirmed live via blizz.api_get() against real items (2026-07-31):
+# Charm of Potent and Powerful Passions (27982, ilvl 26, COMMON, NECK),
+# Polished Pendant of Edible Energy (27976, ilvl 22, COMMON, NECK -- sold by
+# an NPC vendor for 25g, so any AH price above that is nonsensical by
+# definition), Ornate Band (83793, ilvl 37, UNCOMMON, FINGER), Shadowfire
+# Necklace (83794, ilvl 37, UNCOMMON, NECK). `inventory_type.type=TRINKET`
+# for trinkets also confirmed live via /data/wow/search/item. item_subclass
+# is useless as a discriminator here -- it's 0 ("Miscellaneous") for
+# neck/finger/trinket/cloak/shirt/tabard alike; inventory_type.type is the
+# real per-slot signal. Current-expansion jewelry sits at ilvl 600+; these
+# ancient items are rescaled by Blizzard's level-squish down into the
+# 20s-30s -- a wide, clean separation.
+#
+# Known blind spot (same "every heuristic eventually has one" house style
+# as SELL_PRICE_SCAM_MULTIPLE above and market_key()'s old noise-detection
+# history): low ilvl does not mean no real market. Level-bracket "twink"
+# builds specifically prize old, low-ilvl neck/ring/trinket items (no level
+# requirement to out-level them, no transmog competition to crowd them out
+# either) -- some twink BiS jewelry is genuinely valuable. This heuristic
+# can't distinguish dead vendor jewelry from a twink-valuable item via
+# Blizzard's API alone. Deliberately non-authoritative for exactly this
+# reason: annotate-only, never filters server-side -- same convention as
+# sell_price_suspect above.
+LEGACY_JEWELRY_INVENTORY_TYPES = {"NECK", "FINGER", "TRINKET"}
+# Deliberately conservative starting cutoff -- the live-verified examples
+# above sit at ilvl 22-37, current-tier jewelry at 600+, so this leaves
+# generous headroom without having live-verified every intermediate
+# expansion's post-squish ilvl. Tune down if false negatives show up in
+# practice, but err toward under- rather than over-flagging given the
+# twink-market blind spot above.
+LEGACY_JEWELRY_ILVL_MAX = 150
+
+
+def is_legacy_jewelry(inventory_type: str | None, base_level: int | None) -> bool:
+    """True for an old, possibly-obsolete neck/ring/trinket item -- see
+    LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified examples and the
+    twink-market caveat this can't distinguish. None-safe: a caged pet or any
+    item NameCache couldn't resolve yields inventory_type=None/base_level=None
+    here, correctly returning False rather than raising -- same defensive
+    pattern NON_TRANSMOG_INVENTORY_TYPES's callers use."""
+    return (inventory_type in LEGACY_JEWELRY_INVENTORY_TYPES
+            and base_level is not None
+            and base_level <= LEGACY_JEWELRY_ILVL_MAX)
+
+
 # Mirrors dashboard.html's ITEM_CLASS_FILTERS exactly, same bucket keys and
 # same item_class/item_subclass rules -- so a class_quotas key here means
 # the same category a human sees when they check that box client-side.

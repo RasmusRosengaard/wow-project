@@ -1148,3 +1148,99 @@ warband bank, sell it here." The `<meta name="description">` tag (same
 overclaiming phrase) was updated to match. Verified in an actual browser;
 no em-dashes introduced (still holding the earlier em-dash-free request).
 `pytest -q`: 265 passing, no Python touched.
+
+## Experimental "legacy jewelry" bait filter (2026-07-31)
+
+Human report: old, low-value jewelry (rings/necklaces/trinkets from
+long-superseded expansions, e.g. MoP-era jewelcrafting BoEs, TBC vendor
+junk) generates obvious bait "100% discount" snipes cluttering results,
+naming four concrete examples: Shadowfire Necklace, Ornate Band, Charm of
+Potent and Powerful Passions, Polished Pendant of Edible Energy.
+
+Two candidate framings were considered and ruled out first, in an earlier
+part of the same session: the human initially asked about a filter for
+"removed items," which turned out to mean two different things across the
+conversation. First, "a listing that's been bought/expired should stop
+showing" — already a real, separate bug, fixed the same session (see
+`checkForUpdates()`'s `listings_updated` fix, and the `no_cache_html`
+middleware fix for a stale-browser-cache compounding factor). Second, when
+asked to clarify, the human meant "no longer obtainable in-game except via
+the AH" — investigated and shelved: no clean, ToS-safe, bulk-programmatic
+data source exists for this (Blizzard's API has no such field; wago.tools'
+DB2 exports don't include loot/vendor/quest tables since those are
+server-side, never shipped to the client; Wowhead has no official API and
+the "no longer obtainable" tag is manually curated per-item; the AllTheThings
+addon was identified as the one plausible real candidate but pulling its Lua
+data is a genuinely separate, bigger integration, not attempted). The human
+chose to hold off on that one rather than pursue a user-curated list or the
+AllTheThings option — documented as a known gap, same as `appearance.py`'s
+`source_count` caveat, in case it's revisited later.
+
+This session's actual ask, once clarified, was different and much more
+tractable: an experimental, opt-in filter for specifically old jewelry
+(neck/ring/trinket), reasoned as follows. Unlike weapons/armor, these slots
+have **no transmog-appearance value at all** — WoW's transmog system
+doesn't cover neck/finger/trinket — so there's no collector-value angle
+that could make an ancient one worth flagging the way a rare old weapon
+look might be. This is a stronger, narrower case than the appearance-rarity
+filter already shipped.
+
+Live-verified against Blizzard's real API (`blizz.api_get()`, real `.env`
+creds, not guessed) for the human's exact examples:
+
+| item | id | ilvl | quality | inventory_type |
+|---|---|---|---|---|
+| Charm of Potent and Powerful Passions | 27982 | 26 | Common | NECK |
+| Polished Pendant of Edible Energy | 27976 | 22 | Common | NECK (sold by an NPC vendor for 25g) |
+| Ornate Band | 83793 | 37 | Uncommon | FINGER |
+| Shadowfire Necklace | 83794 | 37 | Uncommon | NECK |
+
+Also confirmed live: `inventory_type.type = "TRINKET"` is the real enum
+value for trinkets (via `/data/wow/search/item?inventory_type.type=TRINKET`).
+`item_subclass` turned out to be useless as a discriminator — it's `0`
+("Miscellaneous") for neck/finger/trinket/cloak/shirt/tabard alike;
+`inventory_type.type` is the real per-slot signal. Current-expansion
+jewelry sits at ilvl 600+; these ancient items are rescaled by Blizzard's
+level-squish down into the 20s-30s — a wide, clean separation, comfortably
+supporting a conservative `LEGACY_JEWELRY_ILVL_MAX = 150` cutoff.
+
+A design-review pass (before implementation) surfaced a real blind spot the
+initial framing missed: low ilvl does not mean no real market. Level-bracket
+"twink" builds specifically prize old, low-ilvl neck/ring/trinket items — no
+level requirement to out-level them, no transmog competition to crowd them
+out of the conversation either — and some twink BiS jewelry is genuinely
+valuable. This heuristic cannot distinguish dead vendor jewelry from a
+genuinely twink-valuable item via Blizzard's API alone. Same house style as
+every other heuristic in this project (`sell_price_suspect`, `market_key`'s
+old noise-detection): **annotate, never silently filter server-side** — the
+UI wording says "possibly obsolete," deliberately not "bait" or "worthless."
+
+Shipped: `snipe_check.is_legacy_jewelry(inventory_type, base_level)` plus
+`LEGACY_JEWELRY_INVENTORY_TYPES`/`LEGACY_JEWELRY_ILVL_MAX` (near the existing
+`NON_TRANSMOG_INVENTORY_TYPES`, the actual precedent here — a
+`NameCache.inventory_type()`-keyed boolean, not SQL, unlike
+`sell_price_suspect`). `dashboard.py`'s `_row_to_json()` exposes
+`legacy_jewelry_suspect` inside the existing `if names is not None:` block,
+right after `is_profession_item` — zero extra Blizzard API cost, since
+`base_level()`/`inventory_type()` are resolved by the same
+`_fetch_item_details()` call that already backs `item_class`/`quality`.
+`static/dashboard.html` gained a new "Hide flagged (legacy jewelry,
+experimental)" checkbox (unchecked by default, same convention as "Hide
+flagged (suspect price)"), a distinct `⌛`/`.legacy-flag` marker (a muted
+brown, deliberately not `.suspect-flag`'s amber — one flag is about the
+*price*, this one about the *item's identity*, kept visually separate) shown
+in the item-cell rather than stacked into the sell-price cell, a tooltip
+note row, and `CACHE_VERSION` bumped 2 → 3 (a cache from before this shipped
+would otherwise repaint with a flag that never shows until it happened to
+expire). Dashboard-only for now, not wired into the bare CLI — the bare CLI
+path never touches `NameCache` today outside `_filter_by_appearance()`; a
+future `--hide-legacy-jewelry` flag is cheap to add later precisely because
+the predicate already lives in `snipe_check.py`, tracked in `PROGRESS.md`'s
+"Next up."
+
+New tests: `tests/test_snipe_check.py` (pure-function, no DuckDB) covers the
+ilvl boundary, non-jewelry slots, and `None`-safety; `tests/test_dashboard.py`
+mirrors the existing `item_class`/`is_profession_item` test pattern (flags
+true for an old NECK item, false for current-tier ilvl, false for a
+non-jewelry slot, absent entirely without `names=true`). `pytest -q` and
+`env -u DATABASE_URL pytest -q`: 305 passing.

@@ -176,7 +176,12 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
      assume register+login alone reaches `/api/snipes`/`/api/status`) is
      part of this work, not an afterthought.
 5. **TSM/Auctionator buylist export** (see "Future work" below) — no design done.
-6. Phase 2 (commodities feed) — explicitly out of scope, not being pursued.
+6. **CLI parity for `legacy_jewelry_suspect`** (2026-07-31) — currently
+   dashboard-only. Deferred, not because it's hard: the constants/predicate
+   already live in `snipe_check.py`, so a `--hide-legacy-jewelry` CLI flag
+   would follow `_filter_by_appearance()`'s exact existing pattern. Just not
+   built yet since the experimental filter shipped dashboard-first.
+7. Phase 2 (commodities feed) — explicitly out of scope, not being pursued.
 
 ## Future work (ideas, not scheduled)
 
@@ -298,6 +303,13 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 - `appearance.py`'s rarity signal (`source_count`) is known to diverge from
   Wowhead's own "same model as" data on at least one item (14042). No
   Wowhead API exists to reconcile against.
+- `snipe_check.is_legacy_jewelry()`'s `legacy_jewelry_suspect` flag
+  (2026-07-31, experimental, dashboard-only) can't distinguish old dead
+  vendor jewelry from a genuinely valuable "twink" item (level-bracket PvP/
+  leveling builds specifically prize old low-ilvl neck/ring/trinket items) —
+  same reason it's never filtered server-side, only an opt-in checkbox.
+  `LEGACY_JEWELRY_ILVL_MAX` (150) is a tunable starting cutoff, not a
+  rigorously derived one. See `HISTORY.md` for the live-verified examples.
 - The tightened background-poll window (`:12-:28` past the hour) is based
   on ~7 observed data points from one realm (Draenor) — a shared, global
   schedule, not learned per-realm.

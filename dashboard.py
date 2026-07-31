@@ -255,6 +255,18 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # already fetched as a side effect of the same NameCache lookup
         # that resolved name/icon/quality above.
         out["is_profession_item"] = names.inventory_type(r["item_id"]) in snipe_check.NON_TRANSMOG_INVENTORY_TYPES
+        # legacy_jewelry_suspect (added 2026-07-31, experimental, human
+        # request): flags old neck/ring/trinket items -- see
+        # snipe_check.LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified
+        # examples and its known twink-market blind spot. Same
+        # NameCache-driven pattern as is_profession_item above -- costs
+        # nothing extra, base_level()/inventory_type() are resolved by the
+        # same _fetch_item_details() call that already backs item_class/
+        # quality. Never filters server-side -- dashboard.html's "Hide
+        # flagged (legacy jewelry)" checkbox is the only thing that can hide
+        # it, same non-authoritative convention as sell_price_suspect.
+        out["legacy_jewelry_suspect"] = snipe_check.is_legacy_jewelry(
+            names.inventory_type(r["item_id"]), names.base_level(r["item_id"]))
     return out
 
 

@@ -213,6 +213,12 @@
      SELL_PRICE_SCAM_MULTIPLE) -- amber in both themes since it's a caution
      signal, not a status tied to the light/dark palette. */
   .suspect-flag { color: #d97706; margin-right: 0.3rem; cursor: help; }
+  /* Legacy-jewelry flag (see dashboard.py's legacy_jewelry_suspect) -- a
+     distinct muted tone from .suspect-flag's amber deliberately: that flag
+     is about the *price* (might be fake), this one is about the *item's
+     identity* (might be obsolete) -- two unrelated signals that shouldn't
+     blur into one visual language. */
+  .legacy-flag { color: #7c6a52; margin-left: 0.3rem; cursor: help; }
   .group-toggle {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--text-dim);
     border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.68rem; cursor: pointer;
@@ -317,6 +323,9 @@
     </label>
     <label class="auto-label" title="Sell realm's reference price is far above (500x+) the average price seen for this item elsewhere in the region -- likely a troll/camped listing, not a real price.">
       <input id="hide_suspect" type="checkbox"> Hide flagged (suspect price) listings
+    </label>
+    <label class="auto-label" title="Experimental: old neck/ring/trinket items (ilvl 150 or below) from long-superseded expansions -- no transmog value (WoW's transmog system doesn't cover these slots) and usually no real market. Can't tell a dead vendor item apart from a genuinely valuable twink item, so this is never filtered server-side -- toggle to judge for yourself.">
+      <input id="hide_legacy_jewelry" type="checkbox"> Hide flagged (legacy jewelry, experimental)
     </label>
     <div>
       <div class="filters-heading">Item class</div>
@@ -435,7 +444,11 @@ const BATCH_TOP = 10000;
 // otherwise repaint with those fields missing (NaN in the EU median
 // column, a suspect flag that never shows/hides) until it happened to
 // expire or the sell realm/item filter changed.
-const CACHE_VERSION = 2;
+// Bumped to 3 (2026-07-31): legacy_jewelry_suspect was added to the row
+// shape -- a cache from before this shipped would repaint with a flag that
+// never shows/hides until it happened to expire or the sell realm/item
+// filter changed, same reasoning as the 1->2 bump above.
+const CACHE_VERSION = 3;
 // Safety net, not the primary freshness signal: even if last_modified still
 // matches, force a real refetch once a cache is this old, in case the
 // status endpoint itself is stuck/wrong for some other reason. Comfortably
@@ -658,6 +671,7 @@ function applyFilters(rows) {
   const minSellNow = minSellNowRaw ? Number(minSellNowRaw) * 10000 : null;
   const uniqueOnly = $("unique_appearance").checked;
   const hideSuspect = $("hide_suspect").checked;
+  const hideLegacyJewelry = $("hide_legacy_jewelry").checked;
   const activeClasses = ITEM_CLASS_FILTERS.filter(c => $(`class_${c.key}`).checked);
   const activeQualities = QUALITY_FILTERS.filter(q => $(`quality_${q.key}`).checked);
 
@@ -680,6 +694,11 @@ function applyFilters(rows) {
     // the only place a suspect row can actually get hidden, and only when
     // the user asks for it.
     if (hideSuspect && r.sell_price_suspect) return false;
+    // legacy_jewelry_suspect (see snipe_check.LEGACY_JEWELRY_ILVL_MAX) is
+    // also non-authoritative -- known blind spot for twink-valuable items,
+    // see that constant's comment -- so this checkbox is the only thing
+    // that can hide it, same convention as hideSuspect above.
+    if (hideLegacyJewelry && r.legacy_jewelry_suspect) return false;
     // No class checked = no class filtering (show everything); any checked
     // = row must match at least one.
     if (activeClasses.length && !activeClasses.some(c => c.test(r))) return false;
@@ -761,6 +780,9 @@ function showTooltip(row, x, y) {
     ${row.appearance_sources != null
       ? `<div class="tt-row"><span class="lbl">Appearance</span><span>${row.appearance_sources === 1 ? "unique look" : `shared by ${row.appearance_sources} items`}</span></div>`
       : ""}
+    ${row.legacy_jewelry_suspect
+      ? `<div class="tt-row"><span class="lbl">Note</span><span>Old jewelry, possibly obsolete (experimental)</span></div>`
+      : ""}
     ${ue ? `<hr><div class="tt-sub">Click the icon for Undermine Exchange &rarr;</div>` : ""}
   `;
   tt.style.display = "block";
@@ -830,10 +852,20 @@ function buildRowHtml(row, idx, group, isSub) {
   const suspectFlag = row.sell_price_suspect
     ? `<span class="suspect-flag" title="Sell reference price is 500x+ the region average for this item -- likely a troll/camped listing on your sell realm, not a real price">&#9888;</span>`
     : "";
+  // legacy_jewelry_suspect: an old neck/ring/trinket item, ilvl-wise from a
+  // long-superseded expansion -- see snipe_check.LEGACY_JEWELRY_ILVL_MAX's
+  // comment for the live-verified examples and its known twink-market blind
+  // spot. This is about the item's *identity*, not its price, so it lives in
+  // the item-cell next to the name -- deliberately not stacked into the
+  // sell-price cell alongside suspectFlag, which is a separate, unrelated
+  // signal about the price itself.
+  const legacyFlag = row.legacy_jewelry_suspect
+    ? `<span class="legacy-flag" title="Old neck/ring/trinket item (ilvl 150 or below) -- likely from a long-superseded expansion with no transmog value and usually no real market. Experimental, non-authoritative: can't rule out a genuinely valuable twink item.">&#8987;</span>`
+    : "";
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
-      <td><div class="item-cell" data-row="${idx}">${icon}<span>${row.name ?? row.item_id}</span>${toggle}</div></td>
+      <td><div class="item-cell" data-row="${idx}">${icon}<span>${row.name ?? row.item_id}</span>${legacyFlag}${toggle}</div></td>
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${suspectFlag}${formatMoney(row.sell_copper)}</td>
@@ -1109,6 +1141,10 @@ $("unique_appearance").addEventListener("change", () => {
   renderTable();
 });
 $("hide_suspect").addEventListener("change", () => {
+  hideTooltip();
+  renderTable();
+});
+$("hide_legacy_jewelry").addEventListener("change", () => {
   hideTooltip();
   renderTable();
 });

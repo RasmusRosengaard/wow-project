@@ -1047,3 +1047,32 @@ def test_check_data_ready_ok(tmp_path, monkeypatch):
     listings_dir.mkdir(parents=True)
     (listings_dir / "1403.parquet").write_bytes(b"")
     assert snipe_check.check_data_ready(SELL_CR) is None
+
+
+def test_is_legacy_jewelry_flags_old_jewelry_slots():
+    # Live-verified examples (2026-07-31, see LEGACY_JEWELRY_ILVL_MAX's
+    # comment): Charm of Potent and Powerful Passions (ilvl 26, NECK),
+    # Ornate Band (ilvl 37, FINGER).
+    assert snipe_check.is_legacy_jewelry("NECK", 26) is True
+    assert snipe_check.is_legacy_jewelry("FINGER", 37) is True
+    assert snipe_check.is_legacy_jewelry("TRINKET", 100) is True
+
+
+def test_is_legacy_jewelry_ilvl_boundary():
+    assert snipe_check.is_legacy_jewelry("TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX) is True
+    assert snipe_check.is_legacy_jewelry("TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX + 1) is False
+
+
+def test_is_legacy_jewelry_false_for_current_tier_jewelry():
+    assert snipe_check.is_legacy_jewelry("NECK", 610) is False
+
+
+def test_is_legacy_jewelry_false_for_non_jewelry_slot():
+    # A low ilvl alone isn't enough -- the slot has to be jewelry too, or a
+    # perfectly ordinary current-relevant leveling item would get flagged.
+    assert snipe_check.is_legacy_jewelry("HEAD", 26) is False
+
+
+def test_is_legacy_jewelry_none_safe():
+    assert snipe_check.is_legacy_jewelry(None, 26) is False
+    assert snipe_check.is_legacy_jewelry("NECK", None) is False

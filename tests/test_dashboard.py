@@ -428,6 +428,46 @@ def test_api_snipes_omits_item_class_without_names(data_dir, monkeypatch):
     assert "is_profession_item" not in row
 
 
+def test_api_snipes_flags_legacy_jewelry_for_old_neck_item(data_dir, monkeypatch):
+    """legacy_jewelry_suspect mirrors snipe_check.is_legacy_jewelry() exactly
+    -- an old NECK item (ilvl well under LEGACY_JEWELRY_ILVL_MAX) must flag
+    true, the same live-verified shape as Charm of Potent and Powerful
+    Passions (item 27982, ilvl 26, NECK -- see snipe_check.py)."""
+    run_diff(monkeypatch)
+    stub_item_details(monkeypatch, inventory_type="NECK", level=26)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "names": True})
+    row = r.json()["rows"][0]
+    assert row["legacy_jewelry_suspect"] is True
+
+
+def test_api_snipes_legacy_jewelry_false_for_current_tier_jewelry(data_dir, monkeypatch):
+    run_diff(monkeypatch)
+    stub_item_details(monkeypatch, inventory_type="NECK", level=610)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "names": True})
+    row = r.json()["rows"][0]
+    assert row["legacy_jewelry_suspect"] is False
+
+
+def test_api_snipes_legacy_jewelry_false_for_non_jewelry_slot(data_dir, monkeypatch):
+    """A low-ilvl item in a non-jewelry slot (e.g. a leveling HEAD item)
+    must not be flagged -- the ilvl cutoff alone isn't the whole rule."""
+    run_diff(monkeypatch)
+    stub_item_details(monkeypatch, inventory_type="HEAD", level=26)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "names": True})
+    row = r.json()["rows"][0]
+    assert row["legacy_jewelry_suspect"] is False
+
+
+def test_api_snipes_omits_legacy_jewelry_without_names(data_dir, monkeypatch):
+    run_diff(monkeypatch)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
+    row = r.json()["rows"][0]
+    assert "legacy_jewelry_suspect" not in row
+
+
 def test_api_snipes_variant_falls_back_without_names_resolved(tmp_path, monkeypatch):
     """Without names=true there's no base_level to check the claim against,
     so the smarter ilvl label is skipped entirely rather than shown unverified."""
