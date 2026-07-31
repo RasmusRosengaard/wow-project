@@ -906,17 +906,17 @@ function renderFromCache(sell) {
 // a real fetch is actually needed -- never by a filter-rail threshold
 // changing (those call renderTable() directly instead, see the listeners
 // wired at the bottom).
-// knownLastModified: checkForUpdates() already has a fresh /api/status
-// result by the time it decides a real fetch is needed -- pass it through
-// instead of re-fetching /api/status a second time just to learn the same
-// value for saveCache(). That second call used to be the only thing
-// standing between a successful, on-screen /api/snipes result and it ever
-// getting cached: a real report, 2026-07-30 -- Scarshield Legion's data
-// loaded and displayed correctly twice in a row, yet had no localStorage
+// knownLastModified/knownListingsUpdated: checkForUpdates() already has a
+// fresh /api/status result by the time it decides a real fetch is needed --
+// pass both through instead of re-fetching /api/status a second time just to
+// learn the same values for saveCache(). That second call used to be the
+// only thing standing between a successful, on-screen /api/snipes result and
+// it ever getting cached: a real report, 2026-07-30 -- Scarshield Legion's
+// data loaded and displayed correctly twice in a row, yet had no localStorage
 // entry at all, meaning the post-fetch loadStatus() call silently failed
 // (or the row was never reached) both times and saveCache() was never
 // called, so every future visit redid the full expensive query forever.
-async function fetchBatch(knownLastModified) {
+async function fetchBatch(knownLastModified, knownListingsUpdated) {
   const sell = $("sell").value;
   if (!sell) return;
   if (fetchInFlight) return;  // an equivalent fetch is already running -- let it finish rather than piling another slow query on top (see fetchInFlight's declaration above)
@@ -964,11 +964,13 @@ async function fetchBatch(knownLastModified) {
     // a second time -- only falls back to a fresh call on the cold-start path
     // where checkForUpdates()'s own status check failed and knownLastModified
     // was never available to begin with (see this function's own comment).
-    const lastModified = knownLastModified ?? (await loadStatus(sell))?.last_modified;
+    const fallbackStatus = (knownLastModified == null) ? await loadStatus(sell) : null;
+    const lastModified = knownLastModified ?? fallbackStatus?.last_modified;
+    const listingsUpdated = knownListingsUpdated ?? fallbackStatus?.listings_updated;
     if (lastModified) {
       saveCache(sell, {
         rows: data.rows, region: data.region, sellRealmSlug: data.sell_realm_slug,
-        lastModified, fetchedAt: Date.now(),
+        lastModified, listingsUpdated, fetchedAt: Date.now(),
       });
     }
   } finally {
@@ -980,11 +982,25 @@ async function fetchBatch(knownLastModified) {
 // The auto-refresh timer and the initial page load both go through this
 // instead of fetchBatch() directly: it's a cheap /api/status check (a file
 // mtime, no DuckDB join) first, and only calls the expensive fetchBatch()
-// when Blizzard's data has actually changed since our cache -- Blizzard
-// republishes AH data roughly hourly, so polling the heavy query every 60s
-// regardless (the original behavior) was ~60 checks for every 1 real
-// update. MAX_CACHE_AGE_MS is a safety net in case the status signal itself
-// ever gets stuck.
+// when the data behind the current batch has actually changed since our
+// cache -- Blizzard republishes a sell realm's own AH roughly hourly, so
+// polling the heavy query every 60s regardless (the original behavior) was
+// ~60 checks for every 1 real update. MAX_CACHE_AGE_MS is a safety net in
+// case the status signal itself ever gets stuck.
+//
+// Checks status.listings_updated (the region scanner's sweep timestamp, a
+// separate signal from last_modified) in addition to last_modified -- fixed
+// 2026-07-31, human report + live repro: a bought-out listing kept showing
+// as a snipe for up to an hour after the purchase. Root cause: the buy side
+// (data/listings/*.parquet) is what determines whether a listing still
+// exists, and scan_region.py's sweep refreshes it every ~10 minutes --
+// far more often than last_modified changes (Blizzard only republishes the
+// *sell* realm's own AH roughly hourly, at no fixed clock time). Comparing
+// only last_modified meant a sweep that removed a bought listing had no way
+// to trigger a refetch until last_modified happened to change too, for an
+// unrelated reason. Confirmed live: a fresh /api/snipes call already showed
+// the listing gone while the cached batch (matching last_modified) still had
+// it.
 async function checkForUpdates() {
   const sell = $("sell").value;
   if (!sell) return;
@@ -992,10 +1008,11 @@ async function checkForUpdates() {
   if (!status) { await fetchBatch(); return; }  // status check itself failed -- fall back to a real fetch rather than silently doing nothing
   const cached = loadCache(sell);
   if (cached && cached.lastModified === status.last_modified
+      && cached.listingsUpdated === status.listings_updated
       && (Date.now() - cached.fetchedAt) < MAX_CACHE_AGE_MS) {
     return;  // nothing new since our cache -- skip the DuckDB query entirely
   }
-  await fetchBatch(status.last_modified);
+  await fetchBatch(status.last_modified, status.listings_updated);
 }
 
 document.getElementById("rows").addEventListener("mouseover", (e) => {
