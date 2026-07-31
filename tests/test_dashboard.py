@@ -428,9 +428,9 @@ def test_api_snipes_omits_item_class_without_names(data_dir, monkeypatch):
     assert "is_profession_item" not in row
 
 
-def test_api_snipes_flags_legacy_jewelry_for_old_neck_item(data_dir, monkeypatch):
-    """legacy_jewelry_suspect mirrors snipe_check.is_legacy_jewelry() exactly
-    -- an old NECK item (ilvl well under LEGACY_JEWELRY_ILVL_MAX) must flag
+def test_api_snipes_flags_sus_item_for_old_neck_item(data_dir, monkeypatch):
+    """sus_item_suspect mirrors snipe_check.is_sus_item() exactly --
+    an old NECK item (ilvl well under LEGACY_JEWELRY_ILVL_MAX) must flag
     true, the same live-verified shape as Charm of Potent and Powerful
     Passions (item 27982, ilvl 26, NECK -- see snipe_check.py)."""
     run_diff(monkeypatch)
@@ -438,34 +438,73 @@ def test_api_snipes_flags_legacy_jewelry_for_old_neck_item(data_dir, monkeypatch
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
                                           "names": True})
     row = r.json()["rows"][0]
-    assert row["legacy_jewelry_suspect"] is True
+    assert row["sus_item_suspect"] is True
 
 
-def test_api_snipes_legacy_jewelry_false_for_current_tier_jewelry(data_dir, monkeypatch):
+def test_api_snipes_sus_item_false_for_current_tier_jewelry(data_dir, monkeypatch):
     run_diff(monkeypatch)
     stub_item_details(monkeypatch, inventory_type="NECK", level=610)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
                                           "names": True})
     row = r.json()["rows"][0]
-    assert row["legacy_jewelry_suspect"] is False
+    assert row["sus_item_suspect"] is False
 
 
-def test_api_snipes_legacy_jewelry_false_for_non_jewelry_slot(data_dir, monkeypatch):
+def test_api_snipes_sus_item_false_for_non_jewelry_slot(data_dir, monkeypatch):
     """A low-ilvl item in a non-jewelry slot (e.g. a leveling HEAD item)
-    must not be flagged -- the ilvl cutoff alone isn't the whole rule."""
+    must not be flagged -- the ilvl cutoff alone isn't the whole rule, and
+    item 101 (this fixture's default) isn't in CLASS_STARTER_ARMOR_ITEM_IDS
+    either."""
     run_diff(monkeypatch)
     stub_item_details(monkeypatch, inventory_type="HEAD", level=26)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
                                           "names": True})
     row = r.json()["rows"][0]
-    assert row["legacy_jewelry_suspect"] is False
+    assert row["sus_item_suspect"] is False
 
 
-def test_api_snipes_omits_legacy_jewelry_without_names(data_dir, monkeypatch):
+def test_api_snipes_omits_sus_item_without_names(data_dir, monkeypatch):
     run_diff(monkeypatch)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
     row = r.json()["rows"][0]
-    assert "legacy_jewelry_suspect" not in row
+    assert "sus_item_suspect" not in row
+
+
+def test_api_snipes_flags_sus_item_for_class_starter_armor_item_id(tmp_path, monkeypatch):
+    """The item_id itself (not just inventory_type/ilvl) can trigger
+    sus_item_suspect via CLASS_STARTER_ARMOR_ITEM_IDS -- uses Paladin's
+    Girdle's real id (187726, Plate, WAIST -- confirmed live 2026-07-31, see
+    snipe_check.py) in a custom fixture, since the shared data_dir fixture's
+    default item_id (101) isn't in that set. WAIST isn't a jewelry slot, so
+    this only passes if the id-based path works independently of the
+    ilvl+inventory_type jewelry rule."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)
+    STARTER_ITEM = 187726
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [snap_row(9999, T1, item_id=103),
+            snap_row(1, T1, item_id=STARTER_ITEM, buyout=100_000)]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(BUY_CR_A, item_id=STARTER_ITEM, buyout=10_000, auction_id=100)],
+        schema=LISTING_SCHEMA), listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    stub_item_details(monkeypatch, inventory_type="WAIST", level=1)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "names": True})
+    row = r.json()["rows"][0]
+    assert row["item_id"] == STARTER_ITEM
+    assert row["sus_item_suspect"] is True
 
 
 def test_api_snipes_variant_falls_back_without_names_resolved(tmp_path, monkeypatch):

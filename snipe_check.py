@@ -98,23 +98,6 @@ CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
           "listed), so it can ride the warband bank to your sell realm -- just "
           "don't equip/use it before moving it, or it may bind to that character.")
 
-# A sell-realm reference price standing this far above the *average* current
-# price for the same item across the rest of the scanned region is far more
-# likely to be a troll/camped listing than a real cross-realm gap -- real
-# gaps run in the tens of percent (that's the whole product), not multiples
-# of the regional average. Traced live 2026-07-27 on Draenor item 36519
-# (Moonlit Katana): its only 4 current listings, across 4 different
-# bonus_keys, were all priced at exactly 139,846g75s while Undermine Exchange
-# showed ~1,500g as the real going rate elsewhere -- the signature of one
-# seller camping every variant at a single joke price. Deliberately high
-# (500x) and non-authoritative: a flagged row is NOT excluded from results
-# (human product decision, 2026-07-27) -- it's surfaced with
-# `sell_price_suspect=True` so the human can judge for themselves rather
-# than the system silently hiding data on a heuristic that (like every prior
-# one in this project, see market_key()'s noise-detection history) could
-# itself have a blind spot.
-SELL_PRICE_SCAM_MULTIPLE = 500
-
 # Blizzard's real inventory_type.type values for profession tool/accessory
 # slots (confirmed live 2026-07-23 against real items -- Mining Pick,
 # Blacksmith Hammer, Fishing Pole all return PROFESSION_TOOL; the newer
@@ -143,15 +126,14 @@ NON_TRANSMOG_INVENTORY_TYPES = {"PROFESSION_TOOL", "PROFESSION_GEAR"}
 # 20s-30s -- a wide, clean separation.
 #
 # Known blind spot (same "every heuristic eventually has one" house style
-# as SELL_PRICE_SCAM_MULTIPLE above and market_key()'s old noise-detection
-# history): low ilvl does not mean no real market. Level-bracket "twink"
-# builds specifically prize old, low-ilvl neck/ring/trinket items (no level
-# requirement to out-level them, no transmog competition to crowd them out
-# either) -- some twink BiS jewelry is genuinely valuable. This heuristic
-# can't distinguish dead vendor jewelry from a twink-valuable item via
-# Blizzard's API alone. Deliberately non-authoritative for exactly this
-# reason: annotate-only, never filters server-side -- same convention as
-# sell_price_suspect above.
+# as market_key()'s old noise-detection history): low ilvl does not mean no
+# real market. Level-bracket "twink" builds specifically prize old, low-ilvl
+# neck/ring/trinket items (no level requirement to out-level them, no
+# transmog competition to crowd them out either) -- some twink BiS jewelry
+# is genuinely valuable. This heuristic can't distinguish dead vendor
+# jewelry from a twink-valuable item via Blizzard's API alone. Deliberately
+# non-authoritative for exactly this reason: annotate-only, never filters
+# server-side.
 LEGACY_JEWELRY_INVENTORY_TYPES = {"NECK", "FINGER", "TRINKET"}
 # Deliberately conservative starting cutoff -- the live-verified examples
 # above sit at ilvl 22-37, current-tier jewelry at 600+, so this leaves
@@ -161,14 +143,60 @@ LEGACY_JEWELRY_INVENTORY_TYPES = {"NECK", "FINGER", "TRINKET"}
 # twink-market blind spot above.
 LEGACY_JEWELRY_ILVL_MAX = 150
 
+# Class-starter armor (added 2026-07-31, human request, broadening the
+# jewelry rule above to every slot/class): a curated item-id set, not a
+# threshold rule -- ilvl alone can't discriminate here the way it can for
+# jewelry, since hundreds of unrelated epic/rare transmog and PvP-replica
+# items also sit at ilvl 1 (confirmed live: a plain `inventory_type=WAIST,
+# level=1` search returned 900 items across 9 pages, the overwhelming
+# majority unrelated to starter gear). Confirmed live via blizz.api_get()
+# (2026-07-31): patch 9.1.5 (2021-11-02) introduced a unified "{Class}'s
+# {Slot}" ilvl-1 Common starter armor set per class, replacing the older
+# race-specific starting gear -- e.g. Paladin's Girdle (187726, Plate,
+# WAIST). Found by probing the contiguous id range around it
+# (187690-187778): 9 classes confirmed -- Hunter, Shaman, Paladin, Warrior,
+# Warlock, Mage, Priest, Rogue, Druid. Seven get all 6 slots (CHEST/LEGS/
+# HAND/WRIST/FEET/WAIST); Rogue and Druid only get 5 (no WRIST piece --
+# confirmed real, not a missed id: checked every gap in the surrounding id
+# range and searched by exact name for "Rogue's Bracers"/"Druid's Bracers"
+# and similar, found nothing). 52 items total. Death Knight/Demon Hunter/
+# Monk/Evoker were checked (both this id range and name-pattern search) and
+# NOT found -- not an oversight, those hero classes have bespoke starting
+# gear from their own class-launch expansion instead of this unified
+# revamp.
+CLASS_STARTER_ARMOR_ITEM_IDS = frozenset({
+    # Hunter (Mail)
+    187690, 187691, 187692, 187693, 187694, 187695,
+    # Shaman (Mail)
+    187716, 187717, 187718, 187719, 187720, 187721,
+    # Paladin (Plate)
+    187722, 187723, 187724, 187725, 187726, 187727,
+    # Warrior (Plate)
+    187743, 187744, 187745, 187746, 187747, 187748,
+    # Warlock (Cloth)
+    187751, 187752, 187753, 187754, 187755, 187756,
+    # Mage (Cloth)
+    187757, 187758, 187759, 187760, 187761, 187762,
+    # Priest (Cloth)
+    187763, 187764, 187765, 187766, 187767, 187768,
+    # Rogue (Leather)
+    187769, 187770, 187771, 187772, 187773,
+    # Druid (Leather)
+    187774, 187775, 187776, 187777, 187778,
+})
 
-def is_legacy_jewelry(inventory_type: str | None, base_level: int | None) -> bool:
-    """True for an old, possibly-obsolete neck/ring/trinket item -- see
+
+def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None) -> bool:
+    """True for a "sus" (suspect) item worth a second look before trusting a
+    "100% discount" snipe: an old neck/ring/trinket item (see
     LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified examples and the
-    twink-market caveat this can't distinguish. None-safe: a caged pet or any
-    item NameCache couldn't resolve yields inventory_type=None/base_level=None
-    here, correctly returning False rather than raising -- same defensive
-    pattern NON_TRANSMOG_INVENTORY_TYPES's callers use."""
+    twink-market caveat) or one of the confirmed class-starter armor pieces
+    (see CLASS_STARTER_ARMOR_ITEM_IDS's comment). None-safe: a caged pet or
+    any item NameCache couldn't resolve yields inventory_type=None/
+    base_level=None here, correctly returning False rather than raising --
+    same defensive pattern NON_TRANSMOG_INVENTORY_TYPES's callers use."""
+    if item_id in CLASS_STARTER_ARMOR_ITEM_IDS:
+        return True
     return (inventory_type in LEGACY_JEWELRY_INVENTORY_TYPES
             and base_level is not None
             and base_level <= LEGACY_JEWELRY_ILVL_MAX)
@@ -388,30 +416,18 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     replacing the old market_key-based grouping), since that's exactly
     what determines whether two rows are "the same match" for pricing.
 
-    **sell_price_suspect** (added 2026-07-27): True when the sell realm's
-    reference price (`cheapest_now`) is more than `SELL_PRICE_SCAM_MULTIPLE`
-    times the *average* current cheapest-per-realm price for the same item
-    across the rest of the scanned region (`region_stats.region_avg_cheapest`,
-    built from the same `buy` rows already loaded here -- no new data
-    source). This is a non-authoritative flag, not a filter: a suspect row
-    is still returned like any other, since it's a heuristic and every prior
-    heuristic in this project (see market_key()'s noise-detection history)
-    has eventually had a real blind spot -- the human decision (2026-07-27)
-    was to surface the signal and let the dashboard/CLI user judge, not to
-    silently drop rows on it. See SELL_PRICE_SCAM_MULTIPLE's module-level
-    comment for the real production case (Draenor item 36519) that
-    motivated this.
-
     **region_median_g/region_median_copper** (added 2026-07-27, human
-    request): the *median* (not mean) of the same per-other-realm cheapest
-    listings used for sell_price_suspect above, shown to the user as "the
+    request): the *median* of the same per-other-realm cheapest listings
+    (`region_stats.region_median_cheapest`, built from the same `buy` rows
+    already loaded here -- no new data source), shown to the user as "the
     EU median price" for the item -- purely informational display, doesn't
-    gate or filter anything. Median rather than the mean here specifically
-    because this number is shown directly to a human as a reference point
-    (unlike the mean, which only backs an internal threshold check) -- a
+    gate or filter anything. Median rather than a mean specifically because
+    this number is shown directly to a human as a reference point -- a
     single other realm having its own outlier listing skews a mean far more
     than a median, and the whole point of showing this figure is to be a
     trustworthy "what does this actually cost around the region" number.
+    (`sell_price_suspect`, an earlier mean-based scam-price flag that used
+    to live alongside this, was removed 2026-07-31 -- see HISTORY.md.)
 
     **class_quotas** (added 2026-07-27, human request): a {bucket: max_rows}
     dict (bucket keys match dashboard.html's ITEM_CLASS_FILTERS -- weapon/
@@ -460,7 +476,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         WHERE cr_id != {int(sell_cr)} AND buyout IS NOT NULL
     """)
     # Shared CTE chain: the sell-realm reference price, the region-wide
-    # cross-check stats (sell_price_suspect/region_median), the item-deduped
+    # cross-check stats (region_median), the item-deduped
     # match set -- everything both branches below need, factored out once so
     # class_quotas doesn't pay for these (the expensive part -- region_stats'
     # aggregation over the whole region) twice.
@@ -492,17 +508,16 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             GROUP BY cr_id, item_id, pet_species_id, pet_quality_id
         ),
         region_stats AS (
-            -- Average and median of those per-realm cheapest listings --
-            -- "the average/median EU price for this item", not a statistic
-            -- over every individual auction (which would over-weight realms
-            -- with more sellers). The average powers sell_price_suspect
-            -- (established 2026-07-27, kept as-is); the median is a
-            -- separate, purely informational display value (added
-            -- 2026-07-27, human request) -- less skewed by one other realm
-            -- itself having an outlier listing, so it's the more honest
-            -- "typical EU price" to show a user than the mean would be.
+            -- Median of those per-realm cheapest listings -- "the median EU
+            -- price for this item", not a statistic over every individual
+            -- auction (which would over-weight realms with more sellers).
+            -- Purely informational display value (added 2026-07-27, human
+            -- request) -- less skewed by one other realm itself having an
+            -- outlier listing, so it's the more honest "typical EU price"
+            -- to show a user than a mean would be. (This CTE used to also
+            -- compute a mean powering sell_price_suspect, removed
+            -- 2026-07-31 -- see HISTORY.md.)
             SELECT item_id, pet_species_id, pet_quality_id,
-                   avg(realm_cheapest) AS region_avg_cheapest,
                    median(realm_cheapest) AS region_median_cheapest
             FROM region_realm_floor
             GROUP BY item_id, pet_species_id, pet_quality_id
@@ -516,8 +531,6 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                    round(n.cheapest_now)::BIGINT                       AS sell_copper,
                    round(100.0 * (n.cheapest_now * 0.95 - b.buy_unit_price)
                          / (n.cheapest_now * 0.95), 1)                 AS discount_pct,
-                   (n.cheapest_now > rs.region_avg_cheapest * {SELL_PRICE_SCAM_MULTIPLE})
-                                                                        AS sell_price_suspect,
                    round(rs.region_median_cheapest / 10000, 2)          AS region_median_g,
                    round(rs.region_median_cheapest)::BIGINT             AS region_median_copper
             FROM buy b
@@ -630,7 +643,7 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
     names = NameCache() if resolve_names else None
     name_col = "name" if resolve_names else "item_id"
     hdr = (f"{'buy_realm':>9} {name_col:>28} {'variant':>14} {'buy_g':>10} {'sell_p_g':>10} "
-           f"{'eu_med_g':>10} {'disc%':>7} {'appear':>7} {'flag':>5}")
+           f"{'eu_med_g':>10} {'disc%':>7} {'appear':>7}")
     print(hdr)
     for r in rows:
         if r["pet_species_id"] is not None:
@@ -639,10 +652,9 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
             variant = r["bonus_key"] or "-"
         label = names.get(r["item_id"], r["pet_species_id"]) if names else str(r["item_id"])
         appear = r["appearance_sources"] if r["appearance_sources"] is not None else "-"
-        flag = "⚠" if r.get("sell_price_suspect") else "-"
         print(f"{r['buy_realm']:>9} {label:>28.28} {variant:>14} "
               f"{r['buy_g']:>10.2f} {r['sell_p_g']:>10.2f} {r['region_median_g']:>10.2f} "
-              f"{r['discount_pct']:>7.1f} {appear:>7} {flag:>5}")
+              f"{r['discount_pct']:>7.1f} {appear:>7}")
     if names:
         names.save()
     else:

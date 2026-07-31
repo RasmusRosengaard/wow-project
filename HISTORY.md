@@ -1244,3 +1244,102 @@ mirrors the existing `item_class`/`is_profession_item` test pattern (flags
 true for an old NECK item, false for current-tier ilvl, false for a
 non-jewelry slot, absent entirely without `names=true`). `pytest -q` and
 `env -u DATABASE_URL pytest -q`: 305 passing.
+
+## sell_price_suspect removed; legacy_jewelry_suspect renamed/broadened to legacy_gear_suspect, adding class-starter armor (2026-07-31, same day)
+
+Human request, two parts: (1) remove `sell_price_suspect` (the 500x-region-
+mean scam-price flag from 2026-07-27, traced live to Draenor item 36519/
+Moonlit Katana) outright, and (2) broaden the same-day `legacy_jewelry_suspect`
+experimental filter to cover "starting items... for every slot/class," citing
+Paladin's Girdle as the example.
+
+**Part 1 — removing `sell_price_suspect`.** A deliberate human decision to
+consolidate two overlapping anti-bait signals into one, not silent drift —
+recorded here per this project's convention for such reversals (see the
+"Process deviations" pattern in `CLAUDE.md`). Removed: `SELL_PRICE_SCAM_MULTIPLE`;
+the `region_avg_cheapest` computation in `region_stats` (the CTE now computes
+only the median, which `region_median_g`/`region_median_copper` still use --
+unaffected); the `sell_price_suspect` column in `matches`; the `⚠`/`flag`
+column in `print_snipes()`'s CLI output (nothing else populated it); the
+`.suspect-flag` CSS, `hide_suspect` checkbox, and its `applyFilters()`/
+`buildRowHtml()` logic in `dashboard.html`; three dedicated test cases in
+`tests/test_snipe_check.py` (the Moonlit-Katana-calibration test, the
+mechanism test, and the 500x boundary test). `region_median_g`'s own test
+(`test_find_snipes_region_median_uses_median_not_mean`) needed only a
+docstring fix -- the median computation itself was never affected.
+
+**Part 2 — generalizing to `legacy_gear_suspect`.** Kept the field/checkbox
+name honest: a flag that also catches `Paladin's Chestplate` (a chest piece)
+can't stay named "jewelry" without misleading. Investigated the user's
+"Paladin's Girdle" example live via `blizz.api_get()` (real `.env` creds):
+ilvl 1, Plate, WAIST, item id 187726. This turned out to be part of a real,
+systematic Blizzard content addition -- patch 9.1.5 (2021-11-02) introduced
+a unified `"{Class}'s {Slot}"` ilvl-1 Common starter-armor set per class,
+replacing older race-specific starting gear. Found the rest by probing the
+contiguous id range around it (187690-187778): confirmed 9 classes --
+Hunter, Shaman, Paladin, Warrior, Warlock, Mage, Priest, Rogue, Druid.
+Seven get all 6 slots (CHEST/LEGS/HAND/WRIST/FEET/WAIST); Rogue and Druid
+only get 5 (no WRIST piece -- checked every gap in the id range and searched
+by exact name for "Rogue's Bracers"/"Druid's Bracers" and near-variants,
+found nothing, so this is a real asymmetry in Blizzard's own data, not a
+missed id). 52 items total. Death Knight/Demon Hunter/Monk/Evoker were also
+checked (same id-range probing plus name-pattern search for each) and NOT
+found -- not an oversight on this project's part; those hero classes have
+bespoke starting gear tied to their own class-launch expansion instead of
+this unified revamp.
+
+Deliberately a **curated item-id set**
+(`CLASS_STARTER_ARMOR_ITEM_IDS`, a `frozenset`), not a threshold rule, unlike
+the jewelry half: ilvl alone can't discriminate here the way it can for
+jewelry -- a live check confirmed a plain `inventory_type=WAIST, level=1`
+Blizzard search returns roughly 900 items across 9 pages, the overwhelming
+majority unrelated cosmetic/replica/toy items that also happen to sit at
+ilvl 1. Only a real, individually-confirmed id list is safe.
+
+`snipe_check.is_legacy_jewelry(inventory_type, base_level)` became
+`is_legacy_gear(item_id, inventory_type, base_level)`, returning true if
+*either* the item_id is in `CLASS_STARTER_ARMOR_ITEM_IDS` *or* the existing
+jewelry-slot-plus-ilvl rule matches -- the two conditions are genuinely
+complementary (a Plate waist piece isn't a jewelry slot at all, so it can
+only ever be caught by the id-set path). `dashboard.py`'s
+`legacy_jewelry_suspect` field/`dashboard.html`'s `hide_legacy_jewelry`
+checkbox were renamed to `legacy_gear_suspect`/`hide_legacy_gear` throughout
+(CSS class `.legacy-flag` was already generic enough to keep as-is). Same
+non-authoritative, annotate-only convention as before -- the twink-market
+blind spot on the jewelry half is unchanged and still the reason this stays
+opt-in rather than a server-side filter; the class-starter-armor half has
+no equivalent blind spot (a curated, individually-verified id list, not a
+proxy).
+
+`CACHE_VERSION` bumped 3 -> 4 in the same pass (removing a field and
+renaming another both change the row shape old caches would carry).
+
+New tests: `tests/test_snipe_check.py`'s `is_legacy_jewelry_*` tests renamed
+to `is_legacy_gear_*` (now calling the 3-arg signature with a fixed
+non-starter `item_id` so they exercise only the jewelry rule), plus two new
+tests for the id-set path (a representative id per confirmed class flags
+true regardless of slot; a random id at the same ilvl 1 in the same slot,
+*not* in the curated set, flags false -- proving it's a real id match, not
+"any ilvl-1 item"). `tests/test_dashboard.py`'s equivalent tests renamed the
+same way, plus a new integration test building a custom snapshot/listing
+fixture around Paladin's Girdle's real id (187726) end-to-end through
+`/api/snipes?names=true`, confirming `legacy_gear_suspect=True` for a WAIST
+item purely via the id-set path (no jewelry-slot condition satisfied).
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 306 passing.
+
+## legacy_gear_suspect renamed to sus_item_suspect (2026-07-31, same day again)
+
+Human naming preference, immediately after the above: not "legacy gear,"
+call it "sus items." Purely a rename, no behavior change --
+`snipe_check.is_legacy_gear()` -> `is_sus_item()` (same signature, same two
+conditions: the jewelry-ilvl rule and `CLASS_STARTER_ARMOR_ITEM_IDS`),
+`dashboard.py`'s `legacy_gear_suspect` field -> `sus_item_suspect`,
+`dashboard.html`'s `hide_legacy_gear` checkbox -> `hide_sus_items` with
+label text "Hide flagged (sus items)", `.legacy-flag` CSS class ->
+`.sus-flag`. `CACHE_VERSION` bumped 4 -> 5 (the row-shape field name
+changed again). All tests and docs renamed to match. Also fixed a real
+count error found while renaming: the class-starter-armor tooltip copy and
+one PROGRESS.md bullet said "~54 confirmed" pieces; the actual verified
+count is 52 (Rogue and Druid each get 5 slots, not 6 -- no WRIST piece,
+confirmed real via gap-checking and name search, see the previous entry).
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 306 passing.

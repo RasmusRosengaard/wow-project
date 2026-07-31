@@ -101,10 +101,10 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
      2026-07-25 — needs to be weighed against that decision, not just
      reversed reflexively). **2026-07-27 update**: a human decision was made
      on this specific question — flag, don't exclude (`sell_price_suspect`,
-     see "Known gaps / risks" below and `snipe_check.py`'s
-     `SELL_PRICE_SCAM_MULTIPLE`). That decision stands, and on its own it
-     didn't resolve this batch-crowding item — the `class_quotas` mechanism
-     below (also shipped 2026-07-27) is what actually did.
+     since removed 2026-07-31, see `HISTORY.md`). That decision stood at the
+     time, and on its own it didn't resolve this batch-crowding item — the
+     `class_quotas` mechanism below (also shipped 2026-07-27) is what
+     actually did.
    - Raise `BATCH_TOP` and/or restructure the batch fetch to guarantee some
      minimum representation per item-class/category, so one flooded
      category can't zero out another. **Done 2026-07-27**: this is the
@@ -176,9 +176,9 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
      assume register+login alone reaches `/api/snipes`/`/api/status`) is
      part of this work, not an afterthought.
 5. **TSM/Auctionator buylist export** (see "Future work" below) — no design done.
-6. **CLI parity for `legacy_jewelry_suspect`** (2026-07-31) — currently
+6. **CLI parity for `sus_item_suspect`** (2026-07-31) — currently
    dashboard-only. Deferred, not because it's hard: the constants/predicate
-   already live in `snipe_check.py`, so a `--hide-legacy-jewelry` CLI flag
+   already live in `snipe_check.py`, so a `--hide-sus-items` CLI flag
    would follow `_filter_by_appearance()`'s exact existing pattern. Just not
    built yet since the experimental filter shipped dashboard-first.
 7. Phase 2 (commodities feed) — explicitly out of scope, not being pursued.
@@ -264,6 +264,11 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   within-group sort) — human-specified tiebreak semantics, not decided by
   the assistant. Doesn't address the underlying troll-reference-price risk
   itself, only the ordering artifact it exposed.
+  **`sell_price_suspect` itself was removed 2026-07-31** (human decision) —
+  the tiebreak/class_quotas mitigations above are unaffected and remain in
+  place; see `HISTORY.md` for why the flag was dropped and what replaced it
+  (`snipe_check.is_sus_item()`/`sus_item_suspect`, a broader,
+  differently-scoped signal, not a like-for-like swap).
 - Sale-inference classification (`inferred_sale` especially) has never been
   checked against real seller behavior — Phase 0's gate was skipped. No
   longer on the pricing path, and no longer runs automatically at all
@@ -303,13 +308,17 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 - `appearance.py`'s rarity signal (`source_count`) is known to diverge from
   Wowhead's own "same model as" data on at least one item (14042). No
   Wowhead API exists to reconcile against.
-- `snipe_check.is_legacy_jewelry()`'s `legacy_jewelry_suspect` flag
-  (2026-07-31, experimental, dashboard-only) can't distinguish old dead
-  vendor jewelry from a genuinely valuable "twink" item (level-bracket PvP/
-  leveling builds specifically prize old low-ilvl neck/ring/trinket items) —
-  same reason it's never filtered server-side, only an opt-in checkbox.
-  `LEGACY_JEWELRY_ILVL_MAX` (150) is a tunable starting cutoff, not a
-  rigorously derived one. See `HISTORY.md` for the live-verified examples.
+- `snipe_check.is_sus_item()`'s `sus_item_suspect` flag (2026-07-31,
+  experimental, dashboard-only): the jewelry-ilvl half can't distinguish old
+  dead vendor jewelry from a genuinely valuable "twink" item (level-bracket
+  PvP/leveling builds specifically prize old low-ilvl neck/ring/trinket
+  items) — same reason it's never filtered server-side, only an opt-in
+  checkbox. `LEGACY_JEWELRY_ILVL_MAX` (150) is a tunable starting cutoff,
+  not a rigorously derived one. The `CLASS_STARTER_ARMOR_ITEM_IDS` half
+  (52 confirmed ids) has no equivalent blind spot — it's a curated,
+  live-verified id set, not a threshold. See `HISTORY.md` for the
+  live-verified examples of both, and for `sell_price_suspect`'s removal
+  the same day.
 - The tightened background-poll window (`:12-:28` past the hour) is based
   on ~7 observed data points from one realm (Draenor) — a shared, global
   schedule, not learned per-realm.

@@ -533,150 +533,14 @@ def test_find_snipes_excludes_items_with_no_current_sell_listing(tmp_path, monke
     assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.0) == []
 
 
-def test_find_snipes_real_troll_case_stays_unflagged_at_93x(tmp_path, monkeypatch):
-    """Real production case, traced live 2026-07-27: Draenor item 36519
-    (Moonlit Katana) had only 4 current listings, across 4 different
-    bonus_keys, all priced at exactly 1,398,467,500 copper (139,846g75s) --
-    Undermine Exchange showed ~1,500g as the real going rate elsewhere.
-    That's ~93x the real price, but the human's calibration for
-    sell_price_suspect (SELL_PRICE_SCAM_MULTIPLE) is deliberately much
-    higher (500x) -- this documents that choice honestly: the exact real
-    number that started this investigation does NOT trip the flag, by
-    design (the human explicitly chose a high bar over filtering/flagging
-    aggressively)."""
-    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
-    monkeypatch.setattr(analyze, "DATA", tmp_path)
-    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
-
-    TROLL_PRICE = 1_398_467_500  # copper = 139,846g75s, the real observed price
-    ITEM = 36519
-
-    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
-    snap_dir.mkdir(parents=True)
-    prev = [snap_row(9999, T0, item_id=103)]
-    curr = [snap_row(9999, T1, item_id=103)] + [
-        snap_row(i, T1, item_id=ITEM, bonus_key=f"b:170{i}|m:28=237", buyout=TROLL_PRICE)
-        for i in range(4)
-    ]
-    for ts, rows_ in ((T0, prev), (T1, curr)):
-        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
-
-    listings_dir = tmp_path / "listings"
-    listings_dir.mkdir(parents=True)
-    # Two other realms, each showing the real ~1,500g going rate.
-    buy_rows_a = [listing_row(BUY_CR_A, item_id=ITEM, buyout=15_000_000, auction_id=100)]
-    buy_rows_b = [listing_row(BUY_CR_B, item_id=ITEM, buyout=15_000_000, auction_id=200)]
-    pq.write_table(pa.Table.from_pylist(buy_rows_a, schema=LISTING_SCHEMA),
-                   listings_dir / f"{BUY_CR_A}.parquet")
-    pq.write_table(pa.Table.from_pylist(buy_rows_b, schema=LISTING_SCHEMA),
-                   listings_dir / f"{BUY_CR_B}.parquet")
-
-    run_diff(monkeypatch)
-    con = analyze.connect(SELL_CR)
-    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
-    assert len(rows) == 2  # one qualifying row per other realm
-    assert all(r["item_id"] == ITEM for r in rows)
-    assert all(r["sell_price_suspect"] is False for r in rows)
-
-
-def test_find_snipes_flags_reference_price_far_above_region_average(tmp_path, monkeypatch):
-    """Synthetic case exercising the mechanism itself: sell realm's
-    reference price is 1000x the region average (well over
-    SELL_PRICE_SCAM_MULTIPLE) -- flagged, but critically NOT excluded from
-    results (human product decision 2026-07-27: surface a suspect price,
-    don't silently filter it -- every prior heuristic in this project has
-    eventually had a blind spot, see market_key()'s noise-detection
-    history, so the human get to judge rather than the system)."""
-    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
-    monkeypatch.setattr(analyze, "DATA", tmp_path)
-    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
-
-    ITEM = 700
-    REGION_PRICE = 10_000               # 1g on two other realms -> region average = 10_000
-    TROLL_PRICE = REGION_PRICE * 1000   # 1000x the region average
-
-    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
-    snap_dir.mkdir(parents=True)
-    prev = [snap_row(9999, T0, item_id=103)]
-    curr = [snap_row(9999, T1, item_id=103),
-            snap_row(1, T1, item_id=ITEM, buyout=TROLL_PRICE)]
-    for ts, rows_ in ((T0, prev), (T1, curr)):
-        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
-
-    listings_dir = tmp_path / "listings"
-    listings_dir.mkdir(parents=True)
-    buy_rows_a = [listing_row(BUY_CR_A, item_id=ITEM, buyout=REGION_PRICE, auction_id=100)]
-    buy_rows_b = [listing_row(BUY_CR_B, item_id=ITEM, buyout=REGION_PRICE, auction_id=200)]
-    pq.write_table(pa.Table.from_pylist(buy_rows_a, schema=LISTING_SCHEMA),
-                   listings_dir / f"{BUY_CR_A}.parquet")
-    pq.write_table(pa.Table.from_pylist(buy_rows_b, schema=LISTING_SCHEMA),
-                   listings_dir / f"{BUY_CR_B}.parquet")
-
-    run_diff(monkeypatch)
-    con = analyze.connect(SELL_CR)
-    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
-    assert len(rows) == 2
-    assert all(r["item_id"] == ITEM for r in rows)
-    assert all(r["sell_price_suspect"] is True for r in rows)
-
-
-def test_find_snipes_suspect_flag_boundary_is_strictly_over_500x(tmp_path, monkeypatch):
-    """Exactly SELL_PRICE_SCAM_MULTIPLE (500x) the region average must NOT
-    flag -- only *over* 500x does (matches the module comment's "over
-    500x", and the SQL's strict `>`)."""
-    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
-    monkeypatch.setattr(analyze, "DATA", tmp_path)
-    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
-
-    REGION_PRICE = 10_000
-    ITEM_AT_BOUNDARY = 800
-    ITEM_JUST_OVER = 801
-    EXACTLY_500X = REGION_PRICE * snipe_check.SELL_PRICE_SCAM_MULTIPLE
-    JUST_OVER_500X = EXACTLY_500X + 1
-
-    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
-    snap_dir.mkdir(parents=True)
-    prev = [snap_row(9999, T0, item_id=103)]
-    curr = [
-        snap_row(9999, T1, item_id=103),
-        snap_row(1, T1, item_id=ITEM_AT_BOUNDARY, buyout=EXACTLY_500X),
-        snap_row(2, T1, item_id=ITEM_JUST_OVER, buyout=JUST_OVER_500X),
-    ]
-    for ts, rows_ in ((T0, prev), (T1, curr)):
-        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
-
-    listings_dir = tmp_path / "listings"
-    listings_dir.mkdir(parents=True)
-    buy_rows_a = [
-        listing_row(BUY_CR_A, item_id=ITEM_AT_BOUNDARY, buyout=REGION_PRICE, auction_id=100),
-        listing_row(BUY_CR_A, item_id=ITEM_JUST_OVER, buyout=REGION_PRICE, auction_id=101),
-    ]
-    buy_rows_b = [
-        listing_row(BUY_CR_B, item_id=ITEM_AT_BOUNDARY, buyout=REGION_PRICE, auction_id=200),
-        listing_row(BUY_CR_B, item_id=ITEM_JUST_OVER, buyout=REGION_PRICE, auction_id=201),
-    ]
-    pq.write_table(pa.Table.from_pylist(buy_rows_a, schema=LISTING_SCHEMA),
-                   listings_dir / f"{BUY_CR_A}.parquet")
-    pq.write_table(pa.Table.from_pylist(buy_rows_b, schema=LISTING_SCHEMA),
-                   listings_dir / f"{BUY_CR_B}.parquet")
-
-    run_diff(monkeypatch)
-    con = analyze.connect(SELL_CR)
-    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
-    by_item = {r["item_id"]: r["sell_price_suspect"] for r in rows}
-    assert by_item[ITEM_AT_BOUNDARY] is False
-    assert by_item[ITEM_JUST_OVER] is True
-
-
 def test_find_snipes_region_median_uses_median_not_mean(tmp_path, monkeypatch):
     """region_median_g (human request, 2026-07-27) must be the statistical
-    median of the per-other-realm cheapest listings, not the mean that
-    powers sell_price_suspect -- three other realms at 1g/2g/100g have a
-    median of 2g but a mean of ~34.33g, so this proves the two aren't
-    accidentally sharing the same computation. Also confirms region_median_g
-    is computed over *every* other-realm listing (including realm C's,
-    which itself never qualifies as a snipe candidate here), not just the
-    qualifying rows."""
+    median of the per-other-realm cheapest listings, not a mean -- three
+    other realms at 1g/2g/100g have a median of 2g but a mean of ~34.33g,
+    so this proves it's genuinely the median, not accidentally the mean.
+    Also confirms region_median_g is computed over *every* other-realm
+    listing (including realm C's, which itself never qualifies as a snipe
+    candidate here), not just the qualifying rows."""
     monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
     monkeypatch.setattr(analyze, "DATA", tmp_path)
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
@@ -1049,30 +913,66 @@ def test_check_data_ready_ok(tmp_path, monkeypatch):
     assert snipe_check.check_data_ready(SELL_CR) is None
 
 
-def test_is_legacy_jewelry_flags_old_jewelry_slots():
+# Arbitrary item_id used across the jewelry-rule tests below -- not in
+# CLASS_STARTER_ARMOR_ITEM_IDS, so these tests exercise only the
+# ilvl+inventory_type rule, not the curated id set (see the
+# test_is_sus_item_class_starter_armor_* tests below for that path).
+NON_STARTER_ITEM_ID = 1
+
+
+def test_is_sus_item_flags_old_jewelry_slots():
     # Live-verified examples (2026-07-31, see LEGACY_JEWELRY_ILVL_MAX's
     # comment): Charm of Potent and Powerful Passions (ilvl 26, NECK),
     # Ornate Band (ilvl 37, FINGER).
-    assert snipe_check.is_legacy_jewelry("NECK", 26) is True
-    assert snipe_check.is_legacy_jewelry("FINGER", 37) is True
-    assert snipe_check.is_legacy_jewelry("TRINKET", 100) is True
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NECK", 26) is True
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "FINGER", 37) is True
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "TRINKET", 100) is True
 
 
-def test_is_legacy_jewelry_ilvl_boundary():
-    assert snipe_check.is_legacy_jewelry("TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX) is True
-    assert snipe_check.is_legacy_jewelry("TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX + 1) is False
+def test_is_sus_item_ilvl_boundary():
+    assert snipe_check.is_sus_item(
+        NON_STARTER_ITEM_ID, "TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX) is True
+    assert snipe_check.is_sus_item(
+        NON_STARTER_ITEM_ID, "TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX + 1) is False
 
 
-def test_is_legacy_jewelry_false_for_current_tier_jewelry():
-    assert snipe_check.is_legacy_jewelry("NECK", 610) is False
+def test_is_sus_item_false_for_current_tier_jewelry():
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NECK", 610) is False
 
 
-def test_is_legacy_jewelry_false_for_non_jewelry_slot():
-    # A low ilvl alone isn't enough -- the slot has to be jewelry too, or a
-    # perfectly ordinary current-relevant leveling item would get flagged.
-    assert snipe_check.is_legacy_jewelry("HEAD", 26) is False
+def test_is_sus_item_false_for_non_jewelry_slot():
+    # A low ilvl alone isn't enough -- the slot has to be jewelry too (or
+    # the item_id has to be a confirmed class-starter piece), or a perfectly
+    # ordinary current-relevant leveling item would get flagged.
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "HEAD", 26) is False
 
 
-def test_is_legacy_jewelry_none_safe():
-    assert snipe_check.is_legacy_jewelry(None, 26) is False
-    assert snipe_check.is_legacy_jewelry("NECK", None) is False
+def test_is_sus_item_none_safe():
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, None, 26) is False
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NECK", None) is False
+
+
+def test_is_sus_item_class_starter_armor_flags_regardless_of_slot():
+    # Paladin's Girdle (187726, Plate, WAIST) -- confirmed live 2026-07-31,
+    # see CLASS_STARTER_ARMOR_ITEM_IDS's comment. WAIST isn't a jewelry slot
+    # at all, so this only flags via the curated id set, proving that path
+    # works independently of the jewelry rule.
+    assert snipe_check.is_sus_item(187726, "WAIST", 1) is True
+
+
+def test_is_sus_item_class_starter_armor_covers_every_confirmed_class():
+    # One representative id per confirmed class (see
+    # CLASS_STARTER_ARMOR_ITEM_IDS's comment for the full live-verified
+    # list) -- Hunter, Shaman, Paladin, Warrior, Warlock, Mage, Priest,
+    # Rogue, Druid.
+    representative_ids = [187690, 187716, 187722, 187743, 187751,
+                          187757, 187763, 187769, 187774]
+    for item_id in representative_ids:
+        assert snipe_check.is_sus_item(item_id, "NON_EQUIP", None) is True
+
+
+def test_is_sus_item_false_for_unrelated_item_at_matching_ilvl():
+    # A random item id NOT in CLASS_STARTER_ARMOR_ITEM_IDS, at the exact
+    # same ilvl 1 as real starter gear, in a non-jewelry slot -- must not be
+    # flagged. Proves this is a curated id match, not "any ilvl-1 item."
+    assert snipe_check.is_sus_item(999999, "WAIST", 1) is False

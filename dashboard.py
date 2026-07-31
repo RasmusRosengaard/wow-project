@@ -216,13 +216,6 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         "buy_copper": r["buy_copper"],
         "sell_copper": r["sell_copper"],
         "discount_pct": r["discount_pct"],
-        # Non-authoritative flag (added 2026-07-27, see
-        # snipe_check.SELL_PRICE_SCAM_MULTIPLE): sell realm's reference price
-        # is >500x the region average for this item -- likely a troll/camped
-        # listing, not a real regional gap. Never filters the row out server-
-        # side; dashboard.html's "hide flagged" checkbox applies it entirely
-        # client-side, same pattern as its other filters.
-        "sell_price_suspect": r["sell_price_suspect"],
         # EU median (added 2026-07-27, human request): the median (not mean --
         # see snipe_check.find_snipes()'s docstring for why median specifically)
         # current cheapest listing for this item across the rest of the
@@ -255,18 +248,19 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # already fetched as a side effect of the same NameCache lookup
         # that resolved name/icon/quality above.
         out["is_profession_item"] = names.inventory_type(r["item_id"]) in snipe_check.NON_TRANSMOG_INVENTORY_TYPES
-        # legacy_jewelry_suspect (added 2026-07-31, experimental, human
-        # request): flags old neck/ring/trinket items -- see
-        # snipe_check.LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified
-        # examples and its known twink-market blind spot. Same
-        # NameCache-driven pattern as is_profession_item above -- costs
-        # nothing extra, base_level()/inventory_type() are resolved by the
-        # same _fetch_item_details() call that already backs item_class/
-        # quality. Never filters server-side -- dashboard.html's "Hide
-        # flagged (legacy jewelry)" checkbox is the only thing that can hide
-        # it, same non-authoritative convention as sell_price_suspect.
-        out["legacy_jewelry_suspect"] = snipe_check.is_legacy_jewelry(
-            names.inventory_type(r["item_id"]), names.base_level(r["item_id"]))
+        # sus_item_suspect (added 2026-07-31 as legacy_jewelry_suspect, then
+        # legacy_gear_suspect, renamed again same day to "sus items" per
+        # human preference): flags old neck/ring/trinket items and the
+        # confirmed class-starter armor pieces -- see
+        # snipe_check.is_sus_item()'s comment for the live-verified examples
+        # and its known twink-market blind spot. Same NameCache-driven
+        # pattern as is_profession_item above -- costs nothing extra,
+        # base_level()/inventory_type() are resolved by the same
+        # _fetch_item_details() call that already backs item_class/quality.
+        # Never filters server-side -- dashboard.html's "Hide flagged (sus
+        # items)" checkbox is the only thing that can hide it.
+        out["sus_item_suspect"] = snipe_check.is_sus_item(
+            r["item_id"], names.inventory_type(r["item_id"]), names.base_level(r["item_id"]))
     return out
 
 
