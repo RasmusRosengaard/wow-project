@@ -547,9 +547,9 @@ def api_realms(user: User = Depends(current_active_user)) -> dict:
 
 def _list_snapshotted_realms() -> list[int]:
     """Every realm with at least one raw snapshot file -- the precondition
-    both /api/realms and /api/log/realms use. Used to be two separate
-    checks (one requiring diff_snapshots.py to have run) before 2026-07-25,
-    when pricing turned out to only ever need the latest snapshot -- see
+    /api/realms uses. Used to be two separate checks (one requiring
+    diff_snapshots.py to have run) before 2026-07-25, when pricing turned
+    out to only ever need the latest snapshot -- see
     snipe_check.check_data_ready()."""
     snap_dir = DATA / "snapshots"
     if not snap_dir.exists():
@@ -562,38 +562,6 @@ def _list_snapshotted_realms() -> list[int]:
             except ValueError:
                 continue
     return sorted(ids)
-
-
-@app.get("/api/log/realms")
-def api_log_realms() -> dict:
-    """Public -- unlike /api/realms, this powers the public /log page (no
-    login required, see CLAUDE.md's "Auction house API log" entry): realm
-    names/slugs aren't sensitive, they're just Blizzard's own public realm
-    directory, so there's nothing to gate here."""
-    return {"realms": _realms_payload(_list_snapshotted_realms())}
-
-
-@app.get("/api/log")
-def api_log(sell: int) -> dict:
-    """Public: every timestamp a NEW auction-house snapshot was actually
-    retrieved for this realm, newest first. Backed directly by
-    data/snapshots/{sell}/*.parquet filenames (each is the epoch second of
-    that snapshot's Last-Modified header) rather than a separate log --
-    fetch_snapshot.py's If-Modified-Since check means a file only gets
-    written when Blizzard actually published something new, so the file
-    list already *is* an honest, complete retrieval log with no extra
-    logging infrastructure needed."""
-    snap_dir = DATA / "snapshots" / str(sell)
-    if not snap_dir.exists():
-        raise HTTPException(404, f"no snapshots collected for realm {sell}")
-    timestamps = sorted((int(p.stem) for p in snap_dir.glob("*.parquet")), reverse=True)
-    info = _realm_info(sell)
-    return {
-        "realm_id": sell,
-        "realm_name": info.get("name") or str(sell),
-        "count": len(timestamps),
-        "timestamps": timestamps,
-    }
 
 
 @app.get("/api/status")
@@ -672,13 +640,6 @@ def pricing_page() -> FileResponse:
 @app.get("/profile")
 def profile_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "profile.html")
-
-
-@app.get("/log")
-def log_page() -> FileResponse:
-    """Public page, no auth check -- unlike every other page here, it must
-    NOT redirect to /login on a 401 since its APIs never return one."""
-    return FileResponse(ROOT / "static" / "log.html")
 
 
 @app.get("/snipe-board")

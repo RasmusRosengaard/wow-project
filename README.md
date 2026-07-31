@@ -230,11 +230,6 @@ ledger" theme, dark-mode toggle) and dashboard QoL pass (sell-realm picker,
 budget filter, grouped duplicates, client-side filtering/sorting) are both
 done, across all six pages.
 
-A public, no-login `/log` page (added 2026-07-23) shows every timestamp new
-auction-house data was actually retrieved per realm, for anyone to verify
-independently -- `GET /api/log`/`GET /api/log/realms` are the only
-unauthenticated `/api/*` routes in the app, by design.
-
 ## Notes
 
 - The auction data belongs to Blizzard. Before charging anyone for anything

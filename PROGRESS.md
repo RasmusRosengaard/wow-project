@@ -340,7 +340,6 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | Billing | `billing.py`, `static/subscribe.html` |
 | Item name/icon/quality cache | `item_names.py` |
 | Appearance-rarity cache (Phase 3 groundwork) | `appearance.py` |
-| Public retrieval-time log | `static/log.html`, `GET /api/log`/`GET /api/log/realms` in `dashboard.py` |
 | Public pricing page | `static/pricing.html`, `GET /pricing` in `dashboard.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
 | Tests | `tests/` (`pytest -q`; run `env -u DATABASE_URL pytest -q` too before pushing), no external services needed |

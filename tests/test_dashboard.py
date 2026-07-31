@@ -767,45 +767,6 @@ def _drop_auth_overrides():
     dashboard.app.dependency_overrides.pop(auth.current_subscribed_user, None)
 
 
-def test_api_log_realms_requires_no_auth(data_dir, monkeypatch):
-    _drop_auth_overrides()
-    r = client.get("/api/log/realms")
-    assert r.status_code == 200
-    assert {"id": SELL_CR, "name": f"Realm {SELL_CR}", "slug": f"realm-{SELL_CR}"} in r.json()["realms"]
-
-
-def test_api_log_realms_only_lists_realms_with_snapshots(tmp_path, monkeypatch):
-    monkeypatch.setattr(dashboard, "DATA", tmp_path)
-    r = client.get("/api/log/realms")
-    assert r.status_code == 200
-    assert r.json()["realms"] == []
-
-
-def test_api_log_requires_no_auth_and_lists_retrieval_timestamps(data_dir, monkeypatch):
-    _drop_auth_overrides()
-    r = client.get("/api/log", params={"sell": SELL_CR})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["realm_id"] == SELL_CR
-    assert body["realm_name"] == f"Realm {SELL_CR}"
-    assert body["count"] == 2
-    assert sorted(body["timestamps"]) == [T0, T1]
-    assert body["timestamps"] == sorted(body["timestamps"], reverse=True)  # newest first
-
-
-def test_api_log_404s_for_a_realm_with_no_snapshots(tmp_path, monkeypatch):
-    monkeypatch.setattr(dashboard, "DATA", tmp_path)
-    r = client.get("/api/log", params={"sell": 424242})
-    assert r.status_code == 404
-
-
-def test_log_page_served_without_auth():
-    _drop_auth_overrides()
-    r = client.get("/log", follow_redirects=False)
-    assert r.status_code == 200
-    assert "text/html" in r.headers["content-type"]
-
-
 def test_pricing_page_served_without_auth():
     """Public like /log -- a pricing page a visitor can't see before
     registering would defeat its own purpose."""
