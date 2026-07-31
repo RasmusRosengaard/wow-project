@@ -111,6 +111,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Realm Arbitrage", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    """FileResponse/StaticFiles set Last-Modified/ETag but no Cache-Control,
+    so browsers fall back to heuristic caching and can keep serving a page
+    from before the latest deploy with no way to know it's stale -- a real
+    live bug, 2026-07-31: a bought-out listing kept showing on a user's
+    dashboard because their browser silently reused a cached dashboard.html
+    from before that day's fix shipped, even on a plain reload. `no-cache`
+    (not `no-store`) forces a conditional revalidation request every load --
+    the server still answers with a cheap 304 when nothing changed, so this
+    doesn't turn into a full re-download on every visit, it just guarantees
+    the browser can never skip asking."""
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
 app.include_router(billing.router)

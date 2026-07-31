@@ -635,6 +635,18 @@ def test_snipes_serves_dashboard_html():
     assert b"Realm Arbitrage" in r.content
 
 
+def test_html_pages_are_not_heuristically_cached():
+    """A real live bug, 2026-07-31: FileResponse sets Last-Modified/ETag but
+    no Cache-Control, so a browser can keep serving a page from before the
+    latest deploy on a plain reload with no way to know it's stale -- a user
+    kept seeing a bug fixed server-side because their browser silently reused
+    a cached dashboard.html from before that fix shipped. no_cache_html()
+    forces revalidation on every load (a cheap 304 when unchanged, not a full
+    re-download) without touching the API's own JSON responses."""
+    r = client.get("/snipes")
+    assert r.headers["cache-control"] == "no-cache"
+    r = client.get("/api/config")
+    assert "cache-control" not in {k.lower() for k in r.headers}
 
 
 def test_api_config_reports_default_sell():
