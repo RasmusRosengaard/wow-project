@@ -76,14 +76,6 @@ def find_connected_realm(slug: str) -> list[tuple[int, list[str]]]:
     return out
 
 
-def connected_realm_slugs(cr_id: int) -> list[str]:
-    """Member realm slugs for one connected realm (usually one slug; a few
-    connected realms merge several named realms under one auction house)."""
-    r = api_get(f"/data/wow/connected-realm/{cr_id}", "dynamic")
-    r.raise_for_status()
-    return [rl.get("slug") for rl in r.json().get("realms", []) if rl.get("slug")]
-
-
 def connected_realm_population(cr_id: int) -> str | None:
     """Population tier ("FULL"/"HIGH"/"MEDIUM"/"LOW") for one connected
     realm, straight from the same connected-realm detail endpoint -- used to
@@ -96,11 +88,12 @@ def connected_realm_population(cr_id: int) -> str | None:
 
 def connected_realm_realms(cr_id: int) -> list[dict]:
     """Member realm {"name", "slug", "category"} triples for one connected
-    realm -- same endpoint as connected_realm_slugs, but keeps the display
-    name (and language category, e.g. "English"/"German"/"French"/"Italian"/
-    "Russian"/"Spanish" -- confirmed live 2026-07-31 across all 92 EU
-    connected realms, one language per connected realm, never mixed) so
-    callers needing any of them don't make extra requests."""
+    realm (usually one triple; a few connected realms merge several named
+    realms under one auction house) -- name/slug/language category (e.g.
+    "English"/"German"/"French"/"Italian"/"Russian"/"Spanish" -- confirmed
+    live 2026-07-31 across all 92 EU connected realms, one language per
+    connected realm, never mixed) so callers needing any of them don't make
+    extra requests."""
     r = api_get(f"/data/wow/connected-realm/{cr_id}", "dynamic")
     r.raise_for_status()
     return [{"name": rl.get("name"), "slug": rl.get("slug"), "category": rl.get("category")}

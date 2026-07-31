@@ -697,7 +697,16 @@ function buildGroups(rows) {
   // never disappear just because it has many duplicates; only the "expand
   // to see the rest" list shrinks.
   const maxPerItemRaw = $("max_per_item").value.trim();
-  const maxPerItem = maxPerItemRaw ? Number(maxPerItemRaw) : null;
+  const maxPerItemParsed = maxPerItemRaw ? Number(maxPerItemRaw) : NaN;
+  // Clamp anything that isn't a real positive cap to "no cap" (2026-07-31,
+  // real bug fix): the input's min="1"/step="1" are just spinner hints, not
+  // enforced against direct typing. Number("0") is falsy, so `if (maxPerItem)`
+  // below used to silently treat "0" the same as a blank field (no cap) --
+  // confusing, since a user typing 0 clearly meant *something*, not "any".
+  // Number("-5") is truthy and Array.slice(0, -5) means "drop the last 5",
+  // the opposite of a per-item cap -- a negative input silently inverted the
+  // filter instead of erroring or being ignored.
+  const maxPerItem = Number.isInteger(maxPerItemParsed) && maxPerItemParsed >= 1 ? maxPerItemParsed : null;
   // Within a group, "biggest snipe" always means highest discount% -- that's
   // fixed regardless of which column the overall table is currently sorted
   // by, since it's what makes one listing the group's best representative.
@@ -779,6 +788,21 @@ function fmtHttpDate(s) {
   return isNaN(d) ? s : d.toLocaleString();
 }
 
+// Escapes row data before it's interpolated into innerHTML template strings
+// below, including inside double-quoted attributes (e.g. title="...") --
+// the naive div.textContent->innerHTML trick only escapes what a browser
+// escapes when serializing *text content* (&/</>), not quotes, and this
+// project already shipped that exact gap once (static/snipeboard.html's
+// post titles, a real stored-XSS fix 2026-07-31). item/realm names here
+// come from Blizzard's API, which is generally curated but not contractually
+// guaranteed free of quotes/angle brackets -- escape defensively rather than
+// trust it.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
 // WoW-style gold/silver/copper coin display, formatted only here at the
 // display boundary -- the API sends raw copper end to end.
 function formatMoney(copper) {
@@ -828,11 +852,11 @@ function showTooltip(row, x, y) {
     <div class="tt-head">
       ${icon}
       <div>
-        <div class="tt-name">${row.name ?? ("item " + row.item_id)}</div>
-        <div class="tt-sub">Item ${row.item_id}${row.variant_raw ? " &middot; " + row.variant : ""}</div>
+        <div class="tt-name">${escapeHtml(row.name ?? ("item " + row.item_id))}</div>
+        <div class="tt-sub">Item ${row.item_id}${row.variant_raw ? " &middot; " + escapeHtml(row.variant) : ""}</div>
       </div>
     </div>
-    <div class="tt-row"><span class="lbl">Buy realm</span><span>${row.buy_realm_name}${row.buy_realm_category ? ` (${row.buy_realm_category})` : ""}</span></div>
+    <div class="tt-row"><span class="lbl">Buy realm</span><span>${escapeHtml(row.buy_realm_name)}${row.buy_realm_category ? ` (${escapeHtml(row.buy_realm_category)})` : ""}</span></div>
     <div class="tt-row"><span class="lbl">Buy price</span>${formatMoney(row.buy_copper)}</div>
     <div class="tt-row"><span class="lbl">Sell price</span>${formatMoney(row.sell_copper)}</div>
     <div class="tt-row"><span class="lbl">EU median</span>${formatMoney(row.region_median_copper)}</div>
@@ -898,7 +922,7 @@ function buildRowHtml(row, idx, group, isSub) {
   if (row.icon) {
     const img = `<img class="item-icon"${iconStyle(row.quality_color)} src="${row.icon}" alt="" onerror="this.style.display='none'">`;
     icon = ue
-      ? `<a href="${ue}" target="_blank" rel="noopener" title="View ${row.name ?? row.item_id} on Undermine Exchange">${img}</a>`
+      ? `<a href="${ue}" target="_blank" rel="noopener" title="View ${escapeHtml(row.name ?? row.item_id)} on Undermine Exchange">${img}</a>`
       : img;
   }
   const toggle = (group && group.rows.length > 1)
@@ -914,9 +938,9 @@ function buildRowHtml(row, idx, group, isSub) {
     : "";
   return `
     <tr class="${isSub ? "sub-row" : ""}">
-      <td title="realm ${row.buy_realm}${row.buy_realm_category ? " &middot; " + row.buy_realm_category : ""}">${row.buy_realm_name}${row.buy_realm_category ? ` <span class="realm-lang">${realmLangTag(row.buy_realm_category)}</span>` : ""}</td>
-      <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${row.name ?? row.item_id}</span>${susFlag}${toggle}</div></td>
-      <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
+      <td title="realm ${row.buy_realm}${row.buy_realm_category ? " &middot; " + escapeHtml(row.buy_realm_category) : ""}">${escapeHtml(row.buy_realm_name)}${row.buy_realm_category ? ` <span class="realm-lang">${escapeHtml(realmLangTag(row.buy_realm_category))}</span>` : ""}</td>
+      <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${escapeHtml(row.name ?? row.item_id)}</span>${susFlag}${toggle}</div></td>
+      <td class="mono" title="${escapeHtml(row.variant_raw ?? "")}">${escapeHtml(row.variant)}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>
       <td class="num">${formatMoney(row.region_median_copper)}</td>
@@ -1050,6 +1074,21 @@ async function fetchBatch(knownLastModified, knownListingsUpdated) {
     // 402 is no longer possible here -- /api/snipes only requires login now
     // (the free tier, see dashboard.py's SNIPE_TIER_CAPS), not a subscription.
     if (r.status === 401) { window.location.href = "/login"; return; }
+    // Stale-response guard (2026-07-31, real bug fix): the realm this fetch
+    // was FOR can differ from the realm now selected if the user switched
+    // realms while this (slow -- a cold query can take 30-175s) request was
+    // still in flight. fetchInFlight prevents two fetches from running at
+    // once, so the *newer* realm's own fetchBatch() call silently no-opped
+    // above instead of ever running -- without this check, this stale
+    // response would be the only thing that ever painted, overwriting the
+    // UI with the *previous* realm's data under the *newly*-selected
+    // realm's dropdown value, with no error and no visible sign anything
+    // was wrong. Discard it and kick off a check for whatever's actually
+    // selected now instead of waiting up to 60s for the auto-refresh timer.
+    if ($("sell").value !== sell) {
+      checkForUpdates();
+      return;
+    }
     if (!r.ok) {
       // A background refresh failing (transient network blip, server
       // hiccup) shouldn't blank out data that was already good on screen --

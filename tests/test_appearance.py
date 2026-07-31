@@ -65,9 +65,7 @@ def test_appearance_cache_lookups(cache_path, monkeypatch):
     build_cache()
     ac = AppearanceCache()
     assert ac.source_count(1) == 2
-    assert ac.appearance_id(1) == 500
     assert ac.source_count(999999) is None       # unknown item -> None, never raises
-    assert ac.appearance_id(999999) is None
 
 
 def test_appearance_cache_missing_file_is_empty_not_an_error(cache_path):

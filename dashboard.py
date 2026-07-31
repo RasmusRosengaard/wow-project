@@ -25,6 +25,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import analyze
@@ -384,16 +385,60 @@ async def _enforce_realm_lock(user: User, sell: int, session: AsyncSession) -> N
     to the first sell realm it ever queries via /api/snipes, written once on
     first use. A subscriber or superuser is never restricted -- checked via
     has_active_subscription so this stays in sync with every other
-    subscription check in the app rather than re-deriving the same logic."""
+    subscription check in the app rather than re-deriving the same logic.
+
+    Uses an atomic `UPDATE ... WHERE locked_sell_realm IS NULL` rather than
+    the read-then-write ORM pattern this used to be (2026-07-31, real bug
+    fix, human report during a repo-wide bug audit): `current_active_user`
+    resolves a fresh `User` from a fresh session on every request, so two
+    concurrent first-ever requests from the same free account -- for two
+    *different* realms -- could both observe `locked_sell_realm is None`
+    before either committed, both pass the old `if user.locked_sell_realm is
+    None` check, and both proceed to run a real DuckDB query, defeating the
+    lock's entire stated purpose. A single UPDATE statement's WHERE clause
+    is evaluated and applied atomically at the database level -- exactly one
+    of any number of concurrent requests can ever be the one that flips the
+    column from NULL, so only that one gets `rowcount` back; every other
+    concurrent loser looks up what the winner actually locked to (a plain
+    SELECT, not session.refresh(user) -- that requires `user` to already be
+    an attached/persistent instance in *this exact* session, which isn't
+    guaranteed for every caller) rather than assuming it won.
+
+    synchronize_session=False on the UPDATE (2026-07-31, found while testing
+    the race fix above): SQLAlchemy's default "evaluate" synchronize strategy
+    updates in-memory ORM objects already in this session's identity map by
+    re-evaluating the WHERE clause against their *current Python-side
+    attribute values* -- not by checking what the real SQL UPDATE actually
+    matched in the database. In the exact race this function defends
+    against, a session holding a stale (still-None) `user.locked_sell_realm`
+    would get that attribute silently set to `sell` in memory by this
+    synchronization step even when the real UPDATE matched zero rows
+    (correctly, since the DB's actual value was already locked to something
+    else) -- the in-memory object would disagree with the database. Disabled
+    so `result.rowcount` (checked below) is the only source of truth."""
     if has_active_subscription(user):
         return
-    if user.locked_sell_realm is None:
-        user.locked_sell_realm = sell
-        await session.commit()
-    elif user.locked_sell_realm != sell:
+    result = await session.execute(
+        update(User).where(User.id == user.id, User.locked_sell_realm.is_(None))
+        .values(locked_sell_realm=sell)
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    if result.rowcount:
+        user.locked_sell_realm = sell  # keep the in-memory object consistent too
+        return  # this request was the one that set the lock (to `sell`)
+    # locked_sell_realm was already non-NULL -- could be from a concurrent
+    # request, or an earlier request by this same account -- look up the
+    # real current value directly rather than trusting `user`, which may be
+    # stale.
+    locked_to = (await session.execute(
+        select(User.locked_sell_realm).where(User.id == user.id)
+    )).scalar_one()
+    user.locked_sell_realm = locked_to  # keep the in-memory object consistent too
+    if locked_to != sell:
         raise HTTPException(
             403,
-            f"Free tier is locked to sell realm {user.locked_sell_realm} -- "
+            f"Free tier is locked to sell realm {locked_to} -- "
             "subscribe to query any realm",
         )
 
@@ -408,6 +453,14 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
                 user: User = Depends(current_active_user),
                 session: AsyncSession = Depends(get_async_session)) -> dict:
     top = min(top, _snipe_cap(user))
+    # Realm lock enforced *before* data-readiness/sort validation --
+    # deliberate (see test_auth.py::test_free_tier_locks_to_first_sell_realm,
+    # which asserts exactly this order): a free-tier account commits its one
+    # realm choice by asking about that realm at all, whether or not this
+    # particular query turns out ready. (A bug audit initially flagged this
+    # ordering as a bug and reversed it, but that missed this existing,
+    # already-tested, deliberate behavior -- reverted 2026-07-31 once the
+    # conflict was caught by the full test suite.)
     await _enforce_realm_lock(user, sell, session)
     not_ready = snipe_check.check_data_ready(sell)
     if not_ready:

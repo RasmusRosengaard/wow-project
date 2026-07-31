@@ -103,10 +103,6 @@ class AppearanceCache:
         entry = self._data.get("items", {}).get(str(item_id))
         return entry["source_count"] if entry else None
 
-    def appearance_id(self, item_id: int) -> int | None:
-        entry = self._data.get("items", {}).get(str(item_id))
-        return entry["appearance_id"] if entry else None
-
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,

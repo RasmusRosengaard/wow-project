@@ -114,6 +114,34 @@ class NameCache:
             and key in self._cache["item_level"] and key in self._cache["item_inventory_type"] \
             and key in self._cache["item_class"] and key in self._cache["item_subclass"]
 
+    def has_class_info(self, item_id: int) -> bool:
+        """Whether item_class/item_subclass are already resolved for
+        item_id -- lets a caller check before calling item_class()/
+        item_subclass(), which otherwise transparently fall back to a
+        *blocking* network fetch for anything not yet cached (see
+        _ensure_item_details()). A caller processing a large batch after its
+        own bounded, concurrent ensure_many() call (e.g.
+        snipe_check._register_class_quota_maps(), bounded by
+        CLASS_QUOTA_RESOLVE_LIMIT) needs this to skip items that call left
+        unresolved, rather than silently falling back to one-at-a-time
+        blocking calls for every one of them -- exactly the failure mode
+        ensure_many()'s own limit exists to prevent (see CLAUDE.md's "Real
+        production outage").
+
+        Deliberately narrower than the full "is this item completely
+        cached" check (_is_complete(), used internally to decide whether
+        ensure_many() should re-fetch an item at all) -- _merge_details()
+        only writes name/quality/level when truthy (a separate, pre-existing
+        quirk: a genuinely-missing name means those keys can lag behind
+        forever for some items), but always writes item_class/item_subclass
+        unconditionally. Reusing _is_complete() here would make this return
+        False for any item whose class info *was* just resolved but whose
+        name/quality happened to come back empty -- an unrelated gap
+        wrongly denying a bucket to an item this call actually has an
+        answer for."""
+        key = str(item_id)
+        return key in self._cache["item_class"] and key in self._cache["item_subclass"]
+
     def _merge_details(self, item_id: int, details: dict) -> None:
         key = str(item_id)
         if details.get("name"):

@@ -108,7 +108,6 @@
   .note { color: var(--text-dim); font-size: 0.75rem; }
   .note a { color: var(--bullion); display: block; margin-top: 0.3rem; }
   .fund { color: var(--text-dim); font-size: 0.8rem; text-align: center; line-height: 1.5; }
-  .fund b { color: var(--bullion); }
   .nav { text-align: center; font-size: 0.8rem; }
   .nav a { color: var(--text-dim); }
   .nav a:hover { color: var(--bullion); }
@@ -138,14 +137,14 @@
 </div>
 <div class="wrap">
   <div class="pitch">
-    <h2>Listing prices lie.<br>We show what things <span class="accent">actually sold for.</span></h2>
-    <p>Every other sniper flags items cheap against fictional asking prices. We infer real sold prices from Blizzard's own auction snapshots, then route the discount across every EU realm to your warband bank.</p>
+    <h2>Somewhere in the EU, this is <span class="accent">cheaper.</span></h2>
+    <p>We calculate the real price difference between your sell realm's current price and every other EU realm's listings for the same item, then route the discount to your warband bank. Not every gap is a genuine bargain -- some listings are troll prices from other players -- but when it's real, this is how you find it.</p>
   </div>
 
   <div class="steps">
-    <div class="step"><span class="n">1</span><span class="t">We collect hourly AH snapshots on your <b>sell realm</b> and infer what actually sold, not what's merely listed.</span></div>
+    <div class="step"><span class="n">1</span><span class="t">We collect hourly AH snapshots on your <b>sell realm</b> -- its own current cheapest listing is your reference price.</span></div>
     <div class="step"><span class="n">2</span><span class="t">We sweep every other EU realm's current listings for the same items and variants.</span></div>
-    <div class="step"><span class="n">3</span><span class="t">Anything priced well below your sell realm's real sold price, net of the 5% AH cut, shows up as a validated snipe.</span></div>
+    <div class="step"><span class="n">3</span><span class="t">Anything priced well below your sell realm's current price, net of the 5% AH cut, shows up as a snipe.</span></div>
   </div>
 
   <div class="card">

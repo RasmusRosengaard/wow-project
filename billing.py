@@ -36,11 +36,6 @@ WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
-# Statuses Stripe reports that we treat as "keep dashboard access" -- just
-# "active" for now, deliberately not "trialing" (no trial configured) or
-# "past_due" (payment failed -- access should lapse, not degrade silently).
-ACTIVE_STATUSES = {"active"}
-
 
 @router.post("/checkout")
 async def create_checkout_session(request: Request, user: User = Depends(current_active_user)) -> dict:
@@ -54,7 +49,13 @@ async def create_checkout_session(request: Request, user: User = Depends(current
         customer=user.stripe_customer_id,
         customer_email=None if user.stripe_customer_id else user.email,
         client_reference_id=str(user.id),
-        success_url=f"{base_url}/?checkout=success",
+        # /snipes, not / -- the sniper tool moved off the root path
+        # 2026-07-26 (now the public marketing page); missed in that
+        # migration (every other post-login/post-action redirect was
+        # updated, this one wasn't -- found during a 2026-07-31 bug audit),
+        # so a paying customer landed back on the marketing page instead of
+        # the tool they just paid for.
+        success_url=f"{base_url}/snipes?checkout=success",
         cancel_url=f"{base_url}/subscribe?checkout=cancelled",
     )
     return {"url": session.url}
@@ -89,7 +90,20 @@ async def _user_by_stripe_customer_id(session: AsyncSession, customer_id: str) -
 
 
 def _period_end(subscription: dict) -> datetime | None:
+    """current_period_end used to live directly on the Subscription object;
+    recent Stripe API versions moved it onto each SubscriptionItem instead
+    (found during a 2026-07-31 bug audit -- this project pins no
+    stripe.api_version, so whichever version is actually live on the
+    account governs the shape Stripe sends, and that was never confirmed
+    directly). Checks both locations rather than assuming one -- without
+    this, an account on a newer API version could have every webhook
+    silently write None for the renewal date, with no error raised
+    anywhere."""
     ts = subscription.get("current_period_end")
+    if ts is None:
+        items = (subscription.get("items") or {}).get("data") or []
+        if items:
+            ts = items[0].get("current_period_end")
     return datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
 
 

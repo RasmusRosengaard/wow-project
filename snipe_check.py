@@ -308,6 +308,21 @@ def _register_class_quota_maps(con: duckdb.DuckDBPyConnection, distinct_item_ids
     ids: list[int] = []
     buckets: list[str] = []
     for item_id in distinct_item_ids:
+        # is_cached() first (2026-07-31, real bug fix, found during a bug
+        # audit): item_class()/item_subclass() transparently fall back to a
+        # *blocking* one-at-a-time network fetch for anything not already
+        # cached -- calling them unconditionally here defeated the whole
+        # point of ensure_many()'s bounded, concurrent resolution above.
+        # Any item past CLASS_QUOTA_RESOLVE_LIMIT, or whose concurrent fetch
+        # transiently failed, would silently reintroduce exactly the
+        # sequential-blocking-calls failure mode documented in CLAUDE.md's
+        # "Real production outage" -- the mode this whole limit exists to
+        # prevent. An uncached item just doesn't get a bucket this call (same
+        # as CLASS_QUOTA_RESOLVE_LIMIT's docstring already claims -- this
+        # makes that claim actually true); it converges over time via
+        # collect_all.py's background prewarm regardless.
+        if not names.has_class_info(item_id):
+            continue
         bucket = _class_bucket(names.item_class(item_id), names.item_subclass(item_id))
         if bucket is not None:
             ids.append(item_id)

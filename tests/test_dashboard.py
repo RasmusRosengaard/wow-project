@@ -8,6 +8,7 @@ import sys
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -275,18 +276,133 @@ def test_class_quotas_by_tier_sum_to_the_tier_cap():
     assert sum(dashboard.SUPERUSER_CLASS_QUOTAS.values()) == dashboard.SNIPE_TIER_CAPS["superuser"]
 
 
+async def _free_tier_user_db(tmp_path, db_name="realm_lock.db"):
+    """A real SQLite-backed User row for testing _enforce_realm_lock's
+    actual DB-level atomicity -- FAKE_USER (used by every other test in
+    this file, and subscribed anyway) is never persisted to a real row, so
+    it can't exercise the `UPDATE ... WHERE locked_sell_realm IS NULL` path
+    at all (there'd be no row for it to match). Returns (session_factory,
+    user_id); caller is responsible for disposing the engine."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / db_name}"
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        user = User(email="free@example.com", hashed_password="x", is_active=True,
+                   is_superuser=False, is_verified=True, subscription_status=None)
+        session.add(user)
+        await session.commit()
+        user_id = user.id
+    return engine, session_factory, user_id
+
+
+def test_enforce_realm_lock_first_query_sets_lock(tmp_path):
+    async def run():
+        engine, session_factory, user_id = await _free_tier_user_db(tmp_path)
+        async with session_factory() as session:
+            user = await session.get(User, user_id)
+            await dashboard._enforce_realm_lock(user, 100, session)
+            assert user.locked_sell_realm == 100
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_enforce_realm_lock_same_realm_repeat_is_ok(tmp_path):
+    async def run():
+        engine, session_factory, user_id = await _free_tier_user_db(tmp_path)
+        async with session_factory() as session:
+            user = await session.get(User, user_id)
+            await dashboard._enforce_realm_lock(user, 100, session)
+            await dashboard._enforce_realm_lock(user, 100, session)  # no error, same realm
+            assert user.locked_sell_realm == 100
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_enforce_realm_lock_different_realm_raises_403(tmp_path):
+    async def run():
+        engine, session_factory, user_id = await _free_tier_user_db(tmp_path)
+        async with session_factory() as session:
+            user = await session.get(User, user_id)
+            await dashboard._enforce_realm_lock(user, 100, session)
+            with pytest.raises(HTTPException) as exc_info:
+                await dashboard._enforce_realm_lock(user, 200, session)
+            assert exc_info.value.status_code == 403
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_enforce_realm_lock_concurrent_requests_only_one_wins(tmp_path):
+    """Real regression test for the TOCTOU race (2026-07-31, human report
+    during a bug audit): the old read-then-write ORM pattern
+    (`if user.locked_sell_realm is None: user.locked_sell_realm = sell;
+    commit`) let two concurrent first-ever requests -- for two *different*
+    realms -- both observe locked_sell_realm as None (each from its own
+    freshly-loaded User object) before either committed, so both proceeded
+    to lock in (and query) their own realm, defeating the lock's whole
+    purpose. Simulates the race directly with two independent sessions
+    against the same real row: both load the user while it's still
+    unlocked, one "wins" first; the second, still holding its now-*stale*
+    None-valued user object, must still correctly detect the real lock
+    (via a re-fetch, not its own stale read) and raise 403."""
+    async def run():
+        engine, session_factory, user_id = await _free_tier_user_db(tmp_path)
+        async with session_factory() as session_a, session_factory() as session_b:
+            user_a = await session_a.get(User, user_id)
+            user_b = await session_b.get(User, user_id)
+            assert user_a.locked_sell_realm is None
+            assert user_b.locked_sell_realm is None  # both loaded before either lock is set
+
+            await dashboard._enforce_realm_lock(user_a, 100, session_a)
+            assert user_a.locked_sell_realm == 100
+
+            # user_b is still stale (loaded before session_a's commit) -- the
+            # old buggy code would read user_b.locked_sell_realm as None here
+            # and incorrectly let this "win" too, locking realm 200 as well.
+            with pytest.raises(HTTPException) as exc_info:
+                await dashboard._enforce_realm_lock(user_b, 200, session_b)
+            assert exc_info.value.status_code == 403
+            assert user_b.locked_sell_realm == 100  # refreshed to the real value, not left stale
+        await engine.dispose()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("is_superuser,subscription_status,expected_cap", [
     (False, None, 250),
     (False, "active", 2000),
     (True, None, 10000),
 ])
-def test_api_snipes_clamps_top_to_tier_cap(data_dir, monkeypatch, is_superuser, subscription_status, expected_cap):
+def test_api_snipes_clamps_top_to_tier_cap(data_dir, tmp_path, monkeypatch, is_superuser, subscription_status, expected_cap):
     """The client can request any `top` it likes (dashboard.html always asks
     for its own BATCH_TOP ceiling) -- the server is what actually enforces
     the real per-tier row budget, regardless of what was requested."""
     run_diff(monkeypatch)
-    dashboard.app.dependency_overrides[auth.current_active_user] = \
-        lambda: _user(is_superuser=is_superuser, subscription_status=subscription_status)
+    # The free-tier case (only) reaches _enforce_realm_lock's real DB write
+    # path -- subscribed/superuser return early via has_active_subscription.
+    # That path now needs a genuinely persisted User row and the *same*
+    # database as its own session dependency (2026-07-31, see
+    # _enforce_realm_lock's docstring) -- a bare in-memory _user() object
+    # (fine for every other tier, and for this test's own top-clamping
+    # assertion) has no real row behind it, so get_async_session is
+    # overridden here too instead of relying on bypass_get_async_session's
+    # own test DB, which this test has no handle to add a row into.
+    is_free_tier = not is_superuser and subscription_status != "active"
+    if is_free_tier:
+        engine, session_factory, user_id = asyncio.run(_free_tier_user_db(tmp_path))
+
+        async def override_session():
+            async with session_factory() as session:
+                yield session
+
+        async def override_user():
+            async with session_factory() as session:
+                return await session.get(User, user_id)
+        dashboard.app.dependency_overrides[get_async_session] = override_session
+        dashboard.app.dependency_overrides[auth.current_active_user] = override_user
+    else:
+        dashboard.app.dependency_overrides[auth.current_active_user] = \
+            lambda: _user(is_superuser=is_superuser, subscription_status=subscription_status)
     try:
         captured = {}
         real_find_snipes = snipe_check.find_snipes
@@ -302,6 +418,8 @@ def test_api_snipes_clamps_top_to_tier_cap(data_dir, monkeypatch, is_superuser, 
         assert captured["top"] == expected_cap
     finally:
         dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
+        if is_free_tier:
+            dashboard.app.dependency_overrides.pop(get_async_session, None)
 
 
 def _write_single_ilvl_fixture(tmp_path, monkeypatch, bk):

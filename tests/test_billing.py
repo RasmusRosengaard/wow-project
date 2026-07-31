@@ -219,6 +219,58 @@ def test_webhook_subscription_updated_changes_status(client, monkeypatch):
     assert updated.subscription_status == "past_due"
 
 
+def test_period_end_falls_back_to_subscription_item(monkeypatch):
+    """Real bug fix (2026-07-31, found during a bug audit): current_period_end
+    used to live directly on the Subscription object; recent Stripe API
+    versions moved it onto each SubscriptionItem instead. This project pins
+    no stripe.api_version, so whichever version is actually live on the
+    account governs which shape a real webhook sends -- never confirmed
+    directly, so _period_end() must handle both rather than assuming the
+    old shape and silently writing None for every renewal date on a newer
+    API version."""
+    top_level = billing._period_end({"current_period_end": 1_800_000_000})
+    assert top_level is not None
+
+    item_level_only = billing._period_end({
+        "current_period_end": None,
+        "items": {"data": [{"current_period_end": 1_800_000_000}]},
+    })
+    assert item_level_only == top_level
+
+    neither = billing._period_end({"current_period_end": None, "items": {"data": []}})
+    assert neither is None
+
+    missing_items_key = billing._period_end({"current_period_end": None})
+    assert missing_items_key is None
+
+
+def test_webhook_subscription_updated_reads_period_end_from_item_when_top_level_missing(client, monkeypatch):
+    """Same fallback as test_period_end_falls_back_to_subscription_item
+    above, exercised through the real webhook route rather than calling
+    _period_end() directly."""
+    register(client)
+    user = asyncio.run(_get_user(client.session_factory, EMAIL))
+
+    async def _seed():
+        async with client.session_factory() as session:
+            u = await session.get(User, user.id)
+            u.stripe_customer_id = "cus_test123"
+            u.subscription_status = "active"
+            await session.commit()
+    asyncio.run(_seed())
+
+    payload, sig = sign_payload(webhook_event("customer.subscription.updated", {
+        "customer": "cus_test123", "status": "active",
+        "current_period_end": None,
+        "items": {"data": [{"current_period_end": 1_800_000_000}]},
+    }))
+    r = client.post("/billing/webhook", content=payload, headers={"stripe-signature": sig})
+    assert r.status_code == 200
+
+    updated = asyncio.run(_get_user(client.session_factory, EMAIL))
+    assert updated.subscription_current_period_end is not None
+
+
 def test_webhook_subscription_deleted_revokes_access(client, monkeypatch):
     register(client)
     user = asyncio.run(_get_user(client.session_factory, EMAIL))

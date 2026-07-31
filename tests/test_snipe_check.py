@@ -12,6 +12,7 @@ import sys
 
 import json
 
+import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -646,6 +647,36 @@ def _stub_item_classes(monkeypatch, mapping: dict[int, tuple[int | None, int | N
             "item_class": mapping.get(item_id, (None, None))[0],
             "item_subclass": mapping.get(item_id, (None, None))[1],
         })
+
+
+def test_register_class_quota_maps_never_blocks_past_the_resolve_limit(monkeypatch):
+    """Real bug fix (2026-07-31, found during a repo-wide bug audit):
+    item_class()/item_subclass() transparently fall back to a *blocking*,
+    one-at-a-time network fetch for anything not already cached (see
+    NameCache._ensure_item_details()). The old _register_class_quota_maps()
+    called them unconditionally for every distinct candidate item after
+    ensure_many()'s own bounded/concurrent resolution -- so any item past
+    CLASS_QUOTA_RESOLVE_LIMIT (or whose concurrent fetch merely failed
+    transiently) silently triggered exactly the sequential-blocking-calls
+    failure mode this limit exists to prevent (see CLAUDE.md's "Real
+    production outage"). Sets the limit to 1 with 2 distinct items and
+    asserts the fetch function is only ever called once (ensure_many's own
+    bounded call) -- proving the second, unresolved item never falls
+    through to a second, blocking fetch."""
+    monkeypatch.setattr(snipe_check, "CLASS_QUOTA_RESOLVE_LIMIT", 1)
+    calls = []
+
+    def fake_fetch(item_id):
+        calls.append(item_id)
+        return {"name": f"item {item_id}", "quality": "COMMON", "level": 1,
+               "inventory_type": None, "item_class": 20, "item_subclass": None}
+    monkeypatch.setattr(item_names, "_fetch_item_details", fake_fetch)
+
+    con = duckdb.connect()
+    snipe_check._register_class_quota_maps(con, [700, 701], {"housing": 10})
+    assert len(calls) == 1  # only ensure_many's own bounded resolution, no blocking fallback
+    resolved = con.execute("SELECT item_id FROM class_quota_item_map").fetchall()
+    assert resolved == [(calls[0],)]  # the unresolved item got no bucket at all
 
 
 def test_find_snipes_class_quotas_prevent_one_category_crowding_out_another(tmp_path, monkeypatch):

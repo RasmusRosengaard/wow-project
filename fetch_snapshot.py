@@ -281,7 +281,6 @@ def get_auctions_with_backoff(cr: int, headers: dict, attempts: int = 4):
                     r.status_code, wait, attempt, attempts)
         time.sleep(wait)
         delay *= 2
-    return r
 
 
 def fetch_once(cr: int) -> Path | None:
