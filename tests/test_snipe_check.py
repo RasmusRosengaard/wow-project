@@ -704,6 +704,65 @@ def test_find_snipes_class_quotas_prevent_one_category_crowding_out_another(tmp_
     assert by_item.count(HOUSING_ITEM) == 1
 
 
+def test_find_snipes_class_quotas_caps_one_item_hogging_its_own_bucket(tmp_path, monkeypatch):
+    """Reproduces the real production complaint (2026-07-31, human report:
+    "why do I only have 1 housing item" + live repro on the human's own
+    account): class_quotas prevents one *category* from crowding out
+    another (see the test above), but had no protection against one *item*
+    crowding out other items within the *same* bucket -- confirmed live,
+    item 264709 (Stranglekelp Sack, 663 qualifying region-wide listings)
+    took 29 of the free tier's 40-row housing quota (72%), leaving only 5
+    distinct housing items visible. One item with 10 qualifying listings
+    (all higher discount than everything else) must not take more than
+    CLASS_QUOTA_PER_ITEM_CAP slots of a small housing quota, leaving room
+    for other distinct items even though every one of its individual rows
+    outranks them by discount%."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    DOMINANT_ITEM = 800
+    OTHER_ITEMS = [801, 802, 803, 804]  # distinct discounts, best (A) to worst (D)
+    _stub_item_classes(monkeypatch, {iid: (20, None) for iid in [DOMINANT_ITEM, *OTHER_ITEMS]})
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [snap_row(9999, T1, item_id=103)]
+    curr.append(snap_row(1, T1, item_id=DOMINANT_ITEM, buyout=1_000_000))  # 100g sell reference
+    for i, iid in enumerate(OTHER_ITEMS):
+        curr.append(snap_row(2 + i, T1, item_id=iid, buyout=100_000))  # 10g sell reference each
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    # 10 listings of the same item, all ~95% discount -- would rank above
+    # every other item below on raw discount% alone.
+    buy_rows = [listing_row(3000 + i, DOMINANT_ITEM, buyout=50_000, auction_id=100 + i)
+                for i in range(10)]
+    # 4 distinct other items, each with one real, lower-but-qualifying and
+    # mutually distinct discount (60% / 55% / 50% / 45%).
+    for i, (iid, buyout) in enumerate(zip(OTHER_ITEMS, (40_000, 45_000, 50_000, 55_000))):
+        buy_rows.append(listing_row(3010 + i, iid, buyout=buyout, auction_id=200 + i))
+    for r in buy_rows:
+        pq.write_table(pa.Table.from_pylist([r], schema=LISTING_SCHEMA),
+                       listings_dir / f"{r['cr_id']}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, top=5,
+                                   class_quotas={"housing": 5})
+    assert len(rows) == 5
+    item_ids = [r["item_id"] for r in rows]
+    assert item_ids.count(DOMINANT_ITEM) == snipe_check.CLASS_QUOTA_PER_ITEM_CAP
+    # The remaining slots go to the *best*-discount other items (A, B), not
+    # an arbitrary two -- proving genuine diversity, not just a smaller
+    # dominant-item count.
+    assert set(item_ids) == {DOMINANT_ITEM, 801, 802}
+
+
 def test_find_snipes_class_quotas_finds_sparse_bucket_candidate_at_any_depth(tmp_path, monkeypatch):
     """Reproduces the exact bug in the *first* class_quotas implementation
     (same day, 2026-07-27, fixed before ever shipping to a real user beyond
@@ -716,29 +775,38 @@ def test_find_snipes_class_quotas_finds_sparse_bucket_candidate_at_any_depth(tmp
     rows rank strictly above the single ~47%-discount Housing row -- deep
     enough that any fixed "search this far and give up" cutoff smaller than
     31 would miss it, but the real SQL-side ranking (no row-count
-    truncation before class_rank is computed) must not."""
+    truncation before class_rank is computed) must not.
+
+    30 *distinct* Weapon items (not 30 rows of the same one) -- deliberately
+    so this test's "depth" guarantee stays independent of
+    CLASS_QUOTA_PER_ITEM_CAP (added 2026-07-31 for a different, real bug:
+    one item hogging its own bucket, see
+    test_find_snipes_class_quotas_caps_one_item_hogging_its_own_bucket
+    above), which would otherwise collapse a single repeated item down to a
+    few rows regardless of how deep this test needs Housing to rank."""
     monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
     monkeypatch.setattr(analyze, "DATA", tmp_path)
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
 
-    WEAPON_ITEM, HOUSING_ITEM = 750, 751
-    _stub_item_classes(monkeypatch, {WEAPON_ITEM: (2, None), HOUSING_ITEM: (20, None)})
+    WEAPON_ITEMS = list(range(750, 780))  # 30 distinct item ids
+    HOUSING_ITEM = 900
+    _stub_item_classes(monkeypatch, {**{iid: (2, None) for iid in WEAPON_ITEMS}, HOUSING_ITEM: (20, None)})
 
     snap_dir = tmp_path / "snapshots" / str(SELL_CR)
     snap_dir.mkdir(parents=True)
     prev = [snap_row(9999, T0, item_id=103)]
-    curr = [
-        snap_row(9999, T1, item_id=103),
-        snap_row(1, T1, item_id=WEAPON_ITEM, buyout=100_000),
-        snap_row(2, T1, item_id=HOUSING_ITEM, buyout=100_000),
-    ]
+    curr = [snap_row(9999, T1, item_id=103), snap_row(2, T1, item_id=HOUSING_ITEM, buyout=100_000)]
+    for i, iid in enumerate(WEAPON_ITEMS):
+        curr.append(snap_row(3000 + i, T1, item_id=iid, buyout=100_000))
     for ts, rows_ in ((T0, prev), (T1, curr)):
         pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
 
     listings_dir = tmp_path / "listings"
     listings_dir.mkdir(parents=True)
-    buy_rows = [listing_row(1000 + i, WEAPON_ITEM, buyout=1_000, auction_id=100 + i)
-                for i in range(30)]  # 30 rows, all ranking above the Housing row below
+    # 30 distinct Weapon items, one qualifying listing each, all ranking
+    # above the Housing row below.
+    buy_rows = [listing_row(1000 + i, iid, buyout=1_000, auction_id=100 + i)
+                for i, iid in enumerate(WEAPON_ITEMS)]
     buy_rows.append(listing_row(2000, HOUSING_ITEM, buyout=50_000, auction_id=200))
     for r in buy_rows:
         pq.write_table(pa.Table.from_pylist([r], schema=LISTING_SCHEMA),
@@ -750,7 +818,7 @@ def test_find_snipes_class_quotas_finds_sparse_bucket_candidate_at_any_depth(tmp
                                    class_quotas={"weapon": 30, "housing": 1})
     assert len(rows) == 31
     by_item = [r["item_id"] for r in rows]
-    assert by_item.count(WEAPON_ITEM) == 30
+    assert set(by_item) == {*WEAPON_ITEMS, HOUSING_ITEM}
     assert by_item.count(HOUSING_ITEM) == 1
 
 

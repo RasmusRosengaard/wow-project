@@ -250,6 +250,27 @@ CLASS_BUCKET_RULES: dict[str, tuple[int, int | None]] = {
 # regardless of user traffic, so this self-heals.
 CLASS_QUOTA_RESOLVE_LIMIT = 20000
 
+# Per-item cap *inside* a single class_quotas bucket (added 2026-07-31,
+# human report "why do I only have 1 housing item" + live repro on the
+# human's own production account). class_rank below ranks by row, not by
+# distinct item, and the overall max_per_item cap (capped's item_rank) is
+# optional and defaults to unset -- so one real item with an unusually
+# large number of qualifying listings can consume most of a small bucket's
+# quota before any other item gets a slot. Confirmed live: item 264709
+# (Stranglekelp Sack) had 663 qualifying region-wide listings and took 29
+# of the free tier's 40-row housing quota (72%), 131 of the subscribed
+# tier's 285 (46%), 242 of the superuser tier's 1,565 (15%) -- leaving only
+# 5/20/64 distinct housing items visible respectively, before any of the
+# user's own client-side filters even ran. This is the same "one thing
+# crowds out everything else" failure class_quotas itself exists to
+# prevent at the whole-category level (see its own docstring below), just
+# recurring one level down inside a single category. Human-specified value
+# ("~3-5 rows per item") -- picked from a live example showing 3 preserves
+# real variety (37 of 40 free-tier housing slots go to *other* items)
+# while still letting a genuinely great, widely-listed item show more than
+# a single row.
+CLASS_QUOTA_PER_ITEM_CAP = 3
+
 
 def _class_bucket(item_class: int | None, item_subclass: int | None) -> str | None:
     """Which class_quotas bucket (if any) this item_class/item_subclass pair
@@ -467,7 +488,14 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     the complete set -- a guarantee, not a "wide enough in practice" hope.
     A bucket with no entry (or an explicit 0) is excluded entirely -- e.g.
     the free tier deliberately omits Containers/Profession/Quest, a human
-    product decision."""
+    product decision. Within a bucket, `CLASS_QUOTA_PER_ITEM_CAP` (added
+    2026-07-31, see its own docstring) always caps how many rows of the
+    same item can occupy that bucket's ranking, independent of the
+    separate/optional overall `max_per_item` -- otherwise one item with an
+    unusually large number of qualifying listings can consume most of a
+    small quota by itself, which is exactly the "one thing crowds out
+    everything else" failure this whole mechanism exists to prevent, one
+    level down."""
     item_filter = f"AND item_id IN ({','.join(map(str, items))})" if items else ""
     # Filters on the buy-side price -- what you'd actually spend on the
     # snipe -- since that's the number an "AH sniper" budget cap means.
@@ -612,6 +640,19 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             JOIN class_quota_item_map m ON c.item_id = m.item_id
             JOIN class_quota_bucket_map q ON m.bucket = q.bucket
         ),
+        -- CLASS_QUOTA_PER_ITEM_CAP (2026-07-31, see its own docstring): caps
+        -- how many rows of the *same* item can occupy a single bucket
+        -- before class_rank even runs, independent of the separate/optional
+        -- overall max_per_item -- without this, one item with an unusually
+        -- large number of qualifying listings could consume most of a
+        -- small bucket's quota, leaving little to no room for other items.
+        class_item_capped AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY bucket, item_id, pet_species_id, pet_quality_id
+                ORDER BY discount_pct DESC, buy_g ASC, auction_id
+            ) AS bucket_item_rank
+            FROM class_joined
+        ),
         class_ranked AS (
             -- Same buy_g/auction_id tiebreak as `capped` above, same reason:
             -- discount_pct DESC alone left which rows survive a bucket's
@@ -619,9 +660,10 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             SELECT *, ROW_NUMBER() OVER (
                 PARTITION BY bucket ORDER BY discount_pct DESC, buy_g ASC, auction_id
             ) AS class_rank
-            FROM class_joined
+            FROM class_item_capped
+            WHERE bucket_item_rank <= {CLASS_QUOTA_PER_ITEM_CAP}
         )
-        SELECT * EXCLUDE (bucket, quota, class_rank)
+        SELECT * EXCLUDE (bucket, quota, class_rank, bucket_item_rank)
         FROM class_ranked
         WHERE class_rank <= quota
         ORDER BY {SORT_COLUMNS[sort]}
