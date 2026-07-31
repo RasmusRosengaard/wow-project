@@ -89,9 +89,24 @@ def parse_items(items: str | None, items_file: str | None) -> list[int] | None:
 # same displayed discount% -- with no secondary key, their relative order
 # was whatever the scan happened to return, not sorted by anything visible.
 # Cheapest-first is the most actionable tiebreak among equally-good deals.
+#
+# Final `, auction_id` tiebreaker added 2026-07-31 (human report: "items
+# switch even with no filters touched" + live repro -- re-running
+# find_snipes() twice against completely unchanged local data returned 66
+# different rows out of 200). Root cause: even with buy_g as a secondary
+# key, plenty of rows still tie on *both* discount_pct and buy_g (round-
+# number decoy prices are common in the near-100%-discount pool -- see
+# CLAUDE.md's "Known gaps" note on it), and DuckDB doesn't guarantee a
+# stable row order for ties in a parallel/vectorized query plan -- so which
+# tied row won a LIMIT boundary (here) or a ROW_NUMBER() cutoff (the
+# item_rank/class_rank windows below) could differ between two otherwise-
+# identical query executions. auction_id is stable for a listing's
+# lifetime and unique (see CLAUDE.md's Blizzard API facts), so appending it
+# makes the full ordering deterministic -- the result only changes when the
+# underlying listings/pricing genuinely change, never on its own.
 SORT_COLUMNS = {
-    "discount": "discount_pct DESC, buy_g ASC",
-    "gold": "sell_p_g DESC, buy_g ASC",
+    "discount": "discount_pct DESC, buy_g ASC, auction_id",
+    "gold": "sell_p_g DESC, buy_g ASC, auction_id",
 }
 
 CAVEAT = ("NOTE: an AH listing is guaranteed unsoulbound (BoP items can't be "
@@ -551,9 +566,13 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 -- item_id (+ pet identity), not bonus_key -- caps per real
                 -- item now, so e.g. max_per_item=1 keeps a single best-
                 -- discount listing across every bonus/ilvl variant of that
-                -- item, not one per exact variant.
+                -- item, not one per exact variant. buy_g/auction_id tiebreak
+                -- (2026-07-31, see SORT_COLUMNS' comment above) -- without
+                -- it, which listing "wins" a discount_pct tie here was
+                -- nondeterministic per query execution, not just in the
+                -- final display order.
                 PARTITION BY item_id, pet_species_id, pet_quality_id
-                ORDER BY discount_pct DESC
+                ORDER BY discount_pct DESC, buy_g ASC, auction_id
             ) AS item_rank
             FROM matches
         )
@@ -594,8 +613,11 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             JOIN class_quota_bucket_map q ON m.bucket = q.bucket
         ),
         class_ranked AS (
+            -- Same buy_g/auction_id tiebreak as `capped` above, same reason:
+            -- discount_pct DESC alone left which rows survive a bucket's
+            -- quota nondeterministic across identical query executions.
             SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY bucket ORDER BY discount_pct DESC
+                PARTITION BY bucket ORDER BY discount_pct DESC, buy_g ASC, auction_id
             ) AS class_rank
             FROM class_joined
         )

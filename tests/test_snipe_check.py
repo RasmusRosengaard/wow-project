@@ -290,6 +290,65 @@ def test_find_snipes_ties_break_on_cheapest_buy_price(tmp_path, monkeypatch):
     assert [r["buy_g"] for r in rows] == [5.0, 10.0, 30.0]  # cheapest first, tie broken
 
 
+def test_find_snipes_fully_tied_rows_are_deterministic_across_calls(tmp_path, monkeypatch):
+    """Human report 2026-07-31: "items switch even though no filters were
+    touched" -- live repro against real unchanged data found re-running
+    find_snipes() with identical arguments returned a *different* set of
+    rows each time (66 of 200 differed). Root cause: buy_g (the tiebreak
+    added for test_find_snipes_ties_break_on_cheapest_buy_price above) only
+    covers a discount_pct tie -- plenty of real rows tie on *both*
+    discount_pct and buy_g too (round-number decoy prices are common), and
+    DuckDB doesn't guarantee stable row order for ties in a parallel query
+    plan, so which one "won" a LIMIT/ROW_NUMBER boundary varied between
+    otherwise-identical executions. auction_id (stable, unique per listing)
+    is now a final tiebreaker everywhere discount_pct/buy_g can still tie.
+    This constructs two listings identical on both discount_pct and buy_g,
+    differing only by auction_id, and asserts repeated calls always agree."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(3, T0, item_id=103)]
+    curr = [
+        snap_row(3, T1, item_id=103),
+        snap_row(10, T1, item_id=101, buyout=100_000),  # current price 10g
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    buy_rows = [
+        # Same item, same buyout -- tied on both discount_pct AND buy_g,
+        # differing only by auction_id.
+        listing_row(BUY_CR_A, item_id=101, buyout=50_000, auction_id=205),
+        listing_row(BUY_CR_A, item_id=101, buyout=50_000, auction_id=104),
+        listing_row(BUY_CR_A, item_id=101, buyout=50_000, auction_id=317),
+    ]
+    pq.write_table(pa.Table.from_pylist(buy_rows, schema=LISTING_SCHEMA),
+                   listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+
+    results = [tuple(r["auction_id"] for r in snipe_check.find_snipes(con, SELL_CR, min_discount=0.3))
+               for _ in range(10)]
+    assert len(set(results)) == 1, "identical query returned a different row order across repeated calls"
+    assert results[0] == (104, 205, 317)  # auction_id ASC once discount_pct/buy_g are exhausted
+
+    # The same tie can decide *which* row survives a ROW_NUMBER() cutoff,
+    # not just display order -- max_per_item=1 must keep the same single
+    # winner every time, not an arbitrary one of the three.
+    capped_results = [
+        tuple(r["auction_id"] for r in snipe_check.find_snipes(con, SELL_CR, min_discount=0.3, max_per_item=1))
+        for _ in range(10)
+    ]
+    assert len(set(capped_results)) == 1
+    assert capped_results[0] == (104,)
+
+
 def test_find_snipes_max_per_item_caps_and_keeps_best_discounts(tmp_path, monkeypatch):
     """One item with three qualifying listings at different discounts --
     max_per_item=2 should keep only the two highest-discount ones (cheapest
