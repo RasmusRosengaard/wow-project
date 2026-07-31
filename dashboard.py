@@ -692,6 +692,17 @@ def snipe_board_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "snipeboard.html")
 
 
+@app.get("/watchlist")
+def watchlist_page() -> FileResponse:
+    """Public "coming soon" placeholder (added 2026-07-31) for the TSM-
+    group-import cross-realm item-tracking idea sketched in
+    FEATURE_WATCHLIST.md -- design idea only, no tracking/alerting logic
+    exists yet. Public/no-auth-check, same reasoning as /log/ /snipe-board:
+    nothing here is sensitive, and static/watchlist.html itself swaps its
+    nav based on /api/me the same way those pages do."""
+    return FileResponse(ROOT / "static" / "watchlist.html")
+
+
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 

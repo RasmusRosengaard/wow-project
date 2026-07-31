@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Auction House API Log — Realm Arbitrage</title>
+<title>Watchlist — Realm Arbitrage</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
   (function () {
@@ -43,8 +43,6 @@
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
     margin: 0; background: var(--paper); color: var(--ink); min-height: 100vh;
   }
-  code, .mono { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
-
   .topbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 1rem; padding: 1rem 1.5rem; background: var(--card);
@@ -65,10 +63,6 @@
     transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
   .nav a:hover, .nav button:hover { background: var(--paper); border-color: var(--hairline-strong); color: var(--ink); }
-  /* The current page's own nav link -- shown, not omitted, so the nav's set
-     of items (and therefore its width/layout) never changes page to page --
-     an omitted self-link used to make the whole bar visibly shift depending
-     on which page you were on (2026-07-30 human report). */
   .nav a.active { color: var(--bullion); font-weight: 700; cursor: default; }
   .nav a.active:hover { background: transparent; border-color: transparent; }
   #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
@@ -76,31 +70,21 @@
   .shell { display: flex; justify-content: center; padding: 2rem 1.5rem; }
   .wrap { max-width: 640px; width: 100%; display: flex; flex-direction: column; gap: 1.1rem; }
   .lede { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin: 0; }
+  .badge {
+    display: inline-flex; align-self: flex-start; align-items: center; gap: 0.4rem;
+    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--bullion);
+    border-radius: 999px; padding: 0.3rem 0.7rem; font-size: 0.72rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
   .card {
     background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
-    padding: 1.25rem; display: flex; flex-direction: column; gap: 0.9rem;
+    padding: 1.4rem; display: flex; flex-direction: column; gap: 0.9rem;
   }
-  label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); display: flex; flex-direction: column; gap: 0.35rem; }
-  select {
-    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
-    border-radius: 3px; padding: 0.5rem; font-size: 0.9rem; font-family: inherit;
-  }
-  select:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
-  .summary { font-size: 0.8rem; color: var(--text-dim); }
-  .summary strong { color: var(--bullion); font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
-  ul#times {
-    list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto;
-    border-top: 1px solid var(--hairline);
-  }
-  ul#times li {
-    font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; font-size: 0.85rem;
-    padding: 0.45rem 0.2rem; border-bottom: 1px solid var(--hairline);
-    display: flex; justify-content: space-between; gap: 1rem;
-  }
-  ul#times li:nth-child(odd) { background: var(--paper); }
-  .ago { color: var(--text-dim); font-size: 0.78rem; }
-  .empty, .error { color: var(--text-dim); font-size: 0.85rem; padding: 0.5rem 0; }
-  .error { color: var(--alert); }
+  .card p { margin: 0; font-size: 0.88rem; line-height: 1.6; color: var(--ink); }
+  .card ul { margin: 0; padding-left: 1.1rem; font-size: 0.86rem; line-height: 1.7; color: var(--ink); }
+  li::marker { color: var(--bullion); }
+  .note { color: var(--text-dim); font-size: 0.8rem; }
+  .note a { color: var(--bullion); }
 </style>
 </head>
 <body>
@@ -128,9 +112,9 @@
   <div class="nav">
     <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
     <a href="/snipes">Dashboard</a>
-    <a href="/watchlist">Watchlist</a>
+    <a href="/watchlist" class="active">Watchlist</a>
     <a href="/snipe-board">Snipe Board</a>
-    <a href="/log" class="active">Log</a>
+    <a href="/log">Log</a>
     <a href="/pricing" id="nav-pricing">Pricing</a>
     <a href="/profile" id="nav-profile" style="display:none;">Profile</a>
     <a href="/login" id="nav-login">Log in</a>
@@ -139,71 +123,23 @@
 </div>
 <div class="shell">
 <div class="wrap">
-  <h2 style="margin:0;font-size:1.1rem;font-weight:800;letter-spacing:-0.01em;">Auction House API Log</h2>
-  <p class="lede">Log for when the collector has gotten new AH data from Blizzard.</p>
+  <span class="badge">Coming soon</span>
+  <h2 style="margin:0;font-size:1.1rem;font-weight:800;letter-spacing:-0.01em;">Watchlist</h2>
+  <p class="lede">Track specific items across every EU realm, no sell realm required.</p>
   <div class="card">
-    <label>Realm
-      <select id="realm"></select>
-    </label>
-    <div class="summary" id="summary"></div>
-    <ul id="times"></ul>
-    <div class="empty" id="empty" style="display:none;">No snapshots recorded for this realm yet.</div>
-    <div class="error" id="error" style="display:none;"></div>
+    <p>Instead of "cheap relative to my sell realm," Watchlist asks a different question: <b>is this specific item cheap anywhere in the region, right now?</b> Paste in a TSM group export of the items you care about, and get told when one of them shows up priced well below its usual EU price on any realm.</p>
+    <ul>
+      <li>No sell realm needed &mdash; every watched item is checked against the region's own typical price.</li>
+      <li>Import a TSM group instead of adding items one at a time.</li>
+      <li>Built for a short list of items you'd buy on sight &mdash; not a replacement for the full snipe dashboard.</li>
+    </ul>
+    <p class="note">This is a design idea, not a shipped feature &mdash; nothing is tracked yet. Feedback welcome: email <a href="mailto:rasmus2001@gmail.com">rasmus2001@gmail.com</a> or find <b>rasmus5533</b> on Discord.</p>
   </div>
 </div>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
 
-function timeAgo(seconds) {
-  const diff = Math.max(0, Date.now() / 1000 - seconds);
-  if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
-  return `${Math.round(diff / 86400)}d ago`;
-}
-
-async function loadRealms() {
-  const r = await fetch("/api/log/realms");
-  const data = await r.json();
-  const sel = $("realm");
-  if (!data.realms.length) {
-    sel.innerHTML = `<option>no realms collected yet</option>`;
-    sel.disabled = true;
-    return null;
-  }
-  sel.innerHTML = data.realms.map(re => `<option value="${re.id}">${re.name}</option>`).join("");
-  return data.realms[0].id;
-}
-
-async function loadLog(sell) {
-  $("error").style.display = "none";
-  const r = await fetch(`/api/log?sell=${encodeURIComponent(sell)}`);
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    $("error").textContent = body.detail || "Couldn't load the log for this realm.";
-    $("error").style.display = "block";
-    $("summary").textContent = "";
-    $("times").innerHTML = "";
-    $("empty").style.display = "none";
-    return;
-  }
-  const data = await r.json();
-  $("summary").innerHTML = `<strong>${data.count}</strong> new-data retrievals recorded for ${data.realm_name}`;
-  $("empty").style.display = data.timestamps.length ? "none" : "block";
-  $("times").innerHTML = data.timestamps.map(ts => `
-    <li>
-      <span>${new Date(ts * 1000).toLocaleString()}</span>
-      <span class="ago">${timeAgo(ts)}</span>
-    </li>
-  `).join("");
-}
-
-// This is one of the deliberately-unauthenticated public routes (see
-// dashboard.py) -- the log itself is never gated. The nav still needs to
-// reflect auth state though: it used to be a hardcoded Dashboard/Snipe
-// Board/Pricing set regardless of login, so a logged-in visitor had no way
-// to reach Profile/Log out from this page, and Pricing stayed visible even
-// though every other logged-in page drops it (2026-07-30 human report).
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
   if (me && me.ok) {
@@ -212,13 +148,8 @@ async function loadLog(sell) {
     $("nav-profile").style.display = "inline-block";
     $("nav-logout").style.display = "inline-block";
   }
-  const first = await loadRealms();
-  if (first == null) return;
-  await loadLog(first);
-  $("realm").addEventListener("change", (e) => loadLog(e.target.value));
 })();
 
-// Same endpoint/redirect as dashboard.html's #logout button.
 $("nav-logout").addEventListener("click", async () => {
   await fetch("/auth/logout", { method: "POST" }).catch(() => {});
   window.location.href = "/login";
