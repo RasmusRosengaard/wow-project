@@ -95,12 +95,15 @@ def connected_realm_population(cr_id: int) -> str | None:
 
 
 def connected_realm_realms(cr_id: int) -> list[dict]:
-    """Member realm {"name", "slug"} pairs for one connected realm -- same
-    endpoint as connected_realm_slugs, but keeps the display name alongside
-    the slug so callers needing both don't make two requests."""
+    """Member realm {"name", "slug", "category"} triples for one connected
+    realm -- same endpoint as connected_realm_slugs, but keeps the display
+    name (and language category, e.g. "English"/"German"/"French"/"Italian"/
+    "Russian"/"Spanish" -- confirmed live 2026-07-31 across all 92 EU
+    connected realms, one language per connected realm, never mixed) so
+    callers needing any of them don't make extra requests."""
     r = api_get(f"/data/wow/connected-realm/{cr_id}", "dynamic")
     r.raise_for_status()
-    return [{"name": rl.get("name"), "slug": rl.get("slug")}
+    return [{"name": rl.get("name"), "slug": rl.get("slug"), "category": rl.get("category")}
             for rl in r.json().get("realms", []) if rl.get("slug")]
 
 

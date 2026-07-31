@@ -159,7 +159,7 @@ def _realm_info(cr_id: int) -> dict:
             realms = blizz.connected_realm_realms(cr_id)
         except Exception:
             realms = []
-        _realm_info_cache[cr_id] = realms[0] if realms else {"name": None, "slug": None}
+        _realm_info_cache[cr_id] = realms[0] if realms else {"name": None, "slug": None, "category": None}
     return _realm_info_cache[cr_id]
 
 
@@ -192,6 +192,12 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
     out = {
         "buy_realm": r["buy_realm"],
         "buy_realm_name": _realm_info(r["buy_realm"])["name"] or str(r["buy_realm"]),
+        # Language community the buy-side realm belongs to (2026-07-31, human
+        # request) -- straight from Blizzard's own per-realm "category" field
+        # (see blizz.connected_realm_realms()'s docstring), display-only, not
+        # used for matching/filtering. None for a realm _realm_info() never
+        # resolved (a transient Blizzard API failure).
+        "buy_realm_category": _realm_info(r["buy_realm"]).get("category"),
         "item_id": r["item_id"],
         "variant": variant,
         "variant_raw": r["bonus_key"] or None,

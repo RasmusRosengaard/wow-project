@@ -39,10 +39,10 @@ def test_connected_realm_slugs_handles_multi_realm_cluster(monkeypatch):
     assert blizz.connected_realm_slugs(1096) == ["silvermoon", "die-aldor"]
 
 
-def test_connected_realm_realms_extracts_name_and_slug(monkeypatch):
-    payload = {"realms": [{"name": "Draenor", "slug": "draenor"}]}
+def test_connected_realm_realms_extracts_name_slug_and_category(monkeypatch):
+    payload = {"realms": [{"name": "Draenor", "slug": "draenor", "category": "English"}]}
     monkeypatch.setattr(blizz, "api_get", lambda *a, **k: FakeResponse(payload))
-    assert blizz.connected_realm_realms(1403) == [{"name": "Draenor", "slug": "draenor"}]
+    assert blizz.connected_realm_realms(1403) == [{"name": "Draenor", "slug": "draenor", "category": "English"}]
 
 
 def test_connected_realm_population_extracts_type(monkeypatch):

@@ -213,6 +213,10 @@
      deliberately not the alarm-red/amber palette, since this is an
      informational item-identity note, not a caution. */
   .sus-flag { color: #7c6a52; margin-left: 0.3rem; cursor: help; }
+  /* Realm language tag (see dashboard.py's buy_realm_category) -- a quiet
+     2-letter abbreviation, not a badge, since it's informational context
+     about the realm, not a signal about the listing itself. */
+  .realm-lang { color: var(--text-dim); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; }
   .group-toggle {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--text-dim);
     border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.68rem; cursor: pointer;
@@ -447,7 +451,11 @@ const BATCH_TOP = 10000;
 // until the cache happened to expire), same reasoning as every prior bump.
 // Bumped to 5 (2026-07-31, same day again): legacy_gear_suspect renamed to
 // sus_item_suspect (human preference -- "sus items," not "legacy gear").
-const CACHE_VERSION = 5;
+// Bumped to 6 (2026-07-31, same day again): buy_realm_category was added to
+// the row shape -- a cache from before this shipped would repaint with no
+// language tag next to the buy realm until it happened to expire or the
+// sell realm/item filter changed, same reasoning as every prior bump.
+const CACHE_VERSION = 6;
 // Safety net, not the primary freshness signal: even if last_modified still
 // matches, force a real refetch once a cache is this old, in case the
 // status endpoint itself is stuck/wrong for some other reason. Comfortably
@@ -738,6 +746,18 @@ function formatMoney(copper) {
   return `<span class="money">${parts.join("")}</span>`;
 }
 
+// Language community label (2026-07-31, human request) -- EU realms aren't
+// otherwise labeled by language, so this abbreviates Blizzard's own
+// "category" field (English/German/French/Italian/Russian/Spanish, confirmed
+// live) to a 2-letter tag next to a realm's name wherever it's shown.
+const REALM_LANG_ABBR = {
+  English: "EN", German: "DE", French: "FR", Italian: "IT", Russian: "RU", Spanish: "ES",
+};
+function realmLangTag(category) {
+  if (!category) return "";
+  return REALM_LANG_ABBR[category] || category;
+}
+
 function undermineUrl(row) {
   if (!currentRegion || !currentSellSlug) return null;
   return `https://undermine.exchange/#${currentRegion}-${currentSellSlug}/${row.item_id}`;
@@ -765,7 +785,7 @@ function showTooltip(row, x, y) {
         <div class="tt-sub">Item ${row.item_id}${row.variant_raw ? " &middot; " + row.variant : ""}</div>
       </div>
     </div>
-    <div class="tt-row"><span class="lbl">Buy realm</span><span>${row.buy_realm_name}</span></div>
+    <div class="tt-row"><span class="lbl">Buy realm</span><span>${row.buy_realm_name}${row.buy_realm_category ? ` (${row.buy_realm_category})` : ""}</span></div>
     <div class="tt-row"><span class="lbl">Buy price</span>${formatMoney(row.buy_copper)}</div>
     <div class="tt-row"><span class="lbl">Sell price</span>${formatMoney(row.sell_copper)}</div>
     <div class="tt-row"><span class="lbl">EU median</span>${formatMoney(row.region_median_copper)}</div>
@@ -847,7 +867,7 @@ function buildRowHtml(row, idx, group, isSub) {
     : "";
   return `
     <tr class="${isSub ? "sub-row" : ""}">
-      <td title="realm ${row.buy_realm}">${row.buy_realm_name}</td>
+      <td title="realm ${row.buy_realm}${row.buy_realm_category ? " &middot; " + row.buy_realm_category : ""}">${row.buy_realm_name}${row.buy_realm_category ? ` <span class="realm-lang">${realmLangTag(row.buy_realm_category)}</span>` : ""}</td>
       <td><div class="item-cell" data-row="${idx}">${icon}<span>${row.name ?? row.item_id}</span>${susFlag}${toggle}</div></td>
       <td class="mono" title="${row.variant_raw ?? ""}">${row.variant}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>

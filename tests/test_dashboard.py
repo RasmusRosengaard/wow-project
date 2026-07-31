@@ -87,7 +87,7 @@ def stub_realm_info(monkeypatch):
     reset the in-process cache so tests stay offline and deterministic."""
     monkeypatch.setattr(dashboard, "_realm_info_cache", {})
     monkeypatch.setattr(blizz, "connected_realm_realms",
-                        lambda cr_id: [{"name": f"Realm {cr_id}", "slug": f"realm-{cr_id}"}])
+                        lambda cr_id: [{"name": f"Realm {cr_id}", "slug": f"realm-{cr_id}", "category": "English"}])
 
 
 @pytest.fixture(autouse=True)
@@ -216,6 +216,7 @@ def test_api_snipes_returns_rows_and_caveat(data_dir, monkeypatch):
     assert body["rows"][0]["buy_realm"] == BUY_CR_A
     assert body["rows"][0]["buy_copper"] == 10_000
     assert body["rows"][0]["buy_realm_name"] == f"Realm {BUY_CR_A}"
+    assert body["rows"][0]["buy_realm_category"] == "English"
     assert body["region"] == blizz.REGION
     assert body["sell_realm_slug"] == f"realm-{SELL_CR}"
 
@@ -783,19 +784,19 @@ def test_realm_info_caches_across_calls(monkeypatch):
 
     def fake_realms(cr_id):
         calls.append(cr_id)
-        return [{"name": "Draenor", "slug": "draenor"}]
+        return [{"name": "Draenor", "slug": "draenor", "category": "English"}]
 
     monkeypatch.setattr(dashboard, "_realm_info_cache", {})
     monkeypatch.setattr(blizz, "connected_realm_realms", fake_realms)
-    assert dashboard._realm_info(1403) == {"name": "Draenor", "slug": "draenor"}
-    assert dashboard._realm_info(1403) == {"name": "Draenor", "slug": "draenor"}
+    assert dashboard._realm_info(1403) == {"name": "Draenor", "slug": "draenor", "category": "English"}
+    assert dashboard._realm_info(1403) == {"name": "Draenor", "slug": "draenor", "category": "English"}
     assert calls == [1403]  # second call served from cache, no re-fetch
 
 
 def test_realm_info_returns_none_fields_on_failure(monkeypatch):
     monkeypatch.setattr(dashboard, "_realm_info_cache", {})
     monkeypatch.setattr(blizz, "connected_realm_realms", lambda cr_id: (_ for _ in ()).throw(RuntimeError))
-    assert dashboard._realm_info(1403) == {"name": None, "slug": None}
+    assert dashboard._realm_info(1403) == {"name": None, "slug": None, "category": None}
 
 
 def test_poll_interval_is_tight_inside_the_expected_publish_window():
