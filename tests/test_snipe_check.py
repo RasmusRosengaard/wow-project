@@ -646,38 +646,45 @@ def test_find_snipes_min_value_floor_keeps_row_if_either_price_clears_it(tmp_pat
     monkeypatch.setattr(analyze, "DATA", tmp_path)
     monkeypatch.setattr(snipe_check, "DATA", tmp_path)
 
-    ITEM_SELL_HIGH = 301   # sell price 600g (>=500g), region median ~10g (<500g)
-    ITEM_MEDIAN_HIGH = 302  # sell price 2g (<500g), region median 500g (>=500g)
-    ITEM_BOTH_LOW = 303    # sell price 2g, region median ~1g -- both under
+    # Derived from the real constant, not a hardcoded gold amount -- so a
+    # future threshold change (already happened once: 500 -> 2000, both
+    # human-specified) doesn't silently break this test's assumptions again.
+    floor_copper = int(snipe_check.MIN_VALUE_FLOOR_G) * 10_000
+    above_floor_copper = floor_copper * 3  # comfortably clears it
+    below_floor_copper = 20_000            # comfortably under it (2g)
+
+    ITEM_SELL_HIGH = 301   # sell price above the floor, region median well below
+    ITEM_MEDIAN_HIGH = 302  # sell price well below the floor, region median at it
+    ITEM_BOTH_LOW = 303    # sell price and region median both well below
 
     snap_dir = tmp_path / "snapshots" / str(SELL_CR)
     snap_dir.mkdir(parents=True)
     prev = [snap_row(9999, T0, item_id=103)]
     curr = [
         snap_row(9999, T1, item_id=103),
-        snap_row(1, T1, item_id=ITEM_SELL_HIGH, buyout=6_000_000),     # 600g
-        snap_row(2, T1, item_id=ITEM_MEDIAN_HIGH, buyout=20_000),      # 2g
-        snap_row(3, T1, item_id=ITEM_BOTH_LOW, buyout=20_000),         # 2g
+        snap_row(1, T1, item_id=ITEM_SELL_HIGH, buyout=above_floor_copper),
+        snap_row(2, T1, item_id=ITEM_MEDIAN_HIGH, buyout=below_floor_copper),
+        snap_row(3, T1, item_id=ITEM_BOTH_LOW, buyout=below_floor_copper),
     ]
     for ts, rows_ in ((T0, prev), (T1, curr)):
         pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
 
     listings_dir = tmp_path / "listings"
     listings_dir.mkdir(parents=True)
-    # ITEM_SELL_HIGH: one cheap buy realm -> region median is low (~10g),
-    # but the sell-side price (600g) alone should keep it.
+    # ITEM_SELL_HIGH: one cheap buy realm -> region median is low, but the
+    # sell-side price (well above the floor) alone should keep it.
     pq.write_table(pa.Table.from_pylist(
         [listing_row(BUY_CR_A, item_id=ITEM_SELL_HIGH, buyout=100_000, auction_id=301)],  # 10g
         schema=LISTING_SCHEMA), listings_dir / f"{BUY_CR_A}.parquet")
     # ITEM_MEDIAN_HIGH: candidate realm B is cheap (for the discount to
-    # qualify), two decoy realms are exactly 500g each -- with 3 realms'
-    # floors sorted [cheap, 500g, 500g], the median (the true middle value,
-    # not an average -- that only applies to an even count) is exactly
-    # 500g, clearing the floor even though the sell price (2g) doesn't.
+    # qualify), two decoy realms are exactly at the floor -- with 3 realms'
+    # floors sorted [cheap, floor, floor], the median (the true middle value,
+    # not an average -- that only applies to an even count) is exactly the
+    # floor, clearing it even though the sell price doesn't.
     pq.write_table(pa.Table.from_pylist([
         listing_row(BUY_CR_B, item_id=ITEM_MEDIAN_HIGH, buyout=1_000, auction_id=302),      # 0.1g
-        listing_row(3333, item_id=ITEM_MEDIAN_HIGH, buyout=5_000_000, auction_id=303),       # 500g
-        listing_row(4444, item_id=ITEM_MEDIAN_HIGH, buyout=5_000_000, auction_id=304),       # 500g
+        listing_row(3333, item_id=ITEM_MEDIAN_HIGH, buyout=floor_copper, auction_id=303),
+        listing_row(4444, item_id=ITEM_MEDIAN_HIGH, buyout=floor_copper, auction_id=304),
     ], schema=LISTING_SCHEMA), listings_dir / "9001.parquet")
     # ITEM_BOTH_LOW: cheap sell price, cheap region median -- neither clears.
     pq.write_table(pa.Table.from_pylist(

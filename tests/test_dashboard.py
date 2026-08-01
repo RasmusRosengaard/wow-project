@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession as SAAsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import analyze
@@ -17,6 +18,7 @@ import appearance
 import auth
 import blizz
 import dashboard
+import db
 import diff_snapshots
 import item_names
 import snipe_check
@@ -36,21 +38,35 @@ FAKE_USER = User(email="test@example.com", hashed_password="x",
 
 
 @pytest.fixture(autouse=True)
-def bypass_auth():
+def bypass_auth(monkeypatch):
     """These tests exercise snipe_check/dashboard business logic, not auth
     or billing (see test_auth.py/test_billing.py for those) -- override
     FastAPI's dependency injection to skip real login, the standard FastAPI
     testing pattern, rather than requiring every test here to register+log
-    in a real, actually-subscribed user."""
+    in a real, actually-subscribed user.
+
+    Also stubs auth.resolve_user_from_request() (2026-08-01, added when
+    api_snipes() stopped using Depends(current_active_user) -- see
+    dashboard.py's own comment on that route): dependency_overrides only
+    intercepts things FastAPI actually resolves as a declared Depends() in
+    a route's signature, and resolve_user_from_request() is a plain
+    function api_snipes() calls directly, not a dependency -- without this,
+    every /api/snipes call in this file would fall through to real
+    cookie/JWT auth and 401 (no test here logs in for real)."""
     dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
     dashboard.app.dependency_overrides[auth.current_subscribed_user] = lambda: FAKE_USER
+
+    async def fake_resolve_user_from_request(request):
+        return FAKE_USER
+    monkeypatch.setattr(auth, "resolve_user_from_request", fake_resolve_user_from_request)
+
     yield
     dashboard.app.dependency_overrides.pop(auth.current_active_user, None)
     dashboard.app.dependency_overrides.pop(auth.current_subscribed_user, None)
 
 
 @pytest.fixture(autouse=True)
-def bypass_get_async_session(tmp_path):
+def bypass_get_async_session(tmp_path, monkeypatch):
     """/api/snipes now also depends on get_async_session directly (for the
     free-tier realm lock, see dashboard._enforce_realm_lock) -- FastAPI
     resolves every declared dependency regardless of whether a given
@@ -61,7 +77,20 @@ def bypass_get_async_session(tmp_path):
     this suite has no business touching a real Postgres anyway. Same
     throwaway-per-test-SQLite pattern test_auth.py's `client` fixture uses,
     just for dashboard.py's TestClient(app) module-level instance instead of
-    a per-test one."""
+    a per-test one.
+
+    Also monkeypatches db.sessionmaker itself (2026-08-01, same trigger as
+    bypass_auth's addition above): api_snipes() now opens its own short-lived
+    session via `async with db.sessionmaker()() as session:` for
+    _enforce_realm_lock's call, instead of receiving one through
+    Depends(get_async_session) -- a plain function call, not a FastAPI
+    dependency, so dependency_overrides doesn't reach it either.
+    db.get_async_session() itself calls the same module-level sessionmaker()
+    internally, so this one monkeypatch keeps both the old
+    dependency_overrides path (still used by other routes, e.g.
+    update_nickname) and this new direct-call path pointed at the identical
+    in-memory test database, without having to touch the dependency_overrides
+    mechanism at all."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'test_dashboard.db'}"
     engine = create_async_engine(db_url)
 
@@ -77,6 +106,7 @@ def bypass_get_async_session(tmp_path):
             yield session
 
     dashboard.app.dependency_overrides[get_async_session] = override_get_async_session
+    monkeypatch.setattr(db, "sessionmaker", lambda: session_factory)
     yield
     dashboard.app.dependency_overrides.pop(get_async_session, None)
     asyncio.run(engine.dispose())
@@ -124,7 +154,8 @@ def disable_value_floor(monkeypatch):
     to find_snipes()'s min_value_floor_g -- without this default, every
     test fixture's small, easy-to-read gold amounts (2g sell prices etc.,
     same reasoning as default_item_class_stub above) would fall under the
-    real 500g floor and silently vanish from every /api/snipes response.
+    real (multi-thousand-gold) floor and silently vanish from every
+    /api/snipes response.
     Same isolation precedent as that fixture: a test that specifically
     exercises the floor sets snipe_check.MIN_VALUE_FLOOR_G back via its own
     monkeypatch call, which overrides this default for that test."""
@@ -233,6 +264,45 @@ def test_api_snipes_returns_rows_and_caveat(data_dir, monkeypatch):
     assert body["rows"][0]["buy_realm_category"] == "English"
     assert body["region"] == blizz.REGION
     assert body["sell_realm_slug"] == f"realm-{SELL_CR}"
+
+
+def test_api_snipes_closes_the_realm_lock_session_before_slow_work(data_dir, monkeypatch):
+    """The entire point of api_snipes()'s short-lived `async with
+    db.sessionmaker()() as session:` block (2026-08-01, see dashboard.py's
+    comment on that route -- added after a real production incident where
+    the Postgres pool exhausted because a connection was held open for this
+    route's entire 30-175s duration): by the time the slow work
+    (find_snipes(), called inside _run_query() via asyncio.to_thread)
+    actually runs, the realm-lock session must already be closed. Patches
+    AsyncSession.close() at the class level (not the instance -- __aexit__
+    is dispatched via the type, not instance attributes, so an
+    instance-level patch wouldn't be seen by `async with`) to record when
+    the one session this request opens actually closes, relative to when
+    find_snipes() gets called. Needs data_dir (a real collected realm), not
+    test_auth.py's uncollected-realm setup -- check_data_ready() would
+    otherwise 400 before find_snipes() is ever reached at all."""
+    run_diff(monkeypatch)
+
+    events = []
+    real_close = SAAsyncSession.close
+
+    async def tracked_close(self):
+        events.append("session_closed")
+        return await real_close(self)
+    monkeypatch.setattr(SAAsyncSession, "close", tracked_close)
+
+    real_find_snipes = snipe_check.find_snipes
+
+    def spy(*args, **kwargs):
+        events.append("find_snipes_called")
+        return real_find_snipes(*args, **kwargs)
+    monkeypatch.setattr(dashboard.snipe_check, "find_snipes", spy)
+
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
+    assert r.status_code == 200
+    assert "session_closed" in events
+    assert "find_snipes_called" in events
+    assert events.index("session_closed") < events.index("find_snipes_called")
 
 
 def test_api_snipes_rows_carry_pet_identity_without_names(data_dir, monkeypatch):
@@ -400,39 +470,40 @@ def test_api_snipes_clamps_top_to_tier_cap(data_dir, tmp_path, monkeypatch, is_s
     # assertion) has no real row behind it, so get_async_session is
     # overridden here too instead of relying on bypass_get_async_session's
     # own test DB, which this test has no handle to add a row into.
+    # api_snipes() no longer uses Depends(current_active_user)/
+    # Depends(get_async_session) at all (2026-08-01, see dashboard.py's own
+    # comment on that route) -- both this test's user *and* its DB access
+    # need to go through auth.resolve_user_from_request()/db.sessionmaker()
+    # instead, overriding bypass_auth/bypass_get_async_session's own
+    # fixture-level defaults for the duration of this test (monkeypatch
+    # stacks and auto-reverts, same as any other per-test override in this
+    # file).
     is_free_tier = not is_superuser and subscription_status != "active"
     if is_free_tier:
         engine, session_factory, user_id = asyncio.run(_free_tier_user_db(tmp_path))
+        monkeypatch.setattr(db, "sessionmaker", lambda: session_factory)
 
-        async def override_session():
-            async with session_factory() as session:
-                yield session
-
-        async def override_user():
+        async def override_resolve_user(request):
             async with session_factory() as session:
                 return await session.get(User, user_id)
-        dashboard.app.dependency_overrides[get_async_session] = override_session
-        dashboard.app.dependency_overrides[auth.current_active_user] = override_user
+        monkeypatch.setattr(auth, "resolve_user_from_request", override_resolve_user)
     else:
-        dashboard.app.dependency_overrides[auth.current_active_user] = \
-            lambda: _user(is_superuser=is_superuser, subscription_status=subscription_status)
-    try:
-        captured = {}
-        real_find_snipes = snipe_check.find_snipes
+        async def override_resolve_user(request):
+            return _user(is_superuser=is_superuser, subscription_status=subscription_status)
+        monkeypatch.setattr(auth, "resolve_user_from_request", override_resolve_user)
 
-        def spy(*args, **kwargs):
-            captured["top"] = kwargs.get("top")
-            return real_find_snipes(*args, **kwargs)
-        monkeypatch.setattr(dashboard.snipe_check, "find_snipes", spy)
+    captured = {}
+    real_find_snipes = snipe_check.find_snipes
 
-        r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
-                                              "top": 999999})
-        assert r.status_code == 200
-        assert captured["top"] == expected_cap
-    finally:
-        dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
-        if is_free_tier:
-            dashboard.app.dependency_overrides.pop(get_async_session, None)
+    def spy(*args, **kwargs):
+        captured["top"] = kwargs.get("top")
+        return real_find_snipes(*args, **kwargs)
+    monkeypatch.setattr(dashboard.snipe_check, "find_snipes", spy)
+
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
+                                          "top": 999999})
+    assert r.status_code == 200
+    assert captured["top"] == expected_cap
 
 
 def _write_single_ilvl_fixture(tmp_path, monkeypatch, bk):
@@ -739,13 +810,48 @@ def test_api_snipes_applies_the_junk_value_floor(data_dir, monkeypatch):
     actually wires it through, not just that find_snipes() itself supports
     it (see test_snipe_check.py's own min_value_floor_g tests for the
     OR-to-keep/AND-to-drop logic). data_dir's fixture item (2g sell price,
-    ~1g region median -- both well under 500g) is visible by default
-    thanks to disable_value_floor's autouse override; re-enabling the real
-    floor here must make it disappear."""
+    ~1g region median -- both well under any realistic floor) is visible by
+    default thanks to disable_value_floor's autouse override; re-enabling a
+    floor here must make it disappear. Uses its own arbitrary test value
+    (500), not the real production constant -- this test proves the route
+    wires the parameter through at all, not what today's specific
+    production threshold happens to be."""
     run_diff(monkeypatch)
     monkeypatch.setattr(snipe_check, "MIN_VALUE_FLOOR_G", 500)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
     assert r.json()["rows"] == []
+
+
+def test_api_snipes_passes_a_real_resolve_deadline_at_both_call_sites(data_dir, monkeypatch):
+    """LIVE_RESOLVE_DEADLINE_SECONDS (2026-08-01, see item_names.ensure_many()'s
+    docstring for the incident) must actually reach both live-request call
+    sites -- dashboard._build_rows() and snipe_check._register_class_quota_maps()
+    (the latter always reached too, since class_quotas is never None on a
+    real /api/snipes call, see _class_quotas()) -- not silently regress back
+    to the unbounded default. Patches NameCache.ensure_many()/
+    .ensure_icons_many() at the class level (both call sites create their
+    own separate NameCache() instance) to capture every call's
+    deadline_seconds across the whole request."""
+    run_diff(monkeypatch)
+    captured = []
+    real_ensure_many = item_names.NameCache.ensure_many
+    real_ensure_icons_many = item_names.NameCache.ensure_icons_many
+
+    def spy_ensure_many(self, *args, **kwargs):
+        captured.append(("ensure_many", kwargs.get("deadline_seconds")))
+        return real_ensure_many(self, *args, **kwargs)
+
+    def spy_ensure_icons_many(self, *args, **kwargs):
+        captured.append(("ensure_icons_many", kwargs.get("deadline_seconds")))
+        return real_ensure_icons_many(self, *args, **kwargs)
+    monkeypatch.setattr(item_names.NameCache, "ensure_many", spy_ensure_many)
+    monkeypatch.setattr(item_names.NameCache, "ensure_icons_many", spy_ensure_icons_many)
+
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3, "names": "true"})
+    assert r.status_code == 200
+    assert captured  # sanity: the spies actually fired
+    for _method, deadline in captured:
+        assert deadline == item_names.LIVE_RESOLVE_DEADLINE_SECONDS
 
 
 def test_api_realms_lists_collected_realms(data_dir):

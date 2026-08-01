@@ -21,7 +21,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -29,15 +29,17 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import analyze
+import auth
 import billing
 import blizz
+import db
 import fetch_snapshot
 import forum
 import snipe_check
 from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users, has_active_subscription
 from db import User, get_async_session
 from fetch_snapshot import ilvl_plausible
-from item_names import NameCache
+from item_names import LIVE_RESOLVE_DEADLINE_SECONDS, NameCache
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -444,14 +446,26 @@ async def _enforce_realm_lock(user: User, sell: int, session: AsyncSession) -> N
 
 
 @app.get("/api/snipes")
-async def api_snipes(sell: int, items: str | None = None, min_discount: float = 0.3,
+async def api_snipes(request: Request, sell: int, items: str | None = None, min_discount: float = 0.3,
                 min_gold: float | None = None, max_gold: float | None = None,
                 min_sell_now: float | None = None,
                 max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
-                top: int = 50, sort: str = Query("discount"), names: bool = False,
-                user: User = Depends(current_active_user),
-                session: AsyncSession = Depends(get_async_session)) -> dict:
+                top: int = 50, sort: str = Query("discount"), names: bool = False) -> dict:
+    # auth.resolve_user_from_request(), not Depends(current_active_user)
+    # (2026-08-01, real production incident: Postgres pool exhaustion broke
+    # login under barely any traffic) -- current_active_user's Depends()
+    # chain holds a pooled connection checked out for this route's entire
+    # duration, including the 30-175s of unrelated DuckDB/Blizzard work
+    # below; this resolves the user via its own short-lived session that
+    # closes in milliseconds, well before any of that slow work starts. See
+    # auth.resolve_user_from_request()'s own docstring for the full
+    # reasoning and how it stays behaviorally identical to
+    # current_active_user (only the `active` check applies -- this app
+    # never uses verified=True/superuser=True).
+    user = await auth.resolve_user_from_request(request)
+    if user is None:
+        raise HTTPException(401)
     top = min(top, _snipe_cap(user))
     # Realm lock enforced *before* data-readiness/sort validation --
     # deliberate (see test_auth.py::test_free_tier_locks_to_first_sell_realm,
@@ -461,7 +475,17 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
     # ordering as a bug and reversed it, but that missed this existing,
     # already-tested, deliberate behavior -- reverted 2026-07-31 once the
     # conflict was caught by the full test suite.)
-    await _enforce_realm_lock(user, sell, session)
+    #
+    # _enforce_realm_lock()'s own signature/behavior is unchanged (still
+    # takes an explicit session -- its existing test_dashboard.py coverage,
+    # including a real two-session TOCTOU race regression test, depends on
+    # controlling that session precisely and would be awkward to preserve
+    # otherwise). Only what changed is *where* the session comes from: a
+    # short-lived one opened just for this call, not the route-level
+    # Depends(get_async_session) session that used to stay open for the
+    # rest of this function's slow work too.
+    async with db.sessionmaker()() as session:
+        await _enforce_realm_lock(user, sell, session)
     not_ready = snipe_check.check_data_ready(sell)
     if not_ready:
         raise HTTPException(400, not_ready)
@@ -495,8 +519,8 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
                                            # see snipe_check.MIN_VALUE_FLOOR_G's
                                            # comment. Frees the tier's top-N/class-
                                            # quota budget from rows that are under
-                                           # 500g by both sell price and EU median
-                                           # at once, not user-configurable (the
+                                           # MIN_VALUE_FLOOR_G by both sell price and
+                                           # EU median at once, not user-configurable (the
                                            # existing min_sell_now query param is
                                            # the user-adjustable floor, this is a
                                            # baseline beneath it).
@@ -540,8 +564,15 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
         name_cache = NameCache() if names else None
         if name_cache is not None:
             item_ids = [r["item_id"] for r in rows]
-            name_cache.ensure_many(item_ids, max_workers=24)
-            name_cache.ensure_icons_many(item_ids, max_workers=24)
+            # LIVE_RESOLVE_DEADLINE_SECONDS (2026-08-01, real incident): this
+            # is a live request a human is waiting on, not the background
+            # prewarm loop -- see item_names.ensure_many()'s docstring for
+            # why an unbounded wait here became a real problem the same day
+            # blizz.api_get() gained a shared rate limiter.
+            name_cache.ensure_many(item_ids, max_workers=24,
+                                   deadline_seconds=LIVE_RESOLVE_DEADLINE_SECONDS)
+            name_cache.ensure_icons_many(item_ids, max_workers=24,
+                                         deadline_seconds=LIVE_RESOLVE_DEADLINE_SECONDS)
         out = [_row_to_json(r, name_cache) for r in rows]
         if name_cache is not None:
             name_cache.save()

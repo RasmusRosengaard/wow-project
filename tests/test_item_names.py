@@ -261,6 +261,80 @@ def test_ensure_many_noop_on_empty_input(cache_path, monkeypatch):
     assert not cache_path.exists()
 
 
+def test_ensure_many_deadline_none_preserves_unbounded_behavior(cache_path, monkeypatch):
+    """deadline_seconds=None (the default, and what every background caller
+    -- collect_all._prewarm_item_base_levels() -- passes) must behave
+    exactly as before this parameter existed: resolves everything,
+    regardless of how long it takes."""
+    calls = []
+    stub_details(monkeypatch, level=636, calls=calls)
+    nc = NameCache()
+    nc.ensure_many([101, 102, 103], deadline_seconds=None)
+    assert sorted(calls) == [101, 102, 103]
+    assert nc.base_level(101) == 636
+    assert nc.base_level(102) == 636
+    assert nc.base_level(103) == 636
+
+
+def test_ensure_many_deadline_seconds_does_not_wait_for_slow_items(cache_path, monkeypatch):
+    """The real incident this was added for (2026-08-01): blizz.py's shared
+    rate limiter turned api_get() from failing fast on a 429 into waiting
+    patiently for the shared budget, which turned a single live
+    /api/snipes call's resolution step from bounded to unbounded (158-300+
+    seconds observed live). Item 999's stub blocks on an Event that's
+    never set (bounded by its own short safety-net timeout so a genuinely
+    broken implementation doesn't hang the whole test suite) -- if
+    ensure_many() still used `with ThreadPoolExecutor(...) as pool:`'s
+    default blocking shutdown(wait=True) instead of the explicit
+    shutdown(wait=False, cancel_futures=True) it needs, this call would
+    block for the full safety-net timeout instead of returning almost
+    immediately once the deadline (0 -- trips on the very first completed
+    future) is hit."""
+    import threading
+    import time as time_module
+
+    never_set = threading.Event()
+
+    def fake(item_id):
+        if item_id == 999:
+            never_set.wait(timeout=2)  # would block this call for 2s if the deadline didn't work
+            return None
+        return {"name": f"item {item_id}", "quality": "COMMON", "level": item_id,
+                "inventory_type": None, "item_class": None, "item_subclass": None}
+    monkeypatch.setattr(item_names, "_fetch_item_details", fake)
+
+    nc = NameCache()
+    started = time_module.monotonic()
+    nc.ensure_many([101, 999], max_workers=2, deadline_seconds=0)
+    elapsed = time_module.monotonic() - started
+    assert elapsed < 1.0  # did not wait out item 999's 2s block
+    assert nc.base_level(101) == 101  # the fast item, resolved before the deadline tripped
+    assert nc.has_class_info(999) is False  # the slow item never got a chance
+
+
+def test_ensure_icons_many_deadline_seconds_does_not_wait_for_slow_items(cache_path, monkeypatch):
+    """Same mechanism/reasoning as ensure_many()'s own version of this test
+    -- see that test's docstring."""
+    import threading
+    import time as time_module
+
+    never_set = threading.Event()
+
+    def fake(path):
+        if path.endswith("999"):
+            never_set.wait(timeout=2)
+            return None
+        return "https://example/icon.jpg"
+    monkeypatch.setattr(item_names, "_fetch_icon", fake)
+
+    nc = NameCache()
+    started = time_module.monotonic()
+    nc.ensure_icons_many([5507, 999], max_workers=2, deadline_seconds=0)
+    elapsed = time_module.monotonic() - started
+    assert elapsed < 1.0
+    assert nc.icon(5507) == "https://example/icon.jpg"
+
+
 def test_ensure_icons_many_resolves_multiple_items_concurrently(cache_path, monkeypatch):
     """Batch path for dashboard.api_snipes' names=true row-building step --
     added (2026-07-26) after icon() turned out not to be covered by

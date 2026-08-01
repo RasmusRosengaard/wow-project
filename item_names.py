@@ -8,6 +8,7 @@ Cache lives at data/item_names.json and is loaded/saved once per NameCache
 instance rather than per lookup.
 """
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -18,6 +19,19 @@ DATA = ROOT / "data"
 CACHE_PATH = DATA / "item_names.json"
 
 PET_CAGE_ITEM_ID = 82800
+
+# How long a live /api/snipes request will wait on ensure_many()/
+# ensure_icons_many() resolving never-before-cached items before giving up
+# and proceeding with whatever's resolved so far (added 2026-08-01,
+# human-specified -- not agent-picked -- after blizz.py's shared rate
+# limiter turned these calls from fail-fast-on-429 into wait-on-the-shared-
+# budget, confirmed live to push a single cold-realm request to 158-300+
+# seconds; see ensure_many()'s own docstring for the full incident).
+# Deliberately NOT used by collect_all._prewarm_item_base_levels() or any
+# other background caller -- nobody's waiting on a spinner for those, and
+# patient, unbounded convergence is the whole point of running them in the
+# background at all.
+LIVE_RESOLVE_DEADLINE_SECONDS = 15
 
 # Standard WoW quality colors (Blizzard's own UI palette), keyed by the
 # `quality.type` string the static item API returns.
@@ -214,7 +228,8 @@ class NameCache:
         self._merge_details(item_id, details)
 
     def ensure_many(self, item_ids: list[int], max_workers: int = 16,
-                     limit: int | None = None) -> None:
+                     limit: int | None = None,
+                     deadline_seconds: float | None = None) -> None:
         """Batch version of _ensure_item_details(): resolves every not-yet-
         cached id concurrently via a thread pool instead of one sequential
         Blizzard API call per item. Added 2026-07-25 after a superuser's
@@ -242,7 +257,43 @@ class NameCache:
         user traffic to make progress). None (default, and every caller
         before this) means unlimited, matching the original behavior.
         Saved incrementally (every 50 completions) regardless -- an
-        interrupted batch still keeps whatever it resolved."""
+        interrupted batch still keeps whatever it resolved.
+
+        deadline_seconds (added 2026-08-01, real incident: blizz.api_get()
+        gained a shared, process-wide rate limiter the same day -- see
+        blizz._TokenBucket -- which made individual calls *wait* under
+        throttling instead of failing fast on a 429 the way they used to.
+        That's correct for protecting the shared budget, but it turned this
+        method's own latency from "bounded by thread count and how fast
+        Blizzard rejects excess calls" into "however long the shared rate
+        limiter takes to grant every single requested item a turn" --
+        confirmed live, a single /api/snipes call on a realm with many
+        never-before-cached items went from its documented 30-175s baseline
+        to 158-300+ seconds). None (default) preserves unbounded behavior --
+        the right choice for a background caller like
+        collect_all._prewarm_item_base_levels(), which has no request
+        waiting on it and exists specifically to make patient progress
+        regardless of how long it takes. Live-request callers
+        (dashboard._build_rows(), snipe_check._register_class_quota_maps())
+        pass LIVE_RESOLVE_DEADLINE_SECONDS instead: once elapsed time since
+        this call started exceeds the deadline, the as_completed() loop
+        stops waiting for whatever's left and returns immediately with
+        whatever resolved in time -- same self-healing pattern already
+        established for `limit` above and CLASS_QUOTA_RESOLVE_LIMIT
+        (snipe_check.py): an item that misses the deadline just stays
+        unresolved for this one call, picked up by a later request or the
+        background prewarm loop. Deliberately does NOT use `with
+        ThreadPoolExecutor(...) as pool:` -- that context manager's
+        __exit__ calls shutdown(wait=True) unconditionally, which would
+        block on every already-submitted future regardless of the deadline,
+        defeating the whole point. Manages the pool explicitly instead and
+        calls shutdown(wait=False, cancel_futures=True) so queued-but-not-
+        yet-started work is dropped rather than waited on; any already-
+        in-flight fetches (up to max_workers of them) keep running to
+        completion in the background but their results are no longer
+        collected -- an acceptable, bounded amount of wasted work in
+        exchange for a hard latency ceiling, not a correctness issue (that
+        item just isn't cached yet, same as if it were never requested)."""
         missing = []
         seen = set()
         for item_id in item_ids:
@@ -255,7 +306,9 @@ class NameCache:
                     break
         if not missing:
             return
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        start = time.monotonic()
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {pool.submit(_fetch_item_details, item_id): item_id for item_id in missing}
             for i, future in enumerate(as_completed(futures)):
                 details = future.result()
@@ -263,9 +316,14 @@ class NameCache:
                     self._merge_details(futures[future], details)
                 if i % 50 == 49:
                     self.save()
+                if deadline_seconds is not None and time.monotonic() - start >= deadline_seconds:
+                    break
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         self.save()
 
-    def ensure_icons_many(self, item_ids: list[int], max_workers: int = 16) -> None:
+    def ensure_icons_many(self, item_ids: list[int], max_workers: int = 16,
+                          deadline_seconds: float | None = None) -> None:
         """Batch/concurrent version of icon() for items (not pets) -- icon()
         isn't covered by ensure_many()'s _fetch_item_details batch (icons
         come from a separate media endpoint), so a realm queried for the
@@ -275,12 +333,18 @@ class NameCache:
         names=true resolution) that predates ensure_many() and was never
         updated to prefetch icons the same way. Added 2026-07-26 after this
         was confirmed live to freeze a switch to a never-before-queried sell
-        realm."""
+        realm.
+
+        deadline_seconds: same mechanism and reasoning as ensure_many()'s
+        own param, added the same day for the same incident -- see that
+        docstring for the full explanation."""
         missing = [item_id for item_id in dict.fromkeys(item_ids)
                    if str(item_id) not in self._cache["item_icons"]]
         if not missing:
             return
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        start = time.monotonic()
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {pool.submit(_fetch_icon, f"/data/wow/media/item/{item_id}"): item_id
                        for item_id in missing}
             for i, future in enumerate(as_completed(futures)):
@@ -289,6 +353,10 @@ class NameCache:
                     self._set("item_icons", str(futures[future]), url)
                 if i % 50 == 49:
                     self.save()
+                if deadline_seconds is not None and time.monotonic() - start >= deadline_seconds:
+                    break
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         self.save()
 
     def get(self, item_id: int, pet_species_id: int | None = None) -> str:

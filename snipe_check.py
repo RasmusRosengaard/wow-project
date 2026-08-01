@@ -48,7 +48,7 @@ import pyarrow as pa
 
 import analyze
 from appearance import AppearanceCache
-from item_names import NameCache
+from item_names import LIVE_RESOLVE_DEADLINE_SECONDS, NameCache
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -361,9 +361,18 @@ def _register_class_quota_maps(con: duckdb.DuckDBPyConnection, distinct_item_ids
     category isn't crowded out, only make it less likely -- doing the
     ranking in SQL after joining in class data, with no row-count
     truncation before that ranking runs, is what makes the guarantee real
-    rather than probabilistic."""
+    rather than probabilistic.
+
+    ensure_many()'s deadline_seconds=LIVE_RESOLVE_DEADLINE_SECONDS (added
+    2026-08-01, real incident): class_quotas is only ever passed by
+    dashboard.py's live /api/snipes route (the CLI never sets it, see
+    find_snipes()'s docstring), so this call is exclusively on the
+    live-request path in practice, not a background one -- the same
+    unbounded-wait risk item_names.ensure_many()'s own docstring describes
+    applies here too, and needs the same bound."""
     names = NameCache()
-    names.ensure_many(distinct_item_ids, limit=CLASS_QUOTA_RESOLVE_LIMIT)
+    names.ensure_many(distinct_item_ids, limit=CLASS_QUOTA_RESOLVE_LIMIT,
+                      deadline_seconds=LIVE_RESOLVE_DEADLINE_SECONDS)
     ids: list[int] = []
     buckets: list[str] = []
     for item_id in distinct_item_ids:
@@ -408,7 +417,9 @@ def _register_class_quota_maps(con: duckdb.DuckDBPyConnection, distinct_item_ids
 # and every existing test default to None (no floor), so debugging/
 # inspecting junk rows directly is still possible and no prior behavior
 # changed for callers that don't opt in.
-MIN_VALUE_FLOOR_G = 500
+# Raised 500 -> 2000 (2026-08-01, human request, same convention as the
+# original value -- a human-specified number, not agent-picked).
+MIN_VALUE_FLOOR_G = 2000
 
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,

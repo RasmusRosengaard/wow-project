@@ -6,10 +6,12 @@ is the simpler fit, matching the no-build-step convention in static/).
 import os
 import uuid
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
+from fastapi_users.db import SQLAlchemyUserDatabase
 
+import db
 from db import User, get_user_db
 
 SECRET = os.environ.get("SECRET")
@@ -60,6 +62,50 @@ auth_backend = AuthenticationBackend(
 fastapi_users = FastAPIUsers[User, uuid.UUID](get_user_manager, [auth_backend])
 
 current_active_user = fastapi_users.current_user(active=True)
+
+
+async def resolve_user_from_request(request: Request) -> User | None:
+    """Manually resolves the current user from the request's auth cookie,
+    using a session opened and closed within this function -- not the
+    request-scoped `Depends(current_active_user)` chain, which holds a
+    Postgres connection checked out for the *entire* request (FastAPI only
+    releases a `Depends()`-with-`yield` resource after the full response
+    has been sent, confirmed by reading `fastapi/routing.py`'s
+    `solve_dependencies`/`AsyncExitStack` handling). Added 2026-08-01 for
+    `dashboard.api_snipes()`, the one route in this app that does 30-175s
+    of unrelated DuckDB/Blizzard work after authenticating -- holding a
+    pooled connection open for all of that, on every single call at every
+    tier, was the direct cause of a real production incident (the Postgres
+    pool exhausted, breaking login, under barely any real traffic).
+
+    Mirrors `fastapi_users.current_user(active=True)`'s actual behavior
+    exactly (confirmed by reading the installed package's
+    `Authenticator._authenticate()`/`JWTStrategy.read_token()`): only the
+    `active` check is applied here -- this app never uses `verified=True`
+    or `superuser=True` anywhere (see `current_active_user`'s own
+    definition above), so replicating just that one check is complete, not
+    a partial reimplementation. Returns `None` (never raises) on any
+    failure -- no cookie, invalid/expired token, unknown user, inactive
+    user -- callers are responsible for turning that into a 401 themselves,
+    matching how `current_active_user` only raises at the FastAPI
+    dependency-resolution layer, not inside this helper.
+
+    `db.sessionmaker()` uses `expire_on_commit=False`, so the returned
+    `User`'s already-loaded scalar columns (id, email, is_active,
+    is_superuser, subscription_status, locked_sell_realm, nickname) stay
+    safely readable after this function returns and the session/connection
+    has closed -- nothing downstream needs a live session for what it does
+    with `user`."""
+    token = request.cookies.get(cookie_transport.cookie_name)
+    if token is None:
+        return None
+    async with db.sessionmaker()() as session:
+        user_db = SQLAlchemyUserDatabase(session, User)
+        user_manager = UserManager(user_db)
+        user = await get_jwt_strategy().read_token(token, user_manager)
+    if user is None or not user.is_active:
+        return None
+    return user
 
 
 def has_active_subscription(user: User) -> bool:

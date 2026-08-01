@@ -38,7 +38,13 @@ def setup_logging() -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     file_h = logging.handlers.RotatingFileHandler(
         log_dir / "collector.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
-    console_h = logging.StreamHandler()
+    # sys.stdout explicitly (2026-08-01, real bug fix): StreamHandler() with no
+    # argument defaults to sys.stderr -- Railway's log platform tags anything
+    # written to a process's stderr as "severity":"error" in its structured
+    # JSON logs regardless of the actual Python log level, so ordinary
+    # log.info() lines were showing up error-tagged, burying genuine errors
+    # in noise. Confirmed live.
+    console_h = logging.StreamHandler(sys.stdout)
     for h in (file_h, console_h):
         h.setFormatter(fmt)
         log.addHandler(h)

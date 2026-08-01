@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import dashboard
+import db
 from db import Base, User, get_async_session
 
 EMAIL = "test@example.com"
@@ -32,7 +33,7 @@ async def _activate_subscription(session_factory, email: str) -> None:
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
     engine = create_async_engine(db_url)
     asyncio.run(_create_tables(engine))
@@ -43,6 +44,16 @@ def client(tmp_path):
             yield session
 
     dashboard.app.dependency_overrides[get_async_session] = override_get_async_session
+    # db.sessionmaker() itself, not just the get_async_session dependency
+    # (2026-08-01): this file exercises the *real* auth path deliberately
+    # (no dependency_overrides[current_active_user] bypass -- see this
+    # file's own module docstring), so /api/snipes' new
+    # auth.resolve_user_from_request()/_enforce_realm_lock() calls, which
+    # open their own sessions via db.sessionmaker() directly rather than a
+    # FastAPI Depends(), need to land in this same throwaway SQLite DB too.
+    # get_async_session() (db.py) already calls the same module-level
+    # sessionmaker() internally, so this one patch covers both paths.
+    monkeypatch.setattr(db, "sessionmaker", lambda: session_factory)
     try:
         with TestClient(dashboard.app) as c:
             c.session_factory = session_factory  # tests can reach into the DB directly
@@ -213,3 +224,44 @@ def test_superuser_is_never_realm_locked(client):
 
     assert client.get("/api/snipes", params={"sell": REALM_A}).status_code == 400
     assert client.get("/api/snipes", params={"sell": REALM_B}).status_code == 400
+
+
+# auth.resolve_user_from_request() (2026-08-01) replaced /api/snipes'
+# Depends(current_active_user) with a manually-resolved user -- these tests
+# exercise the real path directly (not test_dashboard.py's bypass), the same
+# way test_dashboard_api_routes_require_login above already covers "no
+# cookie -> 401" and "valid cookie -> real business logic reached". This
+# fills in the cases that test wasn't designed to cover: a cookie that
+# doesn't decode to a real session, and an otherwise-valid session for a
+# deactivated account.
+
+def test_api_snipes_invalid_cookie_returns_401(client):
+    """A garbage/malformed cookie value must resolve to "no user", the same
+    as no cookie at all -- not raise or 500. Mirrors
+    JWTStrategy.read_token()'s own contract (returns None on any
+    jwt.PyJWTError, never raises) that resolve_user_from_request() relies
+    on rather than reimplementing its own try/except."""
+    client.cookies.set("ah_auth", "not-a-real-jwt")
+    assert client.get("/api/snipes", params={"sell": 424242}).status_code == 401
+
+
+def test_api_snipes_inactive_user_returns_401(client):
+    """A valid, correctly-signed cookie for an account that's since been
+    deactivated must still be rejected -- proves resolve_user_from_request()
+    actually checks is_active (mirroring
+    fastapi_users.current_user(active=True)'s own behavior) rather than
+    just trusting that the token decoded to *some* real user."""
+    register(client)
+    login(client)
+    assert client.get("/api/me").status_code == 200  # sanity: really logged in first
+
+    async def _deactivate(session_factory, email: str) -> None:
+        async with session_factory() as session:
+            user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+            user.is_active = False
+            await session.commit()
+    asyncio.run(_deactivate(client.session_factory, EMAIL))
+
+    assert client.get("/api/snipes", params={"sell": 424242}).status_code == 401
+
+

@@ -14,6 +14,7 @@ import argparse
 import logging
 import logging.handlers
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -35,7 +36,11 @@ def setup_logging() -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     file_h = logging.handlers.RotatingFileHandler(
         log_dir / "scanner.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
-    console_h = logging.StreamHandler()
+    # sys.stdout explicitly -- see fetch_snapshot.py's setup_logging() for why
+    # (Railway tags anything on stderr as "severity":"error" regardless of
+    # the actual Python log level; StreamHandler() with no argument defaults
+    # to stderr).
+    console_h = logging.StreamHandler(sys.stdout)
     for h in (file_h, console_h):
         h.setFormatter(fmt)
         log.addHandler(h)
