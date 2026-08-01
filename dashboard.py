@@ -702,21 +702,64 @@ def api_realms(user: User = Depends(current_active_user)) -> dict:
     return {"realms": _realms_payload(_list_snapshotted_realms())}
 
 
+_connected_realm_members_cache: dict[int, list[dict]] = {}
+
+
+def _connected_realm_members(cr_id: int) -> list[dict]:
+    """Like _realm_info(), but keeps every member realm of a connected
+    realm, not just the first -- a connected realm can bundle several named
+    realms sharing one AH (typically older/merged low-pop realms), and
+    _realm_info() deliberately only exposes the first name (the "primary"
+    display name used everywhere a buy-side realm is shown). This is a
+    second, separate in-process cache rather than widening _realm_info_cache
+    itself, since every other caller of _realm_info() genuinely wants just
+    the one display name and shouldn't have to know about the full list."""
+    if cr_id not in _connected_realm_members_cache:
+        try:
+            realms = blizz.connected_realm_realms(cr_id)
+        except Exception:
+            realms = []
+        _connected_realm_members_cache[cr_id] = realms
+    return _connected_realm_members_cache[cr_id]
+
+
 @app.get("/api/realms/eu")
 def api_realms_eu(user: User = Depends(current_subscribed_user)) -> dict:
     """Every EU connected realm (contrast /api/realms, which is scoped to
     realms this app has snapshot data for) -- backs profile.html's
     WoW-account realm-registration picker (wow_accounts.py). Gated by
     current_subscribed_user, not current_active_user: can trigger up to
-    ~92 individual Blizzard calls on a cold _realm_info_cache
+    ~92 individual Blizzard calls on a cold _connected_realm_members_cache
     (blizz.list_connected_realms() + one connected_realm_realms() per id),
     so it's gated the same as the paid feature it exists to support.
     Plain `def`, not `async def` -- Starlette runs synchronous routes in a
     worker thread automatically, so this is already off the event loop
     without needing asyncio.to_thread() (contrast api_snipes(), which is
     `async def` and therefore does need it -- see "Real production
-    outage" in CLAUDE.md)."""
-    return {"realms": _realms_payload(blizz.list_connected_realms())}
+    outage" in CLAUDE.md).
+
+    Fanned out to one entry per member realm name, not one per connected-
+    realm id (2026-08-02, human request: "this works with connectedrealms,
+    so if choose realm that has connected [realms], it auto adds them as
+    well") -- multiple entries can share the same `id`. A user searching by
+    any member realm's name (not just the connected realm's "primary" one)
+    finds it and registers it under the shared connected-realm id, which is
+    what actually gates matching against snipe rows throughout this app
+    (see snipe_check.find_snipes()'s buy_realm) -- so adding any one member
+    name already covers the whole connected realm; profile.html's
+    realmNameById dedupes back down to one (the first/primary) name per id
+    purely for chip display, same convention _realm_info() already uses
+    for buy-side realm names elsewhere."""
+    entries = []
+    for cr_id in blizz.list_connected_realms():
+        members = _connected_realm_members(cr_id)
+        if not members:
+            entries.append({"id": cr_id, "name": str(cr_id), "slug": None})
+            continue
+        for member in members:
+            entries.append({"id": cr_id, "name": member.get("name") or str(cr_id), "slug": member.get("slug")})
+    entries.sort(key=lambda r: r["name"])
+    return {"realms": entries}
 
 
 def _list_snapshotted_realms() -> list[int]:

@@ -86,12 +86,12 @@ def test_create_account_rejects_label_too_long():
     assert r.status_code == 400
 
 
-def test_create_account_enforces_max_10_cap():
-    for i in range(10):
+def test_create_account_enforces_max_8_cap():
+    for i in range(8):
         assert client.post("/api/wow-accounts", json={"label": f"Account {i}"}).status_code == 200
     r = client.post("/api/wow-accounts", json={"label": "One too many"})
     assert r.status_code == 400
-    assert len(client.get("/api/wow-accounts").json()["accounts"]) == 10
+    assert len(client.get("/api/wow-accounts").json()["accounts"]) == 8
 
 
 def test_rename_account_success():
@@ -207,16 +207,16 @@ async def _wow_account_test_user_db(tmp_path, db_name="wow_accounts_atomic.db"):
     return engine, session_factory, user_id
 
 
-def test_create_account_concurrent_requests_only_ten_win(tmp_path):
-    """Regression test for the atomic-insert cap: seeds 9 accounts, then
-    exercises the 10th/11th insert via two independent sessions that both
+def test_create_account_concurrent_requests_only_eight_win(tmp_path):
+    """Regression test for the atomic-insert cap: seeds 7 accounts, then
+    exercises the 8th/9th insert via two independent sessions that both
     predate either commit -- if _insert_account_atomic's cap check were a
     separate Python-side SELECT COUNT(*) instead of one atomic statement,
-    both could observe count == 9 and both would succeed, landing at 11."""
+    both could observe count == 7 and both would succeed, landing at 9."""
     async def run():
         engine, session_factory, user_id = await _wow_account_test_user_db(tmp_path)
         async with session_factory() as seed_session:
-            for i in range(9):
+            for i in range(7):
                 assert await wow_accounts._insert_account_atomic(user_id, f"Seed {i}", seed_session)
             await seed_session.commit()
 
@@ -225,14 +225,14 @@ def test_create_account_concurrent_requests_only_ten_win(tmp_path):
             await session_a.commit()
             inserted_b = await wow_accounts._insert_account_atomic(user_id, "B", session_b)
             await session_b.commit()
-            assert inserted_a is True   # 10th account -- fills the cap exactly
-            assert inserted_b is False  # 11th -- correctly rejected
+            assert inserted_a is True   # 8th account -- fills the cap exactly
+            assert inserted_b is False  # 9th -- correctly rejected
 
         async with session_factory() as check_session:
             count = (await check_session.execute(
                 select(func.count()).select_from(WowAccount).where(WowAccount.owner_id == user_id)
             )).scalar_one()
-            assert count == 10
+            assert count == 8
         await engine.dispose()
     asyncio.run(run())
 

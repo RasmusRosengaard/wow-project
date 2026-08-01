@@ -72,26 +72,43 @@
     transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
   .nav a:hover, .nav button:hover { background: var(--paper); border-color: var(--hairline-strong); color: var(--ink); }
-  /* The current page's own nav link -- shown, not omitted, so the nav's set
-     of items (and therefore its width/layout) never changes page to page --
-     an omitted self-link used to make the whole bar visibly shift depending
-     on which page you were on (2026-07-30 human report). */
   .nav a.active { color: var(--bullion); font-weight: 700; cursor: default; }
   .nav a.active:hover { background: transparent; border-color: transparent; }
   #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
 
-  .shell { display: flex; flex-direction: column; align-items: center; gap: 1.5rem; padding: 2.5rem 1.5rem; }
-  .card {
-    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
-    padding: 2rem; width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 1.1rem;
-  }
+  /* Wider than the old single-narrow-column layout (2026-08-02, human
+     request: "remake the entire profile page") -- WoW Accounts needs room
+     for a card grid, not a 420px column. */
+  .shell { display: flex; flex-direction: column; gap: 1.75rem; max-width: 1100px; margin: 0 auto; padding: 2.5rem 1.5rem 3rem; }
+
   h2 {
     font-size: 1rem; margin: 0; font-weight: 800;
     text-transform: uppercase; letter-spacing: -0.01em;
   }
-  .row { display: flex; justify-content: space-between; align-items: center; font-size: 0.88rem; gap: 1rem; padding-bottom: 0.9rem; border-bottom: 1px solid var(--hairline); }
-  .row .lbl { color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  .row span:not(.lbl) { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
+  button, a.btn {
+    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
+    border-radius: 3px; padding: 0.6rem 1rem; cursor: pointer; font-size: 0.85rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    text-align: center; text-decoration: none; display: inline-block; font-family: inherit;
+  }
+  button:hover, a.btn:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
+  .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
+  .cap-note { font-size: 0.76rem; color: var(--text-dim); }
+  .contact { font-size: 0.75rem; color: var(--text-dim); text-align: center; margin-top: 0.5rem; }
+  .contact a { color: var(--bullion); }
+
+  /* --- Account summary card: compact, horizontal, not a stacked list of
+     labeled rows -- the old layout put email/subscription/nickname each on
+     their own full-width row, which read as a form more than a summary. --- */
+  .account-card {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
+    padding: 1.25rem 1.5rem; display: flex; flex-direction: column; gap: 1rem;
+  }
+  .account-summary-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
+  .account-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 0.7rem; }
+  .account-email { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; font-size: 0.92rem; }
   .badge {
     display: inline-block; padding: 0.2rem 0.6rem; border-radius: 3px;
     font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
@@ -100,55 +117,83 @@
   .badge.active { background: var(--verified-bg); color: var(--verified); border: 1px solid var(--verified); }
   .badge.inactive { background: var(--alert-bg); color: var(--alert); border: 1px solid var(--alert); }
   .badge.pending { background: var(--pending-bg); color: var(--bullion); border: 1px solid var(--bullion); }
-  button, a.btn {
-    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
-    border-radius: 3px; padding: 0.6rem; cursor: pointer; font-size: 0.85rem;
-    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
-    text-align: center; text-decoration: none; display: block; font-family: inherit;
+  .period-note { font-size: 0.76rem; color: var(--text-dim); }
+  .nickname-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding-top: 0.9rem; border-top: 1px solid var(--hairline); }
+  .nickname-row label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); white-space: nowrap; }
+  .nickname-row input {
+    flex: 1; min-width: 160px; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.85rem; font-family: inherit;
   }
-  button:hover, a.btn:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
-  button:disabled { opacity: 0.6; cursor: default; }
-  button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
-  .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
-  .contact { font-size: 0.75rem; color: var(--text-dim); text-align: center; margin-top: 0.9rem; }
-  .contact a { color: var(--bullion); }
+  .nickname-row button { width: auto; padding: 0.5rem 0.9rem; }
 
-  /* WoW Accounts (2026-08-02, human request) -- register real WoW accounts
-     + which EU realms have a character on them, so dashboard.html can show
-     which account to log into for a given snipe. Genuinely new UI for this
-     codebase (no existing repeatable add/remove-row pattern to mirror) --
-     kept as plain nested flex blocks rather than a <dialog>, matching this
-     page's existing inline-edit convention (#nickname/#nickname-save)
-     rather than snipeboard.html's modal-form convention, since this is a
-     settings page, not a one-off action. */
-  #wow-accounts-list { display: flex; flex-direction: column; gap: 1rem; }
-  .wow-account { border-bottom: 1px solid var(--hairline); padding-bottom: 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
-  .wow-account:last-child { border-bottom: none; padding-bottom: 0; }
-  .wow-account-head { display: flex; gap: 0.5rem; }
-  .wow-account-head input {
-    flex: 1; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
-    border-radius: 3px; padding: 0.5rem; font-size: 0.85rem; font-family: inherit;
+  /* --- WoW Accounts section --- */
+  .section-head { display: flex; flex-direction: column; gap: 0.3rem; }
+  .section-lede { margin: 0; font-size: 0.85rem; color: var(--text-dim); max-width: 62ch; }
+  .upsell { font-size: 0.88rem; color: var(--text-dim); }
+  .upsell a { color: var(--bullion); font-weight: 700; text-decoration: none; }
+  .upsell a:hover { text-decoration: underline; }
+
+  @keyframes skeleton-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.75; } }
+  .wow-accounts-loading, .wow-accounts-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem;
   }
-  .wow-account-head button { width: auto; padding: 0.5rem 0.75rem; }
-  .wow-account-head button.danger { background: transparent; border-color: var(--alert); color: var(--alert); }
-  .wow-account-head button.danger:hover { background: var(--alert-bg); border-color: var(--alert); }
+  .skeleton-card { height: 150px; border-radius: 6px; background: var(--hairline); animation: skeleton-pulse 1.3s ease-in-out infinite; }
+
+  .wow-account-card {
+    background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 6px;
+    padding: 1rem; display: flex; flex-direction: column; gap: 0.7rem;
+  }
+  .wow-account-card-name-row input {
+    width: 100%; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.9rem; font-weight: 700; font-family: inherit;
+  }
+  .wow-account-card-actions-row { display: flex; gap: 0.5rem; }
+  .wow-account-card-actions-row button {
+    flex: 1; width: auto; padding: 0.4rem 0.5rem; font-size: 0.7rem;
+  }
+  .wow-account-card-actions-row button.danger {
+    background: transparent; border-color: var(--alert); color: var(--alert);
+  }
+  .wow-account-card-actions-row button.danger:hover { background: var(--alert-bg); border-color: var(--alert); }
+
+  /* Realm chips: full names always shown, deliberately no truncation
+     anywhere in this section (2026-08-02, human request) -- chips wrap
+     within the row and grow in height rather than clipping text. */
   .realm-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
   .realm-chip {
     display: inline-flex; align-items: center; gap: 0.35rem; background: var(--paper);
-    border: 1px solid var(--hairline-strong); border-radius: 3px; padding: 0.25rem 0.5rem; font-size: 0.78rem;
+    border: 1px solid var(--hairline-strong); border-radius: 3px; padding: 0.3rem 0.55rem;
+    font-size: 0.78rem; white-space: normal; word-break: break-word;
   }
   .realm-chip button {
     width: auto; padding: 0; background: transparent; border: none; color: var(--text-dim);
-    font-weight: 700; line-height: 1; display: inline;
+    font-weight: 700; line-height: 1; display: inline; font-size: 0.9rem;
   }
   .realm-chip button:hover { color: var(--alert); background: transparent; }
-  .add-realm-row { display: flex; gap: 0.5rem; }
-  .add-realm-row select {
-    flex: 1; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
-    border-radius: 3px; padding: 0.5rem; font-size: 0.85rem; font-family: inherit;
+
+  .realm-search-wrap { position: relative; }
+  .realm-search-wrap input {
+    width: 100%; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.82rem; font-family: inherit;
   }
-  .add-realm-row button { width: auto; padding: 0.5rem 0.75rem; }
-  .cap-note { font-size: 0.72rem; color: var(--text-dim); }
+  .realm-search-results {
+    display: none; position: absolute; top: 100%; left: 0; right: 0; margin-top: 3px; z-index: 30;
+    background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 4px;
+    max-height: 220px; overflow-y: auto; box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+  }
+  .realm-search-item { padding: 0.5rem 0.65rem; font-size: 0.82rem; cursor: pointer; white-space: normal; }
+  .realm-search-item:hover { background: var(--paper); }
+  .realm-search-empty { padding: 0.5rem 0.65rem; font-size: 0.78rem; color: var(--text-dim); }
+
+  .wow-account-add-card {
+    border: 1px dashed var(--hairline-strong); border-radius: 6px; padding: 1rem;
+    display: flex; align-items: center; justify-content: center; min-height: 120px;
+    color: var(--text-dim); font-weight: 700; font-size: 0.85rem; text-transform: uppercase;
+    letter-spacing: 0.03em; background: transparent; cursor: pointer; width: 100%;
+  }
+  .wow-account-add-card:hover { border-color: var(--bullion); color: var(--bullion); background: transparent; }
+  .wow-account-add-card--disabled { cursor: default; text-transform: none; letter-spacing: normal; font-weight: 600; }
+  .wow-account-add-card--disabled:hover { border-color: var(--hairline-strong); color: var(--text-dim); }
 </style>
 </head>
 <body>
@@ -182,47 +227,49 @@
     <button id="nav-logout">Log out</button>
   </div>
 </div>
+
 <div class="shell">
-  <div class="card">
-    <h2>Profile</h2>
-    <div class="row"><span class="lbl">Email</span><span id="email">…</span></div>
-    <div class="row"><span class="lbl">Subscription</span><span id="status-badge">…</span></div>
-    <div class="row" id="period-row" style="display:none;">
-      <span class="lbl">Renews / ends</span><span id="period-end"></span>
-    </div>
-    <div class="row" style="border-bottom:none; flex-direction:column; align-items:stretch; gap:0.5rem;">
-      <span class="lbl">Nickname</span>
-      <div style="display:flex; gap:0.5rem;">
-        <input type="text" id="nickname" maxlength="50" placeholder="e.g. Snipehunter"
-               style="flex:1; background:var(--paper); border:1px solid var(--hairline-strong); color:var(--ink); border-radius:3px; padding:0.5rem; font-size:0.85rem; font-family:inherit;">
-        <button id="nickname-save" style="width:auto; padding:0.5rem 0.9rem;">Save</button>
+  <div class="account-card">
+    <div class="account-summary-row">
+      <div class="account-identity">
+        <span class="account-email" id="email">…</span>
+        <span id="status-badge">…</span>
+        <span class="period-note" id="period-end-wrap" style="display:none;">Renews <span id="period-end"></span></span>
       </div>
+      <div id="actions"></div>
     </div>
+    <div class="nickname-row">
+      <label for="nickname">Nickname</label>
+      <input type="text" id="nickname" maxlength="50" placeholder="e.g. Snipehunter">
+      <button id="nickname-save">Save</button>
+    </div>
+    <div class="cap-note">Press Save to save changes.</div>
     <div id="nickname-error" class="error"></div>
     <div id="error" class="error"></div>
-    <div id="actions"></div>
   </div>
-  <div class="card" id="wow-accounts-card" style="max-width:640px;">
-    <h2>WoW Accounts</h2>
-    <div id="wow-accounts-upsell" class="cap-note" style="display:none;"></div>
-    <div id="wow-accounts-list"></div>
-    <div class="row" id="add-account-row" style="border-bottom:none; flex-direction:column; align-items:stretch; gap:0.5rem;">
-      <span class="lbl">Add a WoW account</span>
-      <div style="display:flex; gap:0.5rem;">
-        <input type="text" id="new-account-label" maxlength="50" placeholder="e.g. Main"
-               style="flex:1; background:var(--paper); border:1px solid var(--hairline-strong); color:var(--ink); border-radius:3px; padding:0.5rem; font-size:0.85rem; font-family:inherit;">
-        <button id="add-account-btn" style="width:auto; padding:0.5rem 0.9rem;">Add account</button>
-      </div>
+
+  <section class="wow-accounts-section">
+    <div class="section-head">
+      <h2>WoW Accounts</h2>
+      <p class="section-lede">Register your WoW accounts and the realms where your sniping characters live -- the dashboard shows which one to log into when a snipe pops up.</p>
     </div>
-    <div id="add-account-cap-note" class="cap-note" style="display:none;">Maximum 10 WoW accounts reached.</div>
+    <div id="wow-accounts-upsell" class="upsell" style="display:none;"></div>
+    <div id="wow-accounts-loading" class="wow-accounts-loading" style="display:none;">
+      <div class="skeleton-card"></div>
+      <div class="skeleton-card"></div>
+      <div class="skeleton-card"></div>
+    </div>
+    <div id="wow-accounts-list" class="wow-accounts-grid" style="display:none;"></div>
     <div id="wow-accounts-error" class="error"></div>
-  </div>
+  </section>
 </div>
+
 <div class="contact">
   Issues with the site or payment? Email
   <a href="mailto:rasmus2001@gmail.com">rasmus2001@gmail.com</a> or find
   <b>rasmus5533</b> on Discord.
 </div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -239,6 +286,13 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// Flat [{id, name}, ...] -- one entry per *member realm name* of a
+// connected realm, not one per connected-realm id (a connected realm can
+// bundle several named realms sharing one AH -- see api_realms_eu()'s
+// docstring in dashboard.py). Used for search, so a user can find their
+// realm by any of its names. realmNameById below dedupes this back down
+// to one (the first/primary) name per id, purely for chip display.
+let realmSearchEntries = [];
 let realmNameById = new Map();
 let currentAccounts = [];
 
@@ -289,9 +343,13 @@ async function saveNickname() {
 async function loadEuRealms() {
   try {
     const r = await fetch("/api/realms/eu");
-    if (!r.ok) return; // not subscribed (402) -- leave the Map empty
+    if (!r.ok) return; // not subscribed (402) -- leave both empty
     const data = await r.json();
-    realmNameById = new Map((data.realms || []).map(realm => [realm.id, realm.name]));
+    realmSearchEntries = data.realms || [];
+    realmNameById = new Map();
+    for (const realm of realmSearchEntries) {
+      if (!realmNameById.has(realm.id)) realmNameById.set(realm.id, realm.name);
+    }
   } catch (e) { /* leave empty */ }
 }
 
@@ -304,13 +362,28 @@ async function loadWowAccounts() {
   } catch (e) { return []; }
 }
 
-// Sorts by realm name, not by the html string (id-prefixed values would
-// otherwise sort lexicographically ahead of the name text).
-function realmOptionsHtml(excludeIds) {
-  const entries = [...realmNameById.entries()]
-    .filter(([id]) => !excludeIds.has(id))
-    .sort((a, b) => a[1].localeCompare(b[1]));
-  return entries.map(([id, name]) => `<option value="${id}">${escapeHtml(name)}</option>`).join("");
+// Matches against every member realm name (realmSearchEntries), not just
+// each connected realm's primary display name -- so searching "Blackhand"
+// finds it even if Blizzard's API returns "Draenor" as that connected
+// realm's first/primary name. Each connected-realm id appears at most once
+// in the results, keeping whichever member name actually matched (so the
+// dropdown shows the name the user searched for, confirming it's the right
+// realm) -- picking it registers the whole connected realm regardless of
+// which member name was shown, since matching is by id, not name. Sorted
+// by the matched name, capped at 8 results -- a search box, not a full list.
+function realmSearchMatches(query, excludeIds) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const seenIds = new Set();
+  const matches = [];
+  for (const realm of realmSearchEntries) {
+    if (excludeIds.has(realm.id) || seenIds.has(realm.id)) continue;
+    if (!realm.name.toLowerCase().includes(q)) continue;
+    matches.push([realm.id, realm.name]);
+    seenIds.add(realm.id);
+  }
+  matches.sort((a, b) => a[1].localeCompare(b[1]));
+  return matches.slice(0, 8);
 }
 
 async function refreshWowAccounts() {
@@ -319,61 +392,118 @@ async function refreshWowAccounts() {
 }
 
 function renderWowAccounts() {
+  $("wow-accounts-loading").style.display = "none";
   const list = $("wow-accounts-list");
-  if (!currentAccounts.length) {
-    list.innerHTML = `<div class="cap-note">No WoW accounts registered yet.</div>`;
-  } else {
-    list.innerHTML = currentAccounts.map(acct => {
-      const excludeIds = new Set(acct.realms);
-      const chips = acct.realms.map(id => {
-        const name = realmNameById.get(id) || String(id);
-        return `<span class="realm-chip">${escapeHtml(name)}<button data-remove-realm="${id}" data-account="${acct.id}" title="Remove">&times;</button></span>`;
-      }).join("") || `<span class="cap-note">No realms added yet.</span>`;
-      const atRealmCap = acct.realms.length >= 50;
-      const addRealmRow = atRealmCap
-        ? `<div class="cap-note">Maximum 50 realms reached.</div>`
-        : `<div class="add-realm-row">
-             <select data-account-select="${acct.id}"><option value="">Add a realm…</option>${realmOptionsHtml(excludeIds)}</select>
-             <button data-add-realm="${acct.id}">Add realm</button>
-           </div>`;
-      return `
-        <div class="wow-account" data-account-id="${acct.id}">
-          <div class="wow-account-head">
-            <input type="text" value="${escapeHtml(acct.label)}" maxlength="50" data-rename-input="${acct.id}">
-            <button data-rename="${acct.id}">Save</button>
-            <button class="danger" data-delete="${acct.id}">Delete</button>
-          </div>
-          <div class="realm-chips">${chips}</div>
-          ${addRealmRow}
-        </div>`;
-    }).join("");
-  }
+  list.style.display = "grid";
 
+  const cards = currentAccounts.map(acct => {
+    const excludeIds = new Set(acct.realms);
+    const chips = acct.realms.map(id => {
+      const name = realmNameById.get(id) || String(id);
+      return `<span class="realm-chip">${escapeHtml(name)}<button data-remove-realm="${id}" data-account="${acct.id}" title="Remove realm">&times;</button></span>`;
+    }).join("") || `<span class="cap-note">No realms added yet.</span>`;
+    const atRealmCap = acct.realms.length >= 50;
+    const searchBlock = atRealmCap
+      ? `<div class="cap-note">Maximum 50 realms reached.</div>`
+      : `<div class="realm-search-wrap">
+           <input type="text" class="realm-search-input" placeholder="Search realms..." data-realm-search="${acct.id}" autocomplete="off">
+           <div class="realm-search-results" data-realm-results="${acct.id}"></div>
+         </div>`;
+    return `
+      <div class="wow-account-card" data-account-id="${acct.id}">
+        <div class="wow-account-card-name-row">
+          <input type="text" value="${escapeHtml(acct.label)}" maxlength="50" data-rename-input="${acct.id}">
+        </div>
+        <div class="cap-note">Press Save to save changes.</div>
+        <div class="wow-account-card-actions-row">
+          <button data-rename="${acct.id}">Save</button>
+          <button class="danger" data-delete="${acct.id}">Remove</button>
+        </div>
+        <div class="realm-chips">${chips}</div>
+        ${searchBlock}
+      </div>`;
+  }).join("");
+
+  const atAccountCap = currentAccounts.length >= 8;
+  const addTile = atAccountCap
+    ? `<div class="wow-account-add-card wow-account-add-card--disabled">Maximum 8 WoW accounts reached</div>`
+    : `<button class="wow-account-add-card" id="add-account-btn">+ Add account</button>`;
+
+  list.innerHTML = cards + addTile;
+
+  if (!atAccountCap) $("add-account-btn").addEventListener("click", addAccount);
   list.querySelectorAll("[data-rename]").forEach(btn => {
     btn.addEventListener("click", () => renameAccount(Number(btn.dataset.rename)));
   });
   list.querySelectorAll("[data-delete]").forEach(btn => {
     btn.addEventListener("click", () => deleteAccount(Number(btn.dataset.delete)));
   });
-  list.querySelectorAll("[data-add-realm]").forEach(btn => {
-    btn.addEventListener("click", () => addRealm(Number(btn.dataset.addRealm)));
-  });
   list.querySelectorAll("[data-remove-realm]").forEach(btn => {
     btn.addEventListener("click", () => removeRealm(Number(btn.dataset.account), Number(btn.dataset.removeRealm)));
   });
+  list.querySelectorAll("[data-realm-search]").forEach(input => {
+    const accountId = Number(input.dataset.realmSearch);
+    input.addEventListener("input", () => updateRealmSearchResults(accountId));
+    input.addEventListener("focus", () => updateRealmSearchResults(accountId));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); pickTopRealmMatch(accountId); }
+      if (e.key === "Escape") { hideRealmSearchResults(accountId); }
+    });
+    // Hiding on blur would otherwise race a click on a result item -- see
+    // updateRealmSearchResults()'s mousedown comment below.
+    input.addEventListener("blur", () => { setTimeout(() => hideRealmSearchResults(accountId), 150); });
+  });
+}
 
-  const atAccountCap = currentAccounts.length >= 10;
-  $("add-account-btn").disabled = atAccountCap;
-  $("new-account-label").disabled = atAccountCap;
-  $("add-account-cap-note").style.display = atAccountCap ? "block" : "none";
+function hideRealmSearchResults(accountId) {
+  const resultsEl = document.querySelector(`[data-realm-results="${accountId}"]`);
+  if (resultsEl) resultsEl.style.display = "none";
+}
+
+function updateRealmSearchResults(accountId) {
+  const input = document.querySelector(`[data-realm-search="${accountId}"]`);
+  const resultsEl = document.querySelector(`[data-realm-results="${accountId}"]`);
+  if (!input || !resultsEl) return;
+  const acct = currentAccounts.find(a => a.id === accountId);
+  const excludeIds = new Set(acct ? acct.realms : []);
+  if (!input.value.trim()) { resultsEl.style.display = "none"; return; }
+  const matches = realmSearchMatches(input.value, excludeIds);
+  if (!matches.length) {
+    resultsEl.innerHTML = `<div class="realm-search-empty">No matching realm</div>`;
+    resultsEl.style.display = "block";
+    return;
+  }
+  resultsEl.innerHTML = matches.map(([id, name]) =>
+    `<div class="realm-search-item" data-pick-realm="${id}" data-account="${accountId}">${escapeHtml(name)}</div>`
+  ).join("");
+  resultsEl.style.display = "block";
+  resultsEl.querySelectorAll("[data-pick-realm]").forEach(item => {
+    // mousedown, not click -- fires (and completes synchronously) before
+    // the search input's own blur handler, so the pick always registers
+    // before hideRealmSearchResults() could race the dropdown closed.
+    item.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      addRealm(Number(item.dataset.account), Number(item.dataset.pickRealm));
+    });
+  });
+}
+
+function pickTopRealmMatch(accountId) {
+  const input = document.querySelector(`[data-realm-search="${accountId}"]`);
+  if (!input) return;
+  const acct = currentAccounts.find(a => a.id === accountId);
+  const excludeIds = new Set(acct ? acct.realms : []);
+  const matches = realmSearchMatches(input.value, excludeIds);
+  if (matches.length) addRealm(accountId, matches[0][0]);
 }
 
 async function addAccount() {
   const err = $("wow-accounts-error");
   err.textContent = "";
-  const input = $("new-account-label");
-  const label = input.value.trim();
-  if (!label) { err.textContent = "Account label can't be empty."; return; }
+  // Numbered by default (2026-08-02, human request -- WoW accounts are
+  // always 1-8 per Battle.net account, no need to type a name to get
+  // started) -- still renameable afterward via the card's own input.
+  const label = `Account ${currentAccounts.length + 1}`;
   const r = await fetch("/api/wow-accounts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -384,7 +514,6 @@ async function addAccount() {
     err.textContent = body.detail || "Couldn't add that account.";
     return;
   }
-  input.value = "";
   await refreshWowAccounts();
 }
 
@@ -393,7 +522,7 @@ async function renameAccount(accountId) {
   err.textContent = "";
   const input = document.querySelector(`[data-rename-input="${accountId}"]`);
   const label = input.value.trim();
-  if (!label) { err.textContent = "Account label can't be empty."; return; }
+  if (!label) { err.textContent = "Account name can't be empty."; return; }
   const r = await fetch(`/api/wow-accounts/${accountId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -419,12 +548,9 @@ async function deleteAccount(accountId) {
   await refreshWowAccounts();
 }
 
-async function addRealm(accountId) {
+async function addRealm(accountId, realmId) {
   const err = $("wow-accounts-error");
   err.textContent = "";
-  const select = document.querySelector(`[data-account-select="${accountId}"]`);
-  const realmId = Number(select.value);
-  if (!realmId) { err.textContent = "Pick a realm first."; return; }
   const r = await fetch(`/api/wow-accounts/${accountId}/realms`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -461,7 +587,7 @@ async function removeRealm(accountId, realmId) {
   $("status-badge").innerHTML = badge(data.subscription_status, data.is_superuser);
 
   if (data.subscription_current_period_end && !data.is_superuser) {
-    $("period-row").style.display = "flex";
+    $("period-end-wrap").style.display = "inline";
     $("period-end").textContent = new Date(data.subscription_current_period_end).toLocaleDateString();
   }
 
@@ -469,25 +595,27 @@ async function removeRealm(accountId, realmId) {
   if (data.is_superuser) {
     actions.innerHTML = "";
   } else if (data.subscription_status === "active" || data.has_stripe_customer) {
-    actions.innerHTML = `<button id="manage">Manage subscription (cancel, payment method, invoices)</button>`;
+    actions.innerHTML = `<button id="manage">Manage subscription</button>`;
     $("manage").addEventListener("click", startPortal);
   } else {
     actions.innerHTML = `<a class="btn" href="/subscribe">Subscribe</a>`;
   }
 
-  // WoW Accounts card -- gated client-side (mirrors the actions div logic
-  // just above) since the server 402s anyway; no reason to show controls
-  // that will always fail for a non-subscribed account.
-  $("add-account-btn").addEventListener("click", addAccount);
+  // WoW Accounts: gated client-side (mirrors the actions div logic just
+  // above) since the server 402s anyway. Loading state shown from the
+  // moment we know the account is subscribed until both fetches resolve
+  // (2026-08-02, human request: "wait on displaying a user's account,
+  // until the data is actually loaded") -- never flashes an empty grid or
+  // the add-tile before real data is in.
   const subscribed = data.subscription_status === "active" || data.is_superuser;
   if (subscribed) {
-    await loadEuRealms();
-    await refreshWowAccounts();
+    $("wow-accounts-loading").style.display = "grid";
+    const results = await Promise.all([loadEuRealms(), loadWowAccounts()]);
+    currentAccounts = results[1];
+    renderWowAccounts();
   } else {
     $("wow-accounts-upsell").style.display = "block";
     $("wow-accounts-upsell").innerHTML = `Subscribe to register WoW accounts and realms. <a href="/subscribe">See plans &rarr;</a>`;
-    $("wow-accounts-list").style.display = "none";
-    $("add-account-row").style.display = "none";
   }
 })();
 

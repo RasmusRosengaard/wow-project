@@ -109,10 +109,9 @@
   }
   /* Paired numeric inputs (min/max, etc.) side by side instead of stacked --
      added 2026-07-26 so the whole rail fits one viewport without scrolling. */
-  /* align-items: end -- a longer label (e.g. "Min sell price (g)") can wrap
-     to two lines while its row partner ("Max per item") stays on one; without
-     this the two inputs sit at different heights instead of sharing a
-     baseline. */
+  /* align-items: end -- a longer label can wrap to two lines while its row
+     partner stays on one; without this the two inputs sit at different
+     heights instead of sharing a baseline. */
   .filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; align-items: end; }
   .content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.9rem; }
 
@@ -261,10 +260,12 @@
     background: var(--q, transparent); border: 1px solid var(--hairline-strong);
     vertical-align: middle; flex-shrink: 0;
   }
-  /* Muted "sus item" icon (see dashboard.py's sus_item_suspect) --
-     deliberately not the alarm-red/amber palette, since this is an
-     informational item-identity note, not a caution. */
-  .sus-flag { color: #7c6a52; margin-left: 0.3rem; cursor: help; }
+  /* "Sus item" flag (see dashboard.py's sus_item_suspect) -- red/danger
+     palette (2026-08-02, human request: "redo the flagged icon to
+     something red danger"; previously a deliberately muted brown, on the
+     reasoning that this is an item-identity note rather than a caution --
+     superseded by direct human preference). */
+  .sus-flag { color: var(--alert); margin-left: 0.3rem; cursor: help; }
   /* Realm language tag (see dashboard.py's buy_realm_category) -- a quiet
      2-letter abbreviation, not a badge, since it's informational context
      about the realm, not a signal about the listing itself. */
@@ -375,10 +376,7 @@
       <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
       <label>Max buy (g) <input id="max_gold" type="number" step="1" min="0" placeholder="any"></label>
     </div>
-    <div class="filter-row">
-      <label>Min sell price (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
-      <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
-    </div>
+    <label>Min sell price (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
     <label title="EU region-wide TSM sale rate (added 2026-08-01) -- roughly what fraction of days this item sells at least once, region-wide, not specific to your sell realm. Items TSM has no data for (never tracked, or a cold cache) are excluded when this is set.">
       Min sale rate % <input id="min_sale_rate_pct" type="number" min="0" max="100" step="1" placeholder="any">
     </label>
@@ -755,22 +753,6 @@ function buildGroups(rows) {
     if (!map.has(key)) { map.set(key, []); order.push(key); }
     map.get(key).push(row);
   }
-  // "Max per item" (client-side now, see applyFilters callers) trims each
-  // group down to its best N listings rather than hiding the item entirely
-  // when it has more than N -- the item's best-discount listing should
-  // never disappear just because it has many duplicates; only the "expand
-  // to see the rest" list shrinks.
-  const maxPerItemRaw = $("max_per_item").value.trim();
-  const maxPerItemParsed = maxPerItemRaw ? Number(maxPerItemRaw) : NaN;
-  // Clamp anything that isn't a real positive cap to "no cap" (2026-07-31,
-  // real bug fix): the input's min="1"/step="1" are just spinner hints, not
-  // enforced against direct typing. Number("0") is falsy, so `if (maxPerItem)`
-  // below used to silently treat "0" the same as a blank field (no cap) --
-  // confusing, since a user typing 0 clearly meant *something*, not "any".
-  // Number("-5") is truthy and Array.slice(0, -5) means "drop the last 5",
-  // the opposite of a per-item cap -- a negative input silently inverted the
-  // filter instead of erroring or being ignored.
-  const maxPerItem = Number.isInteger(maxPerItemParsed) && maxPerItemParsed >= 1 ? maxPerItemParsed : null;
   // Within a group, "biggest snipe" always means highest discount% -- that's
   // fixed regardless of which column the overall table is currently sorted
   // by, since it's what makes one listing the group's best representative.
@@ -778,9 +760,8 @@ function buildGroups(rows) {
   // so a camped/troll sell price can tie dozens of rows at once) fall back
   // to cheapest buy price first, same as the top-level table sort.
   return order.map(key => {
-    let groupRows = map.get(key).slice()
+    const groupRows = map.get(key).slice()
       .sort((a, b) => (b.discount_pct - a.discount_pct) || tiebreak(a, b));
-    if (maxPerItem) groupRows = groupRows.slice(0, maxPerItem);
     return { key, rows: groupRows };
   });
 }
@@ -797,11 +778,11 @@ function applyFilters(rows) {
   const minGold = minGoldRaw ? Number(minGoldRaw) * 10000 : null;
   const maxGold = maxGoldRaw ? Number(maxGoldRaw) * 10000 : null;
   const minSellNow = minSellNowRaw ? Number(minSellNowRaw) * 10000 : null;
-  // .trim() ? ... : null, not `Number(x) || null` -- same "0 is a real,
-  // falsy-but-valid value" bug class max_per_item's own parsing was fixed
-  // for (2026-07-31, see applyFilters()'s other comments below): "0" here
-  // is a genuine filter (region_sale_rate must be >= 0, i.e. tracked at
-  // all -- excludes untracked items), not the same as leaving the field
+  // .trim() ? ... : null, not `Number(x) || null` -- "0 is a real,
+  // falsy-but-valid value" is a real bug class this rail has hit before
+  // (2026-07-31): "0" here is a genuine filter (region_sale_rate must be
+  // >= 0, i.e. tracked at all -- excludes untracked items), not the same
+  // as leaving the field
   // blank.
   const minSaleRate = minSaleRatePctRaw ? Number(minSaleRatePctRaw) / 100 : null;
   const uniqueOnly = $("unique_appearance").checked;
@@ -844,8 +825,8 @@ function applyFilters(rows) {
 
 // Only the param that actually changes *which* rows are candidates at the
 // SQL/join level -- sell realm. Every threshold that used to narrow the SQL
-// query (min_discount, min_gold/max_gold, min_sell_now, max_appearance_sources,
-// max_per_item) is deliberately NOT sent here anymore; the batch is fetched
+// query (min_discount, min_gold/max_gold, min_sell_now, max_appearance_sources)
+// is deliberately NOT sent here anymore; the batch is fetched
 // as loose as possible (see BATCH_TOP) and applyFilters() reproduces all of
 // them client-side instead. The item-id restriction (items=csv) was removed
 // 2026-07-27 (human request) -- see cacheKey()/renderFromCache() etc, which
@@ -1015,7 +996,7 @@ function buildRowHtml(row, idx, group, isSub) {
   // spot. This is about the item's *identity*, not its price, so it lives in
   // the item-cell next to the name.
   const susFlag = row.sus_item_suspect
-    ? `<span class="sus-flag" title="Sus item -- an ancient neck/ring/trinket item or a class-starter armor piece. Experimental, non-authoritative: can't rule out a genuinely valuable twink item.">&#8987;</span>`
+    ? `<span class="sus-flag" title="Sus item -- an ancient neck/ring/trinket item or a class-starter armor piece. Experimental, non-authoritative: can't rule out a genuinely valuable twink item.">&#9888;</span>`
     : "";
   const accountLabels = userRealmAccounts.get(row.buy_realm);
   const yourAccount = accountLabels && accountLabels.length ? accountLabels.join(", ") : "--";
@@ -1348,7 +1329,7 @@ $("sell").addEventListener("change", onSellRealmChange);
 // the user types/adjusts, not just on blur, matching the instant feel the
 // client-side sort already established.
 const LIVE_FILTER_IDS = ["min_discount_pct", "min_gold", "max_gold",
-                         "min_sell_now", "max_per_item", "min_sale_rate_pct"];
+                         "min_sell_now", "min_sale_rate_pct"];
 LIVE_FILTER_IDS.forEach(id => $(id).addEventListener("input", () => {
   hideTooltip();
   renderTable();

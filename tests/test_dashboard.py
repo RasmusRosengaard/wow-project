@@ -126,9 +126,11 @@ def reset_activity_tracker(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def stub_realm_info(monkeypatch):
-    """dashboard._realm_info() calls the live Blizzard API -- stub it and
-    reset the in-process cache so tests stay offline and deterministic."""
+    """dashboard._realm_info()/_connected_realm_members() both call the live
+    Blizzard API -- stub it and reset both in-process caches so tests stay
+    offline and deterministic."""
     monkeypatch.setattr(dashboard, "_realm_info_cache", {})
+    monkeypatch.setattr(dashboard, "_connected_realm_members_cache", {})
     monkeypatch.setattr(blizz, "connected_realm_realms",
                         lambda cr_id: [{"name": f"Realm {cr_id}", "slug": f"realm-{cr_id}", "category": "English"}])
 
@@ -982,6 +984,25 @@ def test_api_realms_eu_returns_full_list(tmp_path, monkeypatch):
     realms = r.json()["realms"]
     assert {"id": SELL_CR, "name": f"Realm {SELL_CR}", "slug": f"realm-{SELL_CR}"} in realms
     assert {"id": BUY_CR_A, "name": f"Realm {BUY_CR_A}", "slug": f"realm-{BUY_CR_A}"} in realms
+
+
+def test_api_realms_eu_fans_out_connected_realm_members(monkeypatch):
+    """A connected realm can bundle multiple named realms sharing one AH
+    (human request, 2026-08-02: "if choose realm that has connected [realms],
+    it auto adds them as well") -- every member name must be its own
+    searchable entry, all sharing the same connected-realm id, so a user can
+    find their realm by any of its names."""
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [SELL_CR])
+    monkeypatch.setattr(blizz, "connected_realm_realms", lambda cr_id: [
+        {"name": "Draenor", "slug": "draenor", "category": "English"},
+        {"name": "Blackhand", "slug": "blackhand", "category": "English"},
+    ])
+    r = client.get("/api/realms/eu")
+    assert r.status_code == 200
+    realms = r.json()["realms"]
+    assert {"id": SELL_CR, "name": "Draenor", "slug": "draenor"} in realms
+    assert {"id": SELL_CR, "name": "Blackhand", "slug": "blackhand"} in realms
+    assert len([r for r in realms if r["id"] == SELL_CR]) == 2
 
 
 def test_api_realms_eu_requires_subscription(monkeypatch):

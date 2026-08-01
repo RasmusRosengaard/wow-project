@@ -9,8 +9,9 @@ Mirrors forum.py's shape: own APIRouter, Depends(current_subscribed_user)
 itself, this is the first real consumer of that dependency), manual
 if/raise HTTPException validation, session.add/commit, a JSON serializer.
 
-Caps (MAX_ACCOUNTS_PER_USER=10, MAX_REALMS_PER_ACCOUNT=50, both human-
-specified) are enforced via an atomic INSERT...SELECT...WHERE rather than a
+Caps (MAX_ACCOUNTS_PER_USER=8 -- matches Blizzard's real per-Battle.net-
+account WoW account limit, human-specified 2026-08-02 -- MAX_REALMS_PER_ACCOUNT=50,
+also human-specified) are enforced via an atomic INSERT...SELECT...WHERE rather than a
 Python-side SELECT COUNT(*) then INSERT -- this app has two recorded TOCTOU
 bugs from exactly that pattern (dashboard._enforce_realm_lock's old
 read-then-write race, item_names.NameCache.save()'s lost-update race, both
@@ -39,7 +40,7 @@ from db import User, WowAccount, WowAccountRealm, get_async_session
 
 router = APIRouter(prefix="/api/wow-accounts", tags=["wow_accounts"])
 
-MAX_ACCOUNTS_PER_USER = 10
+MAX_ACCOUNTS_PER_USER = 8
 MAX_REALMS_PER_ACCOUNT = 50
 LABEL_MAX_LEN = 50  # matches dashboard.NICKNAME_MAX_LEN's precedent
 
@@ -69,7 +70,7 @@ async def _insert_account_atomic(owner_id: uuid.UUID, label: str, session: Async
     """One INSERT...SELECT...WHERE statement -- the count check and the
     write happen as a single atomic DB operation, not a separate `SELECT
     COUNT(*)` followed by a Python-side `if`, which would let two concurrent
-    callers both observe count == 9 before either commits (see module
+    callers both observe count == 7 before either commits (see module
     docstring). Returns True if the row was actually inserted, False if the
     cap was already reached. Caller is responsible for committing --
     exposed as its own function (not inlined in create_account()) so tests
