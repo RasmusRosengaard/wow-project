@@ -35,6 +35,13 @@ PET_QUALITY_COLORS = ["#9d9d9d", "#ffffff", "#1eff00", "#0070dd", "#a335ee", "#f
 # color would be fragile/unreadable; the tier name is the real identity).
 PET_QUALITY_NAMES = ["POOR", "COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY"]
 
+# Every top-level section of the cache dict -- shared by __init__'s defaults,
+# save()'s merge, and _pending's shape, so the three can't drift apart.
+CACHE_SECTIONS = (
+    "items", "pets", "item_icons", "pet_icons", "item_quality",
+    "item_level", "item_inventory_type", "item_class", "item_subclass",
+)
+
 
 def _fetch_item_details(item_id: int) -> dict | None:
     """name + quality + catalog level + inventory slot type + item class/
@@ -92,22 +99,52 @@ def _fetch_icon(path: str) -> str | None:
 
 class NameCache:
     """Load once, resolve names/icons on demand, save once (only if anything
-    new was actually fetched)."""
+    new was actually fetched).
+
+    Multiple independent NameCache() instances race on the same cache file
+    within a single process -- snipe_check._register_class_quota_maps() and
+    dashboard._build_rows() each make their own for a single /api/snipes
+    call, and collect_all._prewarm_item_base_levels() makes another on the
+    background collection loop, running concurrently with live requests.
+    save() therefore re-reads the file fresh and merges in only *this*
+    instance's own newly-resolved keys (tracked in self._pending) rather
+    than overwriting with its full in-memory snapshot -- a blind overwrite
+    silently discarded whatever a concurrent instance had just resolved and
+    saved in between this instance's load and save, which was a real,
+    live bug: an item's item_class/item_subclass (or base_level/
+    inventory_type) could resolve on one request and silently regress to
+    unresolved on the next, with no change in the underlying auction data.
+    Symptom was rows flickering in and out of small class_quotas buckets
+    (e.g. the free tier's 50-row recipe quota) and sus_item_suspect flipping
+    between fetches -- "items randomly jumping," traced 2026-08-01."""
 
     def __init__(self):
-        self._cache = json.loads(CACHE_PATH.read_text()) if CACHE_PATH.exists() \
-            else {"items": {}, "pets": {}}
+        try:
+            self._cache = json.loads(CACHE_PATH.read_text()) if CACHE_PATH.exists() \
+                else {"items": {}, "pets": {}}
+        except (json.JSONDecodeError, OSError):
+            # A concurrent writer's non-atomic save can be caught mid-write
+            # (see save()) -- a torn read used to propagate as an unhandled
+            # exception here, crashing whatever request constructed this
+            # instance. Treating it as an empty cache is safe: nothing is
+            # lost (save() re-reads and merges against the real file, not
+            # this fallback), it's just a cold start for this one instance.
+            self._cache = {"items": {}, "pets": {}}
         # older cache files predate icon/quality/level support -- backfill the
         # keys rather than bump a schema version, since this is a local,
         # gitignored cache
-        self._cache.setdefault("item_icons", {})
-        self._cache.setdefault("pet_icons", {})
-        self._cache.setdefault("item_quality", {})
-        self._cache.setdefault("item_level", {})
-        self._cache.setdefault("item_inventory_type", {})
-        self._cache.setdefault("item_class", {})
-        self._cache.setdefault("item_subclass", {})
+        for section in CACHE_SECTIONS:
+            self._cache.setdefault(section, {})
+        # Only what *this* instance resolves, merged into the real file at
+        # save() time instead of the full self._cache snapshot -- see the
+        # class docstring.
+        self._pending = {section: {} for section in CACHE_SECTIONS}
         self._dirty = False
+
+    def _set(self, section: str, key: str, value) -> None:
+        self._cache[section][key] = value
+        self._pending[section][key] = value
+        self._dirty = True
 
     def _is_complete(self, key: str) -> bool:
         return key in self._cache["items"] and key in self._cache["item_quality"] \
@@ -145,11 +182,11 @@ class NameCache:
     def _merge_details(self, item_id: int, details: dict) -> None:
         key = str(item_id)
         if details.get("name"):
-            self._cache["items"][key] = details["name"]
+            self._set("items", key, details["name"])
         if details.get("quality"):
-            self._cache["item_quality"][key] = details["quality"]
+            self._set("item_quality", key, details["quality"])
         if details.get("level") is not None:
-            self._cache["item_level"][key] = details["level"]
+            self._set("item_level", key, details["level"])
         # Unlike quality/level above, always record inventory_type/class/
         # subclass even when None -- most items genuinely have no
         # inventory_type (reagents, consumables, quest items aren't
@@ -158,10 +195,9 @@ class NameCache:
         # _ensure_item_details would refetch every single one of those items
         # on every call forever. item_class should realistically always be
         # present, but the same defensive handling costs nothing.
-        self._cache["item_inventory_type"][key] = details.get("inventory_type")
-        self._cache["item_class"][key] = details.get("item_class")
-        self._cache["item_subclass"][key] = details.get("item_subclass")
-        self._dirty = True
+        self._set("item_inventory_type", key, details.get("inventory_type"))
+        self._set("item_class", key, details.get("item_class"))
+        self._set("item_subclass", key, details.get("item_subclass"))
 
     def _ensure_item_details(self, item_id: int) -> None:
         """Fetch name+quality+level+inventory_type+class/subclass together and
@@ -250,8 +286,7 @@ class NameCache:
             for i, future in enumerate(as_completed(futures)):
                 url = future.result()
                 if url:
-                    self._cache["item_icons"][str(futures[future])] = url
-                    self._dirty = True
+                    self._set("item_icons", str(futures[future]), url)
                 if i % 50 == 49:
                     self.save()
         self.save()
@@ -263,8 +298,7 @@ class NameCache:
                 return self._cache["pets"][key]
             name = _fetch_pet_name(pet_species_id)
             if name:
-                self._cache["pets"][key] = name
-                self._dirty = True
+                self._set("pets", key, name)
                 return name
             return f"pet species {pet_species_id}"
 
@@ -341,8 +375,7 @@ class NameCache:
                 return self._cache["pet_icons"][key]
             url = _fetch_icon(f"/data/wow/media/pet/{pet_species_id}")
             if url:
-                self._cache["pet_icons"][key] = url
-                self._dirty = True
+                self._set("pet_icons", key, url)
             return url
 
         key = str(item_id)
@@ -350,13 +383,33 @@ class NameCache:
             return self._cache["item_icons"][key]
         url = _fetch_icon(f"/data/wow/media/item/{item_id}")
         if url:
-            self._cache["item_icons"][key] = url
-            self._dirty = True
+            self._set("item_icons", key, url)
         return url
 
     def save(self) -> None:
+        """Re-reads the cache file fresh and merges in only this instance's
+        own newly-resolved keys (self._pending), rather than overwriting the
+        file with this instance's full in-memory snapshot -- see the class
+        docstring for why a blind overwrite is a real lost-update bug when
+        multiple NameCache instances are resolving concurrently (which
+        happens on every /api/snipes request, plus the background prewarm
+        loop). A concurrent writer's own non-atomic write can be caught
+        mid-write here too; treated the same as a missing file (this
+        instance's pending keys are still real and get written -- nothing
+        of this instance's own work is lost, only a torn on-disk read is
+        discarded in favor of pending-only)."""
         if not self._dirty:
             return
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_PATH.write_text(json.dumps(self._cache))
+        try:
+            current = json.loads(CACHE_PATH.read_text()) if CACHE_PATH.exists() \
+                else {"items": {}, "pets": {}}
+        except (json.JSONDecodeError, OSError):
+            current = {"items": {}, "pets": {}}
+        for section in CACHE_SECTIONS:
+            current.setdefault(section, {})
+            current[section].update(self._pending[section])
+        CACHE_PATH.write_text(json.dumps(current))
+        self._cache = current
+        self._pending = {section: {} for section in CACHE_SECTIONS}
         self._dirty = False

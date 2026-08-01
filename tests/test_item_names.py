@@ -336,3 +336,61 @@ def test_save_only_writes_when_dirty(cache_path, monkeypatch):
     assert cache_path.exists()
     saved = json.loads(cache_path.read_text())
     assert saved["items"]["5507"] == "Ornate Spyglass"
+
+
+def test_save_does_not_clobber_a_concurrent_instances_write(cache_path, monkeypatch):
+    """The real bug traced 2026-08-01 ("items randomly jumping" on the
+    dashboard, worst with a small class_quotas bucket like recipes, or with
+    sus_item_suspect flickering under "hide flagged"): multiple NameCache()
+    instances are constructed within a single /api/snipes call
+    (snipe_check._register_class_quota_maps() and dashboard._build_rows()
+    each make their own) plus another on collect_all.py's background
+    prewarm loop, all racing on the same file. Two instances loaded before
+    either saved -- item A resolves and saves first; item B (a different
+    item, resolved by the other instance) must not be lost when the first
+    instance saves again afterward, even though its own in-memory snapshot
+    never saw B."""
+    stub_details(monkeypatch, item_class=2, item_subclass=7)
+
+    nc_first = NameCache()   # loads the (still empty) file
+    nc_second = NameCache()  # loads the same empty file, independently
+
+    nc_first.item_class(101)   # resolves item 101 (in-memory only so far)
+    nc_first.save()             # ... and saves it
+    nc_second.item_class(102)  # resolves item 102 on the *other* instance
+    nc_second.save()            # file now has both 101 and 102
+
+    # nc_first resolves a third item and saves again. A blind overwrite
+    # would write only {101, 103} -- silently dropping 102, which nc_first
+    # never loaded into its own in-memory _cache.
+    nc_first.item_class(103)
+    nc_first.save()
+
+    saved = json.loads(cache_path.read_text())
+    assert set(saved["item_class"]) == {"101", "102", "103"}
+
+    # A fresh instance (e.g. the next /api/snipes call) must see all three --
+    # this is exactly has_class_info()'s contract that
+    # snipe_check._register_class_quota_maps() depends on for bucket
+    # assignment to stay stable across requests.
+    nc_fresh = NameCache()
+    assert nc_fresh.has_class_info(101)
+    assert nc_fresh.has_class_info(102)
+    assert nc_fresh.has_class_info(103)
+
+
+def test_save_tolerates_a_torn_read_of_the_cache_file(cache_path, monkeypatch):
+    """A concurrent writer's non-atomic write (no temp-file+rename, see the
+    class docstring) can leave the file mid-write when another instance's
+    save() re-reads it -- this used to propagate as an unhandled
+    json.JSONDecodeError, crashing the request. It must not lose *this*
+    instance's own pending work."""
+    stub_details(monkeypatch, item_class=2, item_subclass=7)
+    cache_path.write_text('{"items": {"5507": "Ornate Sp')  # truncated/corrupt
+
+    nc = NameCache()
+    nc.item_class(101)
+    nc.save()  # re-reads the still-corrupt file
+
+    saved = json.loads(cache_path.read_text())
+    assert saved["item_class"]["101"] == 2
