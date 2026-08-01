@@ -416,7 +416,7 @@ function renderWowAccounts() {
   const totalRealms = new Set(realmSearchEntries.map(realm => realm.id)).size;
   const coverageEl = $("realm-coverage");
   if (totalRealms > 0) {
-    coverageEl.textContent = `Covering ${coveredIds.size} of ${totalRealms} EU realms.`;
+    coverageEl.textContent = `Covering ${coveredIds.size} of ${totalRealms} connected EU realms.`;
     coverageEl.style.display = "block";
   } else {
     coverageEl.style.display = "none";
