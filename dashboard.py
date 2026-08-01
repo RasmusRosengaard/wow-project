@@ -471,24 +471,39 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
     item_ids = snipe_check.parse_items(items, None)
 
     def _run_query() -> list:
+        # con.close() in `finally` (added 2026-08-01, human report of rising
+        # memory usage): this used to leave the connection to Python's own
+        # GC to collect whenever it got around to it -- fine for the
+        # DuckDB-side Python wrapper object itself, but class_quotas (always
+        # active, every tier, every call -- see find_snipes()'s docstring)
+        # materializes the *entire* unfiltered region-wide candidate set
+        # into a TEMP TABLE with no row-count cap (confirmed live: 450,568
+        # rows on Draenor alone), and DuckDB's own native (non-Python-heap)
+        # buffers for that aren't guaranteed to be released back to the OS
+        # until the connection is explicitly closed, not just dereferenced.
+        # Explicit close() makes DuckDB free that memory deterministically
+        # on every request instead of hoping GC timing lines up.
         con = analyze.connect(sell)
-        return snipe_check.find_snipes(con, sell, items=item_ids, min_discount=min_discount,
-                                       min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
-                                       max_appearance_sources=max_appearance_sources,
-                                       max_per_item=max_per_item,
-                                       class_quotas=_class_quotas(user),
-                                       # Junk/decoy pre-filter (2026-08-01, human
-                                       # request), always on for the live API --
-                                       # see snipe_check.MIN_VALUE_FLOOR_G's
-                                       # comment. Frees the tier's top-N/class-
-                                       # quota budget from rows that are under
-                                       # 500g by both sell price and EU median
-                                       # at once, not user-configurable (the
-                                       # existing min_sell_now query param is
-                                       # the user-adjustable floor, this is a
-                                       # baseline beneath it).
-                                       min_value_floor_g=snipe_check.MIN_VALUE_FLOOR_G,
-                                       top=top, sort=sort)
+        try:
+            return snipe_check.find_snipes(con, sell, items=item_ids, min_discount=min_discount,
+                                           min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
+                                           max_appearance_sources=max_appearance_sources,
+                                           max_per_item=max_per_item,
+                                           class_quotas=_class_quotas(user),
+                                           # Junk/decoy pre-filter (2026-08-01, human
+                                           # request), always on for the live API --
+                                           # see snipe_check.MIN_VALUE_FLOOR_G's
+                                           # comment. Frees the tier's top-N/class-
+                                           # quota budget from rows that are under
+                                           # 500g by both sell price and EU median
+                                           # at once, not user-configurable (the
+                                           # existing min_sell_now query param is
+                                           # the user-adjustable floor, this is a
+                                           # baseline beneath it).
+                                           min_value_floor_g=snipe_check.MIN_VALUE_FLOOR_G,
+                                           top=top, sort=sort)
+        finally:
+            con.close()
 
     # find_snipes() can still make blocking Blizzard API calls mid-query --
     # when max_appearance_sources is set, _filter_by_appearance() calls

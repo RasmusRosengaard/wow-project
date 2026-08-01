@@ -92,9 +92,48 @@ _sessionmaker = None
 
 
 def engine():
+    """Pool sizing tuned 2026-08-01 (real incident: QueuePool exhausted,
+    login failing, with a single account doing light browsing -- see
+    HISTORY.md). Root cause: every route gated by auth.current_active_user
+    checks out a connection for the *entire* request via FastAPI's
+    Depends()-generator lifetime, including dashboard.py's api_snipes()
+    route, whose actual work (a DuckDB query, documented elsewhere as
+    30-175s cold, plus NameCache resolution) has nothing to do with
+    Postgres at all -- the connection just sits checked out, unused, for
+    the whole duration. The bare SQLAlchemy defaults this used to run on
+    (pool_size=5, max_overflow=10 -- 15 total, never explicitly set) meant
+    a handful of overlapping slow requests from even one browser tab (an
+    auto-refresh firing while a previous slow query is still in flight, a
+    realm switch) could exhaust it. Raised to a much larger ceiling
+    (pool_size=20, max_overflow=40 -- 60 total) for headroom Postgres
+    itself can comfortably serve; this doesn't fix the underlying "why is a
+    DB connection held for 30-175s of unrelated work" design issue (a
+    separate, real follow-up -- restructuring that safely requires
+    reworking how the route resolves its user, since FastAPI-Users'
+    current_active_user ties a connection to the whole request by design,
+    not something to rush alongside pool tuning), but makes the pool large
+    enough that realistic concurrent slow-query load doesn't hit the wall.
+    pool_pre_ping=True discards a connection that's gone stale (e.g. an
+    idle timeout on the Postgres side) and transparently reconnects instead
+    of surfacing a broken-connection error to a request. pool_timeout=30
+    (SQLAlchemy's own default, set explicitly here for clarity) is how long
+    a request waits for a free connection before raising -- unchanged, but
+    with 4x the pool capacity a real wait is now far less likely to begin
+    with. Only applies to the real Postgres engine -- tests never call this
+    function at all (dashboard.app.dependency_overrides swaps
+    get_async_session for a throwaway per-test SQLite engine/session
+    entirely, see test_dashboard.py's `client` fixture), so these
+    Postgres-specific pool kwargs never reach a SQLite connection (which
+    uses NullPool by default and would reject pool_size/max_overflow)."""
     global _engine
     if _engine is None:
-        _engine = create_async_engine(_database_url())
+        _engine = create_async_engine(
+            _database_url(),
+            pool_size=20,
+            max_overflow=40,
+            pool_timeout=30,
+            pool_pre_ping=True,
+        )
     return _engine
 
 

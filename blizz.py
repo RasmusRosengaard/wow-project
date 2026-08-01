@@ -4,12 +4,81 @@ Free developer client: https://develop.battle.net -> Create Client (see README).
 """
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
 import requests
 
 _ROOT = Path(__file__).resolve().parent
+
+
+class _TokenBucket:
+    """Thread-safe token bucket -- shared, process-wide rate limiting for
+    every Blizzard API call, added 2026-08-01 after a real incident (see
+    HISTORY.md): an ad-hoc diagnostic script called
+    item_names.NameCache.ensure_many() with no coordination with anything
+    else in the process, firing a burst of thousands of concurrent requests
+    that starved collect_all.py's background collector of its share of the
+    budget -- confirmed live via production logs (`HTTP 429 from auctions
+    endpoint`, several realms' collection cycles failing outright) -- which
+    cascaded into slower, longer-held requests elsewhere in the app.
+
+    Before this, api_get() had no rate awareness at all: fetch_snapshot.py
+    has its own local retry/backoff for 429s on the one endpoint it calls,
+    but scan_region.py/item_names.py/appearance.py all call api_get()
+    directly with none, and none of these independent callers had any
+    shared notion of "how much of the budget is already spent right now by
+    something else in this same process." A burst from any one of them
+    (background collection, on-demand NameCache resolution for a
+    never-before-seen realm, a future ad-hoc script) could starve the
+    others -- not a hypothetical, this is exactly what happened.
+
+    This is deliberately a rate limiter, not just a concurrency cap: a
+    concurrency cap alone (e.g. a semaphore on in-flight requests) doesn't
+    bound throughput if individual requests are fast -- a handful of
+    concurrent slots could still sustain well over 100 req/s if each
+    request completes in tens of milliseconds. A token bucket directly
+    enforces "no more than N requests per second," which is what Blizzard's
+    limit actually is.
+
+    acquire() blocks (sleeping, not busy-waiting) until a token is
+    available -- callers don't need their own throttling logic, they just
+    get slowed down transparently and safely instead of hitting 429s."""
+
+    def __init__(self, capacity: float, refill_per_second: float):
+        self._capacity = capacity
+        self._tokens = capacity
+        self._refill_per_second = refill_per_second
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(self._capacity,
+                                   self._tokens + (now - self._last) * self._refill_per_second)
+                self._last = now
+                if self._tokens >= 1:
+                    self._tokens -= 1
+                    return
+                wait = (1 - self._tokens) / self._refill_per_second
+            time.sleep(wait)
+
+
+# Two independent buckets, both consulted on every call -- see "Blizzard API
+# facts" in CLAUDE.md: 100 req/s *and* 36,000 req/h (which is only ~10 req/s
+# sustained -- the real binding constraint over any window longer than a few
+# seconds, not the per-second figure). Capacities set a bit under Blizzard's
+# published limits (90/34,000, not 100/36,000) as headroom -- polite margin,
+# not an invitation to run right up against the wall. The per-second bucket
+# smooths bursts to a safe rate; the hourly bucket is what actually prevents
+# a sustained burst (e.g. resolving thousands of never-before-cached items)
+# from consuming the whole hour's budget in a couple of minutes the way it
+# did in the incident this was added for.
+_burst_limiter = _TokenBucket(capacity=90, refill_per_second=90)
+_hourly_limiter = _TokenBucket(capacity=34000, refill_per_second=34000 / 3600)
 
 
 def _load_env() -> None:
@@ -51,7 +120,18 @@ def get_token() -> str:
 
 def api_get(path: str, namespace: str, params: dict | None = None,
             headers: dict | None = None) -> requests.Response:
-    """GET https://{region}.api.blizzard.com{path} with namespace '{namespace}-{region}'."""
+    """GET https://{region}.api.blizzard.com{path} with namespace '{namespace}-{region}'.
+
+    Rate-limited via _burst_limiter/_hourly_limiter (added 2026-08-01, see
+    _TokenBucket's docstring) -- every caller in the process (the
+    collector, the region scanner, NameCache, AppearanceCache, any manual
+    script) shares the same two buckets, since this is the one function
+    all of them already route every real Blizzard call through. A caller
+    never needs to reason about the shared budget itself; acquire() just
+    transparently slows it down when the budget's tight instead of the
+    request going out and coming back a 429."""
+    _burst_limiter.acquire()
+    _hourly_limiter.acquire()
     url = f"https://{REGION}.api.blizzard.com{path}"
     p = {"namespace": f"{namespace}-{REGION}", "locale": "en_GB"}
     if params:
