@@ -18,6 +18,8 @@ import datetime
 import json
 import logging
 import os
+import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -48,7 +50,21 @@ DATA = ROOT / "data"
 # collect_all.py (population summary, per-cycle stats) are silently dropped
 # (Python's root logger defaults to WARNING), and Railway's `railway logs`
 # only captures stdout/stderr, so nothing else would ever surface them.
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# stream=sys.stdout explicitly (2026-08-01, real bug fix -- an earlier same-
+# day fix to fetch_snapshot.py's/scan_region.py's own setup_logging() never
+# actually took effect in production: those functions are only called when
+# those files run standalone via their own __main__ block, not when
+# collect_all.py calls fetch_snapshot.fetch_once()/scan_region.sweep() as
+# library functions from inside this process's background loop -- in that
+# path, the "collector"/"scanner" loggers have no handlers of their own, so
+# messages propagate to *this* root-logger handler instead, which is the
+# one that was actually still defaulting to stderr. basicConfig() with no
+# stream argument defaults to sys.stderr, same root cause as the other fix
+# -- Railway tags anything on stderr as "severity":"error" regardless of
+# the real Python log level, confirmed still happening live after the
+# scan_region.py/fetch_snapshot.py fix alone).
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                    stream=sys.stdout)
 log = logging.getLogger("dashboard")
 
 # Server-side collection (Stage 4) -- off by default so a local `python
@@ -131,6 +147,52 @@ async def no_cache_html(request, call_next):
     if response.headers.get("content-type", "").startswith("text/html"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+# Lightweight in-process activity tracker (added 2026-08-01, human request:
+# "who's on the site right now" visible via GET /api/admin/active-users
+# below, rather than only via ad-hoc `railway logs --http` queries). Maps
+# client IP -> last-seen unix timestamp. Deliberately just an in-memory
+# dict, not a DB table or persisted anywhere -- resets on redeploy, same
+# not-critical-infrastructure precedent as `_realm_info_cache` above. This
+# is an observability convenience for a low-traffic period, not a real
+# analytics feature; revisit with something heavier if/when traffic
+# actually grows past what an ad-hoc log check can answer.
+_recent_activity: dict[str, float] = {}
+ACTIVE_WINDOW_SECONDS = 15 * 60  # "currently on the site" = seen in the last 15 min
+# Cheap, opportunistic pruning trigger -- avoids the dict growing unbounded
+# over a long-running process without needing a separate background task.
+_ACTIVITY_PRUNE_THRESHOLD = 1000
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort real client IP. Railway's edge proxy connects to this
+    app over an internal address -- request.client.host would show that
+    proxy hop, not the real visitor (confirmed live: matches the
+    fd12:.../upstreamAddress format seen in `railway logs --http` output,
+    not a real public IP) -- so X-Forwarded-For (set by the proxy;
+    confirmed live to match that same command's own `srcIp` field) is
+    checked first. A chain (multiple proxies) puts the original client
+    first, so only the first entry is used."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def track_activity(request: Request, call_next):
+    """Records a hit against /api/* routes only -- static asset/page loads
+    aren't a meaningful "is someone using the app" signal the way an API
+    call is."""
+    if request.url.path.startswith("/api/"):
+        now = time.time()
+        _recent_activity[_client_ip(request)] = now
+        if len(_recent_activity) > _ACTIVITY_PRUNE_THRESHOLD:
+            cutoff = now - ACTIVE_WINDOW_SECONDS
+            for ip in [k for k, v in _recent_activity.items() if v < cutoff]:
+                del _recent_activity[ip]
+    return await call_next(request)
 
 
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
@@ -294,6 +356,31 @@ async def api_me(user: User = Depends(current_active_user)) -> dict:
         # until the user has set one. snipeboard.html prompts for it inline
         # the first time this account tries to post.
         "nickname": user.nickname,
+    }
+
+
+@app.get("/api/admin/active-users")
+async def api_admin_active_users(user: User = Depends(current_active_user)) -> dict:
+    """Superuser-only (2026-08-01, human request): who's currently on the
+    site, by distinct client IP that's hit any /api/* route in the last
+    ACTIVE_WINDOW_SECONDS -- see track_activity()'s own comment above for
+    why this is IP-based (cheap, no per-request DB lookup) rather than
+    resolved to a real account identity. 403, not 401, for a logged-in
+    non-superuser -- current_active_user already proved they're logged in;
+    this is a stricter check on top of that, same convention
+    has_active_subscription's 402 elsewhere in this file follows."""
+    if not user.is_superuser:
+        raise HTTPException(403)
+    now = time.time()
+    cutoff = now - ACTIVE_WINDOW_SECONDS
+    active = {ip: last_seen for ip, last_seen in _recent_activity.items() if last_seen >= cutoff}
+    return {
+        "count": len(active),
+        "window_seconds": ACTIVE_WINDOW_SECONDS,
+        "ips": [
+            {"ip": ip, "last_seen_seconds_ago": round(now - last_seen)}
+            for ip, last_seen in sorted(active.items(), key=lambda kv: -kv[1])
+        ],
     }
 
 

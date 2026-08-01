@@ -4,6 +4,7 @@ fixture style -- real duckdb/pyarrow, no mocking, only the HTTP/JSON
 boundary is new relative to the existing test conventions."""
 import asyncio
 import sys
+import time
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -110,6 +111,15 @@ def bypass_get_async_session(tmp_path, monkeypatch):
     yield
     dashboard.app.dependency_overrides.pop(get_async_session, None)
     asyncio.run(engine.dispose())
+
+
+@pytest.fixture(autouse=True)
+def reset_activity_tracker(monkeypatch):
+    """dashboard._recent_activity is a module-level in-process dict (see
+    track_activity()'s comment) -- reset it per test so one test's TestClient
+    requests (which all share the same client host/IP) can't leak into
+    another's assertions."""
+    monkeypatch.setattr(dashboard, "_recent_activity", {})
 
 
 @pytest.fixture(autouse=True)
@@ -336,6 +346,61 @@ def test_snipe_cap_by_tier():
     # Superuser wins even with no/expired subscription -- matches
     # auth.has_active_subscription's existing "is_superuser OR active" logic.
     assert dashboard._snipe_cap(_user(is_superuser=True, subscription_status=None)) == 10000
+
+
+def test_track_activity_records_api_hits_by_ip(monkeypatch):
+    """track_activity() (2026-08-01, human request) should record a hit for
+    any /api/* path, keyed by X-Forwarded-For's first entry (the real
+    client, not Railway's internal proxy hop -- see _client_ip()'s own
+    comment)."""
+    client.get("/api/me", headers={"X-Forwarded-For": "203.0.113.5, 10.0.0.1"})
+    assert "203.0.113.5" in dashboard._recent_activity
+
+
+def test_track_activity_ignores_non_api_paths():
+    client.get("/pricing", headers={"X-Forwarded-For": "203.0.113.9"})
+    assert "203.0.113.9" not in dashboard._recent_activity
+
+
+def test_api_admin_active_users_requires_superuser():
+    """FAKE_USER (bypass_auth's default) is subscribed but not a
+    superuser -- must still be turned away, same as a logged-out request
+    would be turned away earlier by current_active_user itself."""
+    r = client.get("/api/admin/active-users")
+    assert r.status_code == 403
+
+
+def test_api_admin_active_users_shows_recent_ip():
+    dashboard.app.dependency_overrides[auth.current_active_user] = \
+        lambda: _user(is_superuser=True)
+    try:
+        client.get("/api/me", headers={"X-Forwarded-For": "203.0.113.5"})
+        r = client.get("/api/admin/active-users")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] >= 1
+        assert any(entry["ip"] == "203.0.113.5" for entry in body["ips"])
+        assert body["window_seconds"] == dashboard.ACTIVE_WINDOW_SECONDS
+    finally:
+        dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
+
+
+def test_api_admin_active_users_excludes_stale_entries(monkeypatch):
+    """An IP last seen outside ACTIVE_WINDOW_SECONDS must not show up as
+    "currently on the site" -- note the request this test itself makes to
+    /api/admin/active-users is *also* /api/* traffic, so the test client's
+    own IP legitimately shows up fresh; only the pre-seeded stale entry is
+    under test here."""
+    dashboard.app.dependency_overrides[auth.current_active_user] = \
+        lambda: _user(is_superuser=True)
+    try:
+        stale_time = time.time() - dashboard.ACTIVE_WINDOW_SECONDS - 60
+        monkeypatch.setattr(dashboard, "_recent_activity", {"203.0.113.99": stale_time})
+        r = client.get("/api/admin/active-users")
+        assert r.status_code == 200
+        assert not any(entry["ip"] == "203.0.113.99" for entry in r.json()["ips"])
+    finally:
+        dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
 
 
 def test_class_quotas_by_tier_sum_to_the_tier_cap():
