@@ -7,14 +7,28 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-08-02 — new feature: multi-WoW-account registration.
-A subscribed user can register their real WoW accounts and which EU
-realms each has a character on (`profile.html`, `wow_accounts.py`); the
-dashboard gets a new "Your account" column showing which account to log
-into for a given snipe. Also fixed a real horizontal-scrollbar regression
-the new column introduced (header text now wraps instead of forcing the
-table wider than its container). Full trace in `HISTORY.md`'s "Multi-
-WoW-account registration" entry.
+Last updated: 2026-08-02 — the WoW Accounts profile page was rebuilt from
+scratch (same day it first shipped, after rapid human follow-up):
+numbered auto-suggested accounts (cap lowered 10→8, matching Blizzard's
+real per-account limit), a side-by-side card grid instead of a stacked
+list, a searchable realm typeahead replacing the old dropdown, a loading
+skeleton before any data renders, and realm names shown in full everywhere
+(no truncation). `/api/realms/eu` now fans out one entry per connected-
+realm member name (not one per connected-realm id) so a user can find
+their realm by any of its names — confirmed live that Zul'jin and Sanguino
+share one connected realm. Also removed the dashboard's "Max per item"
+filter (superseded) and restyled the sus-item flag from a muted brown
+hourglass to a red warning triangle. Full trace in `HISTORY.md`'s "Profile
+page redesign + connected-realm fan-out" entry.
+
+2026-08-02 — earlier the same day: new feature, multi-WoW-account
+registration. A subscribed user can register their real WoW accounts and
+which EU realms each has a character on (`profile.html`, `wow_accounts.py`);
+the dashboard gets a new "Your account" column showing which account to
+log into for a given snipe. Also fixed a real horizontal-scrollbar
+regression the new column introduced (header text now wraps instead of
+forcing the table wider than its container). Full trace in `HISTORY.md`'s
+"Multi-WoW-account registration" entry.
 
 2026-08-01 — the biggest incident this project has had:
 a Postgres connection-pool exhaustion (broke login) plus a Blizzard
@@ -59,12 +73,13 @@ several entries around it, all dated 2026-08-01.
   bonus/ilvl differences no longer gate a match at all (changed 2026-07-26,
   see `CLAUDE.md`'s "What this project is" matching-model note); the
   buy-side listing's actual variant is still shown per row for display.
-- Client-side filter rail (discount%, gold range, sell-now, max-per-item,
+- Client-side filter rail (discount%, gold range, sell-now,
   min sale rate %, unique-transmog, 9-way item-class, 6-way rarity), instant
   table sorting/grouping, an `localStorage` batch cache so a page reload
   paints instantly. Manual Refresh button removed (2026-07-25) —
   `checkForUpdates()` already covers "is there new data" via the 60s
-  auto-refresh timer.
+  auto-refresh timer. ("Max per item" removed 2026-08-02, human request —
+  superseded.)
 - **TSM region-wide sale-rate filter** (`tsm.py`, added 2026-08-01, human
   request — "a filter, where the user can set a minimum sellrate"):
   `collect_all.py`'s background loop refreshes a cache of TSM's public
@@ -84,11 +99,14 @@ several entries around it, all dated 2026-08-01.
   indefinitely. A superuser-only `GET /api/admin/active-users` shows who's
   currently on the site.
 - **Multi-WoW-account registration** (added 2026-08-02, human request,
-  subscribers only): register real WoW-account labels and which EU
-  realms each has a character on (`/profile`, `wow_accounts.py`, capped
-  at 10 accounts/50 realms each, human-specified). The dashboard's new
-  "Your account" column shows which account to log into for a snipe,
-  computed entirely client-side (never sent to the server as part of the
+  subscribers only; UI rebuilt from scratch the same day, see "Last
+  updated" above): register WoW accounts (numbered by default, still
+  renameable) and which EU realms each has a character on, searchable by
+  any of a connected realm's member names (`/profile`, `wow_accounts.py`,
+  capped at 8 accounts/50 realms each, human-specified — 8 matches
+  Blizzard's real per-account limit). The dashboard's new "Your account"
+  column shows which account to log into for a snipe, computed entirely
+  client-side (never sent to the server as part of the
   shared per-realm row cache). See `CLAUDE.md`'s `wow_accounts.py`/
   `db.py`/`static/profile.html`/`static/dashboard.html` rows.
 

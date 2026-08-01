@@ -1807,3 +1807,112 @@ fires `/api/wow-accounts` at all and sees a plain upsell message instead
 of the management UI on `/profile`.
 
 `pytest -q` and `env -u DATABASE_URL pytest -q`: 371 passing.
+
+## Profile page redesign + connected-realm fan-out (2026-08-02, same day)
+
+A rapid sequence of human follow-ups after the WoW Accounts feature above
+shipped, each addressed in order:
+
+1. "This whole adding wow accounts, needs a big UI/make sense update. Like
+   its bad to list them, also the list should be searchable with a clear
+   searchbar? Numbers will always be 1,2,3,4,5,6,7, or 8. So no need to
+   'example main' etc." Clarified via an AskUserQuestion round: accounts
+   should be numbered by default (auto-suggested "Account N", still
+   renameable) rather than freely named from the start, and laid out as
+   side-by-side cards rather than a stacked list.
+2. "Also when displaying realms, pls make sure we always can see the full
+   realm name." / "Also wait on displaying a users account, until the data
+   is actually loaded" / "Infact remake the entire profile page.." -- all
+   landed in quick succession while the account-cap backend change was
+   still in progress, escalating scope from "fix the WoW Accounts card" to
+   a full page rebuild.
+3. "Also remove 'max per item' filter, not nessary anymore" and "Redo the
+   flagged icon to something red danger" -- two smaller, unrelated
+   dashboard.html requests folded into the same pass.
+4. "Also its important that this works with connectedrealms, so if choose
+   realm that has connected it auto adds them aswell" -- sent mid-
+   implementation, after the realm search was already built against the
+   original (one-entry-per-connected-realm) `/api/realms/eu` shape.
+
+**Account cap lowered 10 -> 8** (`wow_accounts.MAX_ACCOUNTS_PER_USER`) --
+matches Blizzard's real per-Battle.net-account WoW account limit, the
+human's own stated reasoning ("numbers will always be 1...8"). Test suite
+updated to match (`test_create_account_enforces_max_8_cap`,
+`test_create_account_concurrent_requests_only_eight_win`, seeding 7 instead
+of 9 accounts before racing for the cap).
+
+**`static/profile.html` rebuilt from scratch**: `.shell` widened from a
+narrow centered column to `max-width: 1100px`; the profile card became a
+compact horizontal summary (email + badge + inline nickname) instead of
+stacked labeled rows; the WoW Accounts section is now `#wow-accounts-list`,
+a CSS grid (`repeat(auto-fill, minmax(260px, 1fr))`) of cards with a dashed
+"+ Add account" tile as the trailing grid item (becomes a disabled
+"Maximum 8 WoW accounts reached" tile at the cap). `addAccount()` no longer
+takes a text input at all -- it POSTs `label: "Account " + (currentAccounts
+.length + 1)` directly, with rename still available via each card's own
+inline input (a `.cap-note` under it -- "Press Save to save changes." --
+makes explicit that renaming doesn't auto-save on blur, added after a
+direct human request for exactly this).
+
+**Loading skeleton**: three pulsing `.skeleton-card` placeholders
+(`@keyframes skeleton-pulse`) show from the moment the account is confirmed
+subscribed until both `/api/wow-accounts` and `/api/realms/eu` resolve
+(`Promise.all`) -- verified live in a real browser (caught the actual
+skeleton mid-render via a screenshot taken immediately after navigation).
+
+**Realm search replacing the `<select>` dropdown**: each card gets its own
+text input + an absolutely-positioned results dropdown, filtered live
+against a flat `realmSearchEntries` array (substring match, capped at 8,
+sorted by name). `Enter` picks the top match; result-item clicks use
+`mousedown` rather than `click` specifically so the pick fires before the
+input's own `blur` handler (bound with a 150ms grace `setTimeout`) could
+race the dropdown closed. Realm chips and search-result items have no
+truncation anywhere (`white-space: normal; word-break: break-word`, no
+`overflow:hidden`) per the direct "always see the full realm name" request.
+
+**Connected-realm fan-out**, the most structurally significant of the
+follow-ups: `/api/realms/eu` used to return one entry per connected-realm
+id (via the existing `_realms_payload()`, which only exposes the first/
+"primary" member realm's name via `_realm_info()`). A connected realm can
+bundle several named realms sharing one AH -- a user searching for their
+actual character's realm name might not find it if that name happens not
+to be the "primary" one Blizzard's API returns for that connected realm.
+New `_connected_realm_members_cache`/`_connected_realm_members(cr_id)`
+(deliberately separate from `_realm_info_cache` -- every other caller of
+`_realm_info()` genuinely wants just the one display name) backs a rewrite
+of `api_realms_eu()` that fans out to one entry per member realm name, with
+multiple entries sharing the same `id` when a connected realm has more
+than one. `profile.html`'s `realmSearchEntries` (flat list, for search) and
+`realmNameById` (deduped to one name per id, for chip display) split the
+same response for the two different needs. **Confirmed live against real
+data while manually verifying the fix**: searching "Zul'jin" and picking it
+added a realm whose chip displayed as "Sanguino" -- the two are the same
+connected realm, with Sanguino as Blizzard's primary name for it -- and the
+dashboard's "Your account" column then correctly matched a real Zul'jin-ES
+buy-side row against that same registration. New regression test:
+`test_api_realms_eu_fans_out_connected_realm_members`.
+
+**Also same day, `static/dashboard.html`**:
+- **"Max per item" filter removed** (human request, "not necessary
+  anymore") -- the `#max_per_item` input, its `buildGroups()` per-group cap
+  logic, and its `LIVE_FILTER_IDS` entry are gone; "Min sell price (g)"
+  (previously paired with it in a `.filter-row`) is now a standalone
+  full-width label. Purely a client-side removal -- the server-side
+  `max_per_item` param on `snipe_check.find_snipes()`/the CLI/`/api/snipes`
+  was never sent by this page in the first place, and is untouched.
+- **Sus-item flag restyled** (human request, "redo the flagged icon to
+  something red danger") -- `.sus-flag` changed from a deliberately-muted
+  brown (`#7c6a52`, chosen 2026-07-31 specifically to read as an identity
+  note rather than a caution) to `var(--alert)` red, and the glyph itself
+  from an hourglass (⌛) to a warning triangle (⚠) -- direct human
+  preference overriding the earlier design reasoning.
+
+**Verified live in a real browser** (same throwaway-Postgres-plus-local-
+server setup used earlier the same day): caught the loading skeleton
+mid-render, confirmed numbered-account auto-suggestion and the card grid
+layout, confirmed the realm search dropdown and pick-to-add flow, confirmed
+the connected-realm fan-out with real data (Zul'jin/Sanguino, see above),
+confirmed the red warning-triangle sus-flag renders on real flagged rows,
+and confirmed dark mode renders correctly throughout the redesigned page.
+
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 372 passing.
