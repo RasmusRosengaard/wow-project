@@ -362,6 +362,9 @@
       <label>Min sell price (g) <input id="min_sell_now" type="number" step="1" min="0" placeholder="any"></label>
       <label>Max per item <input id="max_per_item" type="number" min="1" step="1" placeholder="any"></label>
     </div>
+    <label title="EU region-wide TSM sale rate (added 2026-08-01) -- roughly what fraction of days this item sells at least once, region-wide, not specific to your sell realm. Items TSM has no data for (never tracked, or a cold cache) are excluded when this is set.">
+      Min sale rate % <input id="min_sale_rate_pct" type="number" min="0" max="100" step="1" placeholder="any">
+    </label>
     <label class="auto-label">
       <input id="unique_appearance" type="checkbox"> Unique transmog only
     </label>
@@ -502,7 +505,10 @@ const BATCH_TOP = 10000;
 // the row shape -- a cache from before this shipped would repaint with no
 // language tag next to the buy realm until it happened to expire or the
 // sell realm/item filter changed, same reasoning as every prior bump.
-const CACHE_VERSION = 6;
+// Bumped to 7 (2026-08-01): region_sale_rate/region_sold_per_day (TSM data)
+// were added to the row shape -- an old cache would have no sale-rate
+// field to filter/show at all until it happened to expire.
+const CACHE_VERSION = 7;
 // Safety net, not the primary freshness signal: even if last_modified still
 // matches, force a real refetch once a cache is this old, in case the
 // status endpoint itself is stuck/wrong for some other reason. Comfortably
@@ -729,9 +735,17 @@ function applyFilters(rows) {
   const minGoldRaw = $("min_gold").value.trim();
   const maxGoldRaw = $("max_gold").value.trim();
   const minSellNowRaw = $("min_sell_now").value.trim();
+  const minSaleRatePctRaw = $("min_sale_rate_pct").value.trim();
   const minGold = minGoldRaw ? Number(minGoldRaw) * 10000 : null;
   const maxGold = maxGoldRaw ? Number(maxGoldRaw) * 10000 : null;
   const minSellNow = minSellNowRaw ? Number(minSellNowRaw) * 10000 : null;
+  // .trim() ? ... : null, not `Number(x) || null` -- same "0 is a real,
+  // falsy-but-valid value" bug class max_per_item's own parsing was fixed
+  // for (2026-07-31, see applyFilters()'s other comments below): "0" here
+  // is a genuine filter (region_sale_rate must be >= 0, i.e. tracked at
+  // all -- excludes untracked items), not the same as leaving the field
+  // blank.
+  const minSaleRate = minSaleRatePctRaw ? Number(minSaleRatePctRaw) / 100 : null;
   const uniqueOnly = $("unique_appearance").checked;
   const hideSusItems = $("hide_sus_items").checked;
   const activeClasses = ITEM_CLASS_FILTERS.filter(c => $(`class_${c.key}`).checked);
@@ -746,6 +760,12 @@ function applyFilters(rows) {
     // snipe_check.find_snipes' 2026-07-25 pricing-model docstring -- there's
     // no separate percentile fallback left), so this is just a floor.
     if (minSellNow != null && r.sell_copper < minSellNow) return false;
+    // region_sale_rate is null for anything TSM has no data for (never
+    // tracked, a caged pet, or a cold cache) -- treated as "doesn't meet
+    // the threshold" rather than "unknown, let it through" once a minimum
+    // is actually set, matching snipe_check._filter_by_sale_rate()'s
+    // server-side (CLI/API) behavior.
+    if (minSaleRate != null && (r.region_sale_rate == null || r.region_sale_rate < minSaleRate)) return false;
     // "Unique" means no other item grants the same transmog look, excluding
     // profession tool/accessory slots (is_profession_item, see dashboard.py)
     // which aren't part of the visible paperdoll model at all -- mirrors
@@ -860,6 +880,9 @@ function showTooltip(row, x, y) {
     <div class="tt-row"><span class="lbl">Buy price</span>${formatMoney(row.buy_copper)}</div>
     <div class="tt-row"><span class="lbl">Sell price</span>${formatMoney(row.sell_copper)}</div>
     <div class="tt-row"><span class="lbl">EU median</span>${formatMoney(row.region_median_copper)}</div>
+    ${row.region_sale_rate != null
+      ? `<div class="tt-row"><span class="lbl">Sale rate</span><span>${(row.region_sale_rate * 100).toFixed(0)}%${row.region_sold_per_day != null ? ` &middot; ${row.region_sold_per_day.toFixed(1)}/day` : ""}</span></div>`
+      : ""}
     <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
     ${row.appearance_sources != null
       ? `<div class="tt-row"><span class="lbl">Appearance</span><span>${row.appearance_sources === 1 ? "unique look" : `shared by ${row.appearance_sources} items`}</span></div>`
@@ -1251,7 +1274,7 @@ $("sell").addEventListener("change", onSellRealmChange);
 // the user types/adjusts, not just on blur, matching the instant feel the
 // client-side sort already established.
 const LIVE_FILTER_IDS = ["min_discount_pct", "min_gold", "max_gold",
-                         "min_sell_now", "max_per_item"];
+                         "min_sell_now", "max_per_item", "min_sale_rate_pct"];
 LIVE_FILTER_IDS.forEach(id => $(id).addEventListener("input", () => {
   hideTooltip();
   renderTable();

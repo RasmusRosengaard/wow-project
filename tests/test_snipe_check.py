@@ -22,6 +22,7 @@ import appearance
 import diff_snapshots
 import item_names
 import snipe_check
+import tsm
 from fetch_snapshot import SCHEMA
 from scan_region import LISTING_SCHEMA
 
@@ -53,6 +54,18 @@ def isolate_item_names_cache(tmp_path, monkeypatch):
                                           "inventory_type": None})
 
 
+@pytest.fixture(autouse=True)
+def isolate_tsm_cache(tmp_path, monkeypatch):
+    """find_snipes() always instantiates a real tsm.SaleRateCache (to
+    annotate region_sale_rate/region_sold_per_day, see
+    _filter_by_sale_rate()) -- same isolation reasoning as
+    isolate_appearance_cache above. No live network involved (the cache is
+    read-only here; only collect_all.py's background loop ever calls
+    refresh_if_stale()), but no test should depend on whatever the real,
+    gitignored local cache happens to contain."""
+    monkeypatch.setattr(tsm, "CACHE_PATH", tmp_path / "tsm_sale_rates_test_cache.json")
+
+
 def write_appearance_cache(path, item_sources: dict[int, int]):
     """item_sources: item_id -> source_count. Gives each item its own
     appearance_id (item_id + 1_000_000) so distinct items in a test don't
@@ -62,6 +75,19 @@ def write_appearance_cache(path, item_sources: dict[int, int]):
         "items": {
             str(item_id): {"appearance_id": item_id + 1_000_000, "source_count": count}
             for item_id, count in item_sources.items()
+        },
+    }
+    path.write_text(json.dumps(data))
+
+
+def write_tsm_cache(path, item_rates: dict[int, tuple[float, float]]):
+    """item_rates: item_id -> (sale_rate, sold_per_day), matching
+    tsm.SaleRateCache's own on-disk shape."""
+    data = {
+        "fetched_at": 1_700_000_000,
+        "items": {
+            str(item_id): {"sale_rate": sale_rate, "sold_per_day": sold_per_day}
+            for item_id, (sale_rate, sold_per_day) in item_rates.items()
         },
     }
     path.write_text(json.dumps(data))
@@ -1079,6 +1105,48 @@ def test_find_snipes_max_appearance_sources_keeps_real_gear(data_dir, monkeypatc
                                    max_appearance_sources=1)
     assert len(rows) == 1
     assert rows[0]["item_id"] == 101
+
+
+def test_find_snipes_reports_sale_rate_without_filtering(data_dir, monkeypatch):
+    """With no min_sale_rate set, region_sale_rate/region_sold_per_day are
+    attached to every row for display but nothing gets dropped --
+    including items TSM has no data for (both None, not excluded)."""
+    run_diff(monkeypatch)
+    write_tsm_cache(tsm.CACHE_PATH, {101: (0.42, 1.5)})
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
+    assert len(rows) == 1
+    assert rows[0]["region_sale_rate"] == 0.42
+    assert rows[0]["region_sold_per_day"] == 1.5
+
+
+def test_find_snipes_min_sale_rate_filters_illiquid_items(data_dir, monkeypatch):
+    """Item 101 sells 10% of days -- --min-sale-rate 0.5 should drop it;
+    lowering the bar to 0.1 lets it back through."""
+    run_diff(monkeypatch)
+    write_tsm_cache(tsm.CACHE_PATH, {101: (0.1, 0.2)})
+    con = analyze.connect(SELL_CR)
+
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3,
+                                   min_sale_rate=0.5) == []
+
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3,
+                                   min_sale_rate=0.1)
+    assert len(rows) == 1
+    assert rows[0]["item_id"] == 101
+
+
+def test_find_snipes_min_sale_rate_excludes_items_with_no_tsm_data(data_dir, monkeypatch):
+    """An item TSM has never tracked (or a cache that hasn't been
+    refreshed) has region_sale_rate=None -- when a liquidity floor is
+    actively requested, an unknown rate can't be proven to clear it, so
+    it's excluded rather than let through by default (same "unknown ->
+    excluded when filtering" convention as max_appearance_sources)."""
+    run_diff(monkeypatch)
+    write_tsm_cache(tsm.CACHE_PATH, {999: (0.9, 5.0)})  # no entry for item 101
+    con = analyze.connect(SELL_CR)
+    assert snipe_check.find_snipes(con, SELL_CR, min_discount=0.3,
+                                   min_sale_rate=0.01) == []
 
 
 def test_filter_by_appearance_directly_no_duckdb(monkeypatch):

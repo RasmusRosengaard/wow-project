@@ -47,6 +47,7 @@ import duckdb
 import pyarrow as pa
 
 import analyze
+import tsm
 from appearance import AppearanceCache
 from item_names import LIVE_RESOLVE_DEADLINE_SECONDS, NameCache
 
@@ -430,6 +431,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 max_per_item: int | None = None,
                 class_quotas: dict[str, int] | None = None,
                 min_value_floor_g: float | None = None,
+                min_sale_rate: float | None = None,
                 top: int = 50, sort: str = "discount") -> list[dict]:
     """**Pricing model, replaced 2026-07-25 (human product decision)**: the
     sell price for an item/variant is simply the sell realm's own current
@@ -532,6 +534,28 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     item_names.NameCache, so filtering by max_appearance_sources can incur
     one Blizzard API call per never-before-seen item (cached after).
 
+    min_sale_rate (added 2026-08-01, human request): filters to items whose
+    EU region-wide sale rate (TSM's public `region/items.csv` feed, see
+    tsm.py) is at least this value (0-1 -- TSM's own scale, roughly "what
+    fraction of days this item sells at least once"). This project's
+    pricing model deliberately carries no liquidity signal on its own (see
+    "What this project is" in CLAUDE.md -- sell price is just the sell
+    realm's current cheapest listing, nothing about whether it actually
+    moves), so this is a genuinely new dimension, not a refinement of an
+    existing one. Every row also carries `region_sale_rate`/
+    `region_sold_per_day` (both None if TSM has no data for that item)
+    regardless of whether this filter is set, same convention as
+    `appearance_sources` above. Applied in Python after the SQL query, same
+    reasoning as max_appearance_sources -- tsm.SaleRateCache is a local
+    JSON cache, not a DB table. Read-only against that cache -- the
+    background collection loop (collect_all.py) is the only writer, so this
+    never makes a live network call the way max_appearance_sources'
+    NameCache lookups sometimes do. Region-wide, not sell-realm-specific --
+    TSM's per-realm files don't carry sale-rate fields at all, only the
+    region-wide one does (confirmed live against TSM's own public-data
+    docs). Caged pets aren't covered (item_id 82800 is shared by every pet
+    species -- region_sale_rate is always None for a pet row).
+
     max_per_item (added 2026-07-23) caps how many listings of the *same*
     item/variant can appear in the results, keeping the best (highest
     discount%) N of them via a ROW_NUMBER() window before the outer
@@ -631,12 +655,13 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         floor_copper = float(min_value_floor_g) * 10000
         price_filter += (f" AND (n.cheapest_now >= {floor_copper}"
                           f" OR rs.region_median_cheapest >= {floor_copper})")
-    # When appearance-filtering, pull a wider SQL candidate pool since rows
-    # get dropped *after* the query (the appearance cache is a local JSON
-    # file, not something to join in SQL) -- otherwise a top-50 SQL LIMIT
-    # could get filtered down to near-nothing before the appearance check
+    # When appearance- or sale-rate-filtering, pull a wider SQL candidate
+    # pool since rows get dropped *after* the query (both caches are local
+    # JSON files, not something to join in SQL) -- otherwise a top-50 SQL
+    # LIMIT could get filtered down to near-nothing before either check
     # ever runs.
-    sql_limit = int(top) if max_appearance_sources is None else max(int(top) * 20, 1000)
+    _widen_pool = max_appearance_sources is not None or min_sale_rate is not None
+    sql_limit = max(int(top) * 20, 1000) if _widen_pool else int(top)
     max_per_item_where = f"WHERE item_rank <= {int(max_per_item)}" if max_per_item is not None else ""
     con.execute(f"""
         CREATE OR REPLACE VIEW listings AS
@@ -741,6 +766,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         cols = [d[0] for d in res.description]
         rows = [dict(zip(cols, row)) for row in res.fetchall()]
         rows = _filter_by_appearance(rows, max_appearance_sources)
+        rows = _filter_by_sale_rate(rows, min_sale_rate)
         return rows[: int(top)]
 
     # class_quotas path: materialize the item-deduped candidate set with NO
@@ -797,7 +823,31 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     cols = [d[0] for d in res.description]
     rows = [dict(zip(cols, row)) for row in res.fetchall()]
     rows = _filter_by_appearance(rows, max_appearance_sources)
+    rows = _filter_by_sale_rate(rows, min_sale_rate)
     return rows[: int(top)]
+
+
+def _filter_by_sale_rate(rows: list[dict], min_sale_rate: float | None) -> list[dict]:
+    """Annotates every row with `region_sale_rate`/`region_sold_per_day`
+    (both None if TSM has no data for that item -- see tsm.py's docstring
+    for why: never tracked, a caged pet, or a cache that hasn't been
+    refreshed yet) regardless of whether filtering is active, so callers
+    can always display it -- same convention as `_filter_by_appearance()`'s
+    `appearance_sources`. When min_sale_rate is set, filters to items whose
+    EU region-wide sale rate is at least that value. Read-only against
+    tsm.SaleRateCache -- the cache is only ever written by collect_all.py's
+    background loop (single-writer design, see tsm.py's own docstring for
+    why that avoids item_names.NameCache's 2026-08-01 lost-update race
+    entirely rather than needing the same merge-on-save fix)."""
+    cache = tsm.SaleRateCache()
+    for r in rows:
+        entry = cache.get(r["item_id"])
+        r["region_sale_rate"] = entry["sale_rate"] if entry else None
+        r["region_sold_per_day"] = entry["sold_per_day"] if entry else None
+    if min_sale_rate is None:
+        return rows
+    return [r for r in rows
+            if r["region_sale_rate"] is not None and r["region_sale_rate"] >= min_sale_rate]
 
 
 def _filter_by_appearance(rows: list[dict], max_appearance_sources: int | None) -> list[dict]:
@@ -832,7 +882,7 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
     names = NameCache() if resolve_names else None
     name_col = "name" if resolve_names else "item_id"
     hdr = (f"{'buy_realm':>9} {name_col:>28} {'variant':>14} {'buy_g':>10} {'sell_p_g':>10} "
-           f"{'eu_med_g':>10} {'disc%':>7} {'appear':>7}")
+           f"{'eu_med_g':>10} {'disc%':>7} {'appear':>7} {'sale%':>6}")
     print(hdr)
     for r in rows:
         if r["pet_species_id"] is not None:
@@ -841,9 +891,11 @@ def print_snipes(rows: list[dict], resolve_names: bool = False) -> None:
             variant = r["bonus_key"] or "-"
         label = names.get(r["item_id"], r["pet_species_id"]) if names else str(r["item_id"])
         appear = r["appearance_sources"] if r["appearance_sources"] is not None else "-"
+        sale_rate = r.get("region_sale_rate")
+        sale_pct = f"{sale_rate * 100:.0f}" if sale_rate is not None else "-"
         print(f"{r['buy_realm']:>9} {label:>28.28} {variant:>14} "
               f"{r['buy_g']:>10.2f} {r['sell_p_g']:>10.2f} {r['region_median_g']:>10.2f} "
-              f"{r['discount_pct']:>7.1f} {appear:>7}")
+              f"{r['discount_pct']:>7.1f} {appear:>7} {sale_pct:>6}")
     if names:
         names.save()
     else:
@@ -878,6 +930,11 @@ def main() -> None:
                     help="cap how many listings of the same item/variant can appear in the "
                          "results (keeps the highest-discount ones); combine with --top for "
                          "e.g. --top 500 --max-per-item 1 = up to 500 distinct items")
+    ap.add_argument("--min-sale-rate", type=float, default=None,
+                    help="only show items whose EU region-wide TSM sale rate (0-1) is at "
+                         "least this value -- requires data/tsm_sale_rates.json, see "
+                         "tsm.py --refresh. Items with no TSM data are excluded when this "
+                         "is set. Caged pets are always excluded (no per-pet TSM data)")
     ap.add_argument("--top", type=int, default=50)
     ap.add_argument("--sort", choices=sorted(SORT_COLUMNS), default="discount",
                     help="sort order for results (default discount)")
@@ -901,6 +958,7 @@ def main() -> None:
                        min_sell_now=args.min_sell_now,
                        max_appearance_sources=args.max_appearance_sources,
                        max_per_item=args.max_per_item,
+                       min_sale_rate=args.min_sale_rate,
                        top=args.top, sort=sort)
     print_snipes(rows, resolve_names=args.names)
 

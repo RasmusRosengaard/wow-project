@@ -3,6 +3,7 @@ snipe_check.find_snipes(). Mirrors test_snipe_check.py's synthetic-pipeline
 fixture style -- real duckdb/pyarrow, no mocking, only the HTTP/JSON
 boundary is new relative to the existing test conventions."""
 import asyncio
+import json
 import sys
 import time
 
@@ -23,6 +24,7 @@ import db
 import diff_snapshots
 import item_names
 import snipe_check
+import tsm
 from db import Base, User, get_async_session
 from fetch_snapshot import SCHEMA
 from scan_region import LISTING_SCHEMA
@@ -181,6 +183,14 @@ def isolate_appearance_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(appearance, "CACHE_PATH", tmp_path / "appearances_test_cache.json")
 
 
+@pytest.fixture(autouse=True)
+def isolate_tsm_cache(tmp_path, monkeypatch):
+    """find_snipes() always instantiates a real tsm.SaleRateCache (to
+    annotate region_sale_rate/region_sold_per_day) -- same isolation
+    reasoning as isolate_appearance_cache above."""
+    monkeypatch.setattr(tsm, "CACHE_PATH", tmp_path / "tsm_sale_rates_test_cache.json")
+
+
 def stub_item_details(monkeypatch, name="Stub Item", quality="EPIC", level=600,
                       icon="https://example/icon.jpg", item_class=4, item_subclass=2,
                       inventory_type=None):
@@ -274,6 +284,30 @@ def test_api_snipes_returns_rows_and_caveat(data_dir, monkeypatch):
     assert body["rows"][0]["buy_realm_category"] == "English"
     assert body["region"] == blizz.REGION
     assert body["sell_realm_slug"] == f"realm-{SELL_CR}"
+
+
+def test_api_snipes_carries_tsm_sale_rate(data_dir, monkeypatch):
+    """region_sale_rate/region_sold_per_day (2026-08-01, human request)
+    ride along unconditionally, same as region_median_g -- not gated behind
+    names=true, since it's cheap (a local JSON lookup, no live network)."""
+    run_diff(monkeypatch)
+    tsm.CACHE_PATH.write_text(json.dumps({
+        "fetched_at": 1_700_000_000,
+        "items": {"101": {"sale_rate": 0.33, "sold_per_day": 0.8}},
+    }))
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
+    assert r.status_code == 200
+    row = r.json()["rows"][0]
+    assert row["region_sale_rate"] == 0.33
+    assert row["region_sold_per_day"] == 0.8
+
+
+def test_api_snipes_sale_rate_none_when_tsm_has_no_data(data_dir, monkeypatch):
+    run_diff(monkeypatch)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
+    row = r.json()["rows"][0]
+    assert row["region_sale_rate"] is None
+    assert row["region_sold_per_day"] is None
 
 
 def test_api_snipes_closes_the_realm_lock_session_before_slow_work(data_dir, monkeypatch):

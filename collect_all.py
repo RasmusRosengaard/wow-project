@@ -42,6 +42,7 @@ import blizz
 import fetch_snapshot
 import item_names
 import scan_region
+import tsm
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -162,9 +163,22 @@ def collect_all() -> dict:
     except Exception:
         log.exception("collect_all: item base-level prewarm failed")
 
+    # TSM sale-rate refresh (added 2026-08-01, human request) -- its own
+    # tsm.REFRESH_INTERVAL_SECONDS (6h) internally no-ops most cycles, since
+    # TSM's region data only updates ~daily; this call itself is cheap
+    # (just a staleness check) every ~10 min regardless. Single-writer
+    # design (see tsm.py's own docstring) -- this is the *only* place
+    # SaleRateCache.refresh_if_stale() should ever be called; live
+    # /api/snipes requests only ever call .get(), never write.
+    tsm_refreshed = False
+    try:
+        tsm_refreshed = tsm.SaleRateCache().refresh_if_stale()
+    except Exception:
+        log.exception("collect_all: TSM sale-rate refresh failed")
+
     summary = {"realms": len(realm_ids), "polled": polled,
               "pruned_snapshots": pruned, "failed": failed,
-              "base_level_candidates": prewarmed}
+              "base_level_candidates": prewarmed, "tsm_refreshed": tsm_refreshed}
     log.info("collect_all: %s", summary)
     return summary
 

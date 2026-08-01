@@ -294,6 +294,16 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # or filter anything.
         "region_median_g": r["region_median_g"],
         "region_median_copper": r["region_median_copper"],
+        # TSM EU region-wide sale rate/sold-per-day (added 2026-08-01, human
+        # request -- see snipe_check.find_snipes()'s min_sale_rate docstring
+        # and tsm.py). Both None if TSM has no data for this item (never
+        # tracked, a caged pet, or a cache that hasn't been refreshed yet).
+        # Purely informational unless the client's own min-sale-rate filter
+        # is set, same client-side-filtering convention every other
+        # threshold in the rail already uses (see batchParams()'s comment
+        # in dashboard.html) -- not passed as a server query param here.
+        "region_sale_rate": r["region_sale_rate"],
+        "region_sold_per_day": r["region_sold_per_day"],
     }
     if names is not None:
         out["name"] = names.get(r["item_id"], r["pet_species_id"])

@@ -7,13 +7,23 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-07-26 — a long session: rebrand to Realm Arbitrage, two
-real production bug fixes (realm-switch hang, redundant re-fetch),
-bonus/ilvl-aware matching dropped from live pricing (see "What this
-project is" in `CLAUDE.md`), a new public landing page at `/` with the
-sniper tool moved to `/snipes` plus several rounds of copy/UX polish.
-Marketing is now the explicitly named next step (see "Next up" #1) — see
-`HISTORY.md` for the full session-by-session detail.
+Last updated: 2026-08-01 — the biggest incident this project has had:
+a Postgres connection-pool exhaustion (broke login) plus a Blizzard
+rate-limit storm (missing icons, failed realm collection), both real,
+pre-existing architectural weaknesses triggered back-to-back by the
+assistant's own live-debugging activity against production. Root-caused
+and fixed properly (not just patched): `/api/snipes` no longer holds a DB
+connection during its 30-175s of DuckDB/Blizzard work; every Blizzard API
+call in the app now shares a rate limiter; live requests no longer wait
+unboundedly on it either (a 15s deadline, self-healing same as existing
+patterns). Also: a real `NameCache` lost-update race fixed ("items randomly
+jumping"), two new curated sus-item sets, the junk/decoy value floor raised
+500→2000, a log-severity misclassification fixed (twice — the first fix
+didn't touch the code path actually running in production), a new
+superuser-only "who's on the site right now" endpoint, and a new TSM
+region-sale-rate filter (`tsm.py`, human request — see "Status at a
+glance"). Full trace in `HISTORY.md`'s "Production incident" entry and the
+several entries around it, all dated 2026-08-01.
 
 ## Status at a glance
 
@@ -41,10 +51,26 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
   see `CLAUDE.md`'s "What this project is" matching-model note); the
   buy-side listing's actual variant is still shown per row for display.
 - Client-side filter rail (discount%, gold range, sell-now, max-per-item,
-  unique-transmog, 8-way item-class, 6-way rarity), instant table
-  sorting/grouping, an `localStorage` batch cache so a page reload paints
-  instantly. Manual Refresh button removed (2026-07-25) — `checkForUpdates()`
-  already covers "is there new data" via the 60s auto-refresh timer.
+  min sale rate %, unique-transmog, 9-way item-class, 6-way rarity), instant
+  table sorting/grouping, an `localStorage` batch cache so a page reload
+  paints instantly. Manual Refresh button removed (2026-07-25) —
+  `checkForUpdates()` already covers "is there new data" via the 60s
+  auto-refresh timer.
+- **TSM region-wide sale-rate filter** (`tsm.py`, added 2026-08-01, human
+  request — "a filter, where the user can set a minimum sellrate"):
+  `collect_all.py`'s background loop refreshes a cache of TSM's public
+  EU-region `saleRate`/`soldPerDay` fields (region-wide only — TSM's
+  per-realm files don't carry them); every snipe row is annotated with them
+  regardless of whether the filter is used, and the dashboard's "Min sale
+  rate %" input excludes rows below the threshold (and rows TSM has no data
+  for, once a threshold is set). See `CLAUDE.md`'s `tsm.py`/`snipe_check.py`
+  rows.
+- `/api/snipes` no longer holds a Postgres connection during its slow
+  DuckDB/Blizzard work (2026-08-01, real production incident — see
+  `HISTORY.md`); every Blizzard API call in the app shares a rate limiter,
+  and live requests self-bound their wait on it (15s) instead of blocking
+  indefinitely. A superuser-only `GET /api/admin/active-users` shows who's
+  currently on the site.
 
 **Not built yet**, in priority order — see "Next up" below:
 1. **Marketing** — explicitly named the next step (2026-07-26), superseding
@@ -189,10 +215,13 @@ Marketing is now the explicitly named next step (see "Next up" #1) — see
   idea, 2026-07-23). Needs: research into the exact TSM/Auctionator import
   string formats, a UI selection mechanism, a client-side export button
   (likely no backend change — formatting already-fetched row data).
-- **TSM public pricing data as a cross-check, not a replacement** (human
-  idea, 2026-07-25, investigated, parked — see `HISTORY.md` for the full
-  writeup on why it's not an independent ground truth and what a
-  narrowly-scoped version would look like).
+- ~~**TSM public pricing data as a cross-check, not a replacement**~~ (human
+  idea, 2026-07-25, investigated, parked as a *pricing* cross-check — see
+  `HISTORY.md` for the full writeup on why it's not an independent ground
+  truth) — **the narrowly-scoped version shipped 2026-08-01** as a liquidity
+  filter instead (`tsm.py`'s `saleRate`/`soldPerDay`, see "Status at a
+  glance"), not a pricing cross-check. The buylist-export idea directly
+  above remains separately unshipped.
 **Remember**: if a custom domain ever replaces the `railway.app`
 subdomain, the Stripe webhook endpoint URL needs updating by hand in the
 Stripe Dashboard — it won't happen automatically.
@@ -269,6 +298,14 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   place; see `HISTORY.md` for why the flag was dropped and what replaced it
   (`snipe_check.is_sus_item()`/`sus_item_suspect`, a broader,
   differently-scoped signal, not a like-for-like swap).
+  **`MIN_VALUE_FLOOR_G` added 2026-08-01** (human request, currently 2000,
+  raised same day from an initial 500) is a related but distinct
+  mitigation — drops a row from the candidate pool entirely when *both* the
+  sell price and EU median are under the floor, freeing budget rather than
+  flagging/reordering. Doesn't address a troll listing that clears the
+  floor on its own (a camped listing priced in the thousands would still
+  pass); see `CLAUDE.md`'s `snipe_check.py` row for the exact OR-to-keep
+  semantics.
 - Sale-inference classification (`inferred_sale` especially) has never been
   checked against real seller behavior — Phase 0's gate was skipped. No
   longer on the pricing path, and no longer runs automatically at all
@@ -340,6 +377,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | Billing | `billing.py`, `static/subscribe.html` |
 | Item name/icon/quality cache | `item_names.py` |
 | Appearance-rarity cache (Phase 3 groundwork) | `appearance.py` |
+| TSM region-wide sale-rate cache | `tsm.py` (added 2026-08-01) |
 | Public pricing page | `static/pricing.html`, `GET /pricing` in `dashboard.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
 | Tests | `tests/` (`pytest -q`; run `env -u DATABASE_URL pytest -q` too before pushing), no external services needed |

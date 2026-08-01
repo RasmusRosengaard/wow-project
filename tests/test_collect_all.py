@@ -13,6 +13,7 @@ import collect_all
 import fetch_snapshot
 import item_names
 import scan_region
+import tsm
 from fetch_snapshot import SCHEMA
 from scan_region import LISTING_SCHEMA
 
@@ -47,6 +48,18 @@ def reset_realm_cache(monkeypatch):
 def env(tmp_path, monkeypatch):
     for mod in (fetch_snapshot, scan_region, collect_all):
         monkeypatch.setattr(mod, "DATA", tmp_path)
+    # tsm.CACHE_PATH is computed once from tsm.DATA at import time, not
+    # re-derived dynamically -- redirecting tsm.DATA alone wouldn't move it
+    # (same reason item_names.py/appearance.py's own test fixtures patch
+    # CACHE_PATH directly rather than DATA). Without this,
+    # collect_all()'s new TSM refresh step would read/write the real
+    # project's data/tsm_sale_rates.json during tests.
+    monkeypatch.setattr(tsm, "CACHE_PATH", tmp_path / "tsm_sale_rates.json")
+    # No live network in this suite (see module docstring) -- collect_all()
+    # now calls tsm.SaleRateCache().refresh_if_stale() every cycle; without
+    # stubbing this, every test using `env` would make a real HTTP call to
+    # TSM's public data feed.
+    monkeypatch.setattr(tsm, "_fetch_csv", lambda: {})
     return tmp_path
 
 
@@ -301,3 +314,35 @@ def test_collect_all_includes_prewarm_count_in_summary(env, monkeypatch):
 
     summary = collect_all.collect_all()
     assert summary["base_level_candidates"] == 0  # no listings swept -- nothing to prewarm
+
+
+def test_collect_all_refreshes_tsm_sale_rates(env, monkeypatch):
+    """collect_all() (2026-08-01, human request) must call
+    tsm.SaleRateCache().refresh_if_stale() every cycle -- its own internal
+    staleness check (tsm.REFRESH_INTERVAL_SECONDS) is what keeps this cheap
+    on most calls, not the caller skipping it."""
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
+    monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: None)
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
+    monkeypatch.setattr(tsm, "_fetch_csv", lambda: {12345: {"sale_rate": 0.5, "sold_per_day": 1.0}})
+
+    summary = collect_all.collect_all()
+    assert summary["tsm_refreshed"] is True
+    assert tsm.SaleRateCache().get(12345) == {"sale_rate": 0.5, "sold_per_day": 1.0}
+
+
+def test_collect_all_survives_tsm_refresh_failure(env, monkeypatch):
+    """Same "one bad piece never aborts the rest" principle every other
+    step in collect_all() already follows."""
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
+    monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: None)
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [])
+
+    def raise_error():
+        raise RuntimeError("boom")
+    monkeypatch.setattr(tsm, "_fetch_csv", raise_error)
+
+    summary = collect_all.collect_all()  # must not raise
+    assert summary["tsm_refreshed"] is False

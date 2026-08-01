@@ -1343,3 +1343,303 @@ one PROGRESS.md bullet said "~54 confirmed" pieces; the actual verified
 count is 52 (Rogue and Druid each get 5 slots, not 6 -- no WRIST piece,
 confirmed real via gap-checking and name search, see the previous entry).
 `pytest -q` and `env -u DATABASE_URL pytest -q`: 306 passing.
+
+## NameCache lost-update race fixed -- items "randomly jumping" (2026-08-01)
+
+Human report: dashboard rows appearing/disappearing between refreshes with
+no filter changes, worst with a small `class_quotas` bucket (recipes) or
+with `sus_item_suspect` flickering under "hide flagged." Traced (not
+assumed) by reading every `NameCache()` call site together: at least three
+independent instances race on `data/item_names.json` within the same
+process -- `snipe_check._register_class_quota_maps()` and
+`dashboard._build_rows()` each make their own within a single `/api/snipes`
+call, plus another on `collect_all._prewarm_item_base_levels()`'s
+background loop, running concurrently with live requests. `save()` was a
+blind `write_text()` of the whole in-memory `_cache`, no locking, no atomic
+temp-file+rename (unlike `scan_region.py`'s sweep writes) -- a classic
+lost-update race: instance B loads the file before instance A resolves and
+saves item X, then B finishes unrelated work and saves, overwriting the
+file with a snapshot that never saw X, silently reverting it to unresolved.
+Since `has_class_info()`/`_class_bucket()` gate bucket membership on cache
+presence, this directly flipped which items appeared in a class-quota'd
+bucket between otherwise-identical requests, with zero change in the
+underlying auction data.
+
+Fix: `NameCache` now tracks each instance's own new writes separately
+(`self._pending`, via a `_set()` helper every write site goes through) and
+`save()` re-reads the current file and merges in only those keys, instead
+of overwriting wholesale. `__init__`'s file read also wrapped in
+`try/except` -- a concurrent writer's non-atomic write could leave the file
+mid-write for a reader to catch; previously an unhandled
+`json.JSONDecodeError` there crashed the request instead of falling back
+to an empty cache. New tests reproduce the exact interleaving
+(`test_save_does_not_clobber_a_concurrent_instances_write`) and the torn
+read (`test_save_tolerates_a_torn_read_of_the_cache_file`).
+
+## Sus items: Slithershell + Black Tooth Grunt's added (2026-08-01)
+
+Two human-named item sets added to `CURATED_SUS_ITEM_IDS`, same pattern as
+the class-starter-armor set. Both confirmed live via `blizz.api_get()`, not
+guessed: **Slithershell** (searched `name.en_US=Slithershell`, a single
+page, 10 total results) is a naga-themed leveling quest-reward set -- 8
+Leather pieces + 1 Cloth cloak, UNCOMMON, ilvl 58, required level 50; the
+10th result (Slithershell Warglaive, a weapon) deliberately excluded since
+the human asked for "armors" specifically. **Black Tooth Grunt's** (the
+Plate counterpart) needed a different search technique -- Blizzard's search
+API ORs individual words, so `name.en_US=Black Tooth` alone matched
+hundreds of unrelated items; scanned all 8 result pages for the exact
+substring "Black Tooth Grunt" instead. 8 Plate pieces, UNCOMMON, ilvl 60,
+required level 50, no cloak this time; a related weapon (Plundered Black
+Tooth Face-Splitter, a different naming pattern and quality tier) excluded
+the same way.
+
+## Junk/decoy value floor added, then raised 500 -> 2000 (2026-08-01)
+
+Human request: filter obviously-not-worth-sniping rows out of the SQL
+candidate pool before `class_quotas`/`max_per_item`/`top` ever see them, so
+a tier's limited row budget isn't spent on junk. `snipe_check.MIN_VALUE_FLOOR_G`
+drops a row only when **both** the sell price and the EU region median are
+under the floor -- an OR-to-keep, AND-to-drop threshold (the human
+explicitly corrected an initial AND-to-keep misreading mid-conversation): an
+item can be genuinely worth sniping on the strength of just one of the two
+numbers, so requiring both to be healthy would wrongly cut those. `None`
+(the default, every CLI call, every existing test) preserves prior
+behavior; `dashboard.py`'s `/api/snipes` always passes the real value,
+unconditionally, not user-configurable (the existing `min_sell_now` query
+param remains the user-adjustable floor; this is a baseline beneath it).
+Shipped at 500, then raised to 2000 the same day, both human-specified
+numbers -- the test that exercises the OR/AND logic
+(`test_find_snipes_min_value_floor_keeps_row_if_either_price_clears_it`) was
+rewritten to derive its gold amounts from the real constant instead of
+hardcoding values tuned to the old threshold, so a third change doesn't
+silently break it again.
+
+## Production incident: Postgres pool exhaustion + Blizzard rate-limit storm (2026-08-01)
+
+The single biggest incident this project has had. A human report of
+"wrong sell prices, pictures missing, login failing" led to two real,
+independent, pre-existing architectural weaknesses being triggered
+back-to-back, both exposed by the assistant's own live-debugging activity
+against production that day (not a code deploy) -- the first genuine
+"load test" this system had ever experienced.
+
+**Trigger**: investigating an unrelated question ("why no housing items")
+via `railway ssh`, the assistant ran an uncapped `item_names.NameCache.
+ensure_many()` call resolving thousands of items directly against the live
+Blizzard API, with zero coordination with anything else in the process.
+Confirmed live via production logs: this immediately starved
+`collect_all.py`'s background collector of its share of the shared rate
+budget (`HTTP 429` errors, several real realms' collection cycles failing
+outright -- e.g. `collect_all: realm 1390 failed`, `scanner: cr 3681: sweep
+failed`).
+
+**Cascade**: the resulting resource contention degraded overall request
+latency, which pushed real `/api/snipes` calls (already documented
+elsewhere as 30-175s cold) even longer than their normal worst case. Each
+one held a Postgres connection checked out for its *entire* duration --
+`current_active_user`'s `Depends()` chain only releases a connection after
+FastAPI has fully sent the response (confirmed by reading
+`fastapi/routing.py`'s `AsyncExitStack` handling), and `/api/snipes` was
+the one route in the app doing that much unrelated slow work after
+authenticating. The connection pool had never been explicitly tuned
+(SQLAlchemy's bare defaults: `pool_size=5, max_overflow=10`, 15 total).
+Enough overlapping slow requests holding connections finally exceeded that
+ceiling for the first time ever, breaking login for everyone
+(`sqlalchemy.exc.TimeoutError: QueuePool limit ... reached`).
+
+Mitigated same-day with an immediate service restart (`railway restart`)
+to clear the exhausted pool, then two rounds of real fixes:
+
+**Round 1 (stopgap + first structural fix, commit `831c0b9`)**: `db.py`'s
+`engine()` raised the pool 15 -> 60 connections (`pool_size=20,
+max_overflow=40`) plus `pool_pre_ping=True` -- headroom, not a fix for
+connections being held during unrelated work. `blizz.py`'s `api_get()`
+gained two shared, thread-safe token buckets (`_burst_limiter`: 90/s,
+`_hourly_limiter`: ~9.44/s sustained) so every caller in the process --
+collector, scanner, `NameCache`, `AppearanceCache`, any future ad-hoc
+script -- shares one throttled budget instead of being able to starve each
+other. Confirmed live the regular 10-minute collection cadence only ever
+uses ~2.2% of the hourly budget (~810 of 36,000 req/h), so it was
+deliberately left unchanged -- the incident was an uncoordinated *burst*,
+not the steady-state cadence, and slowing the cadence to hourly would cost
+real data freshness for negligible safety benefit.
+
+**The rate limiter introduced its own regression**: confirmed live via
+`railway logs --http`, `/api/snipes` against Draenor started taking
+158-300+ seconds on a cold cache. Root cause: before the limiter,
+`NameCache.ensure_many()`/`.ensure_icons_many()` silently gave up fast on a
+429 and moved on; the limiter turned that into waiting patiently for the
+shared budget instead, turning a bounded-latency path into an unbounded
+one. Diagnosed live (a single `/api/snipes` call's timing before/after
+killing the assistant's own interfering diagnostic scripts) before being
+designed around, not guessed at.
+
+**Round 2 (the real structural fixes, planned via `/plan` and approved
+before implementation, commit `17f2efb`)**:
+- `auth.py` gained `resolve_user_from_request(request)`, which resolves the
+  user via a session opened and closed in milliseconds -- not
+  `Depends(current_active_user)`'s request-scoped chain. Mirrors
+  `fastapi_users.current_user(active=True)`'s real behavior exactly
+  (confirmed by reading the installed package's `Authenticator._authenticate()`/
+  `JWTStrategy.read_token()` -- only the `active` check applies, since this
+  app never uses `verified=True`/`superuser=True`). `dashboard.py`'s
+  `_enforce_realm_lock()` deliberately kept its *exact* prior signature
+  (still takes an explicit `session`) so its existing test coverage,
+  including a real two-independent-sessions TOCTOU race regression test,
+  stayed untouched -- only *where* `api_snipes()` gets that session from
+  changed (a short-lived block opened just for that one call).
+- `item_names.py`'s `ensure_many()`/`.ensure_icons_many()` gained an
+  optional `deadline_seconds` param (`LIVE_RESOLVE_DEADLINE_SECONDS=15`,
+  human-specified) -- once elapsed time exceeds the deadline, the resolution
+  loop stops waiting and returns with whatever's resolved so far, same
+  self-healing pattern as `CLASS_QUOTA_RESOLVE_LIMIT`/`PREWARM_BASE_LEVEL_CAP`.
+  `None` (background callers, e.g. the prewarm loop) preserves unbounded
+  patience; both live-request call sites (`dashboard._build_rows()`,
+  `snipe_check._register_class_quota_maps()`) pass the real deadline.
+  Required abandoning `with ThreadPoolExecutor(...) as pool:` in favor of
+  explicit `pool.shutdown(wait=False, cancel_futures=True)`, since the
+  context manager's default `__exit__` blocks on every submitted future
+  regardless of any deadline.
+
+24 new/updated tests across `test_auth.py`, `test_dashboard.py`,
+`test_item_names.py`, `test_snipe_check.py` for round 2 alone. 328 passing
+both with and without `DATABASE_URL` after round 2; live-verified after
+deploy that a cold Draenor load now returns in bounded time instead of
+158-300+ seconds, and that login/pool behavior held under the same
+sequential-slow-request pattern that broke it originally.
+
+**Also traced and fixed during the same investigation**: `fetch_snapshot.py`/
+`scan_region.py`'s `setup_logging()` used `logging.StreamHandler()` with no
+argument, which defaults to `sys.stderr` -- Railway's log platform tags
+anything on stderr `"severity":"error"` regardless of the real Python log
+level, so ordinary `log.info("scanner: cr X: Y listings")` lines were
+showing up error-tagged, burying genuine errors in noise. Pre-existing, not
+from anything shipped that day. **First fix didn't actually work**: those
+functions are only invoked when the files run standalone via their own
+`__main__` block, not when `collect_all.py` calls their functions as a
+library from inside `dashboard.py`'s background loop -- in that path
+(the real, running-in-production one), the `collector`/`scanner` loggers
+have no handlers of their own and propagate to `dashboard.py`'s *own*
+root-logger `logging.basicConfig()`, which was independently still
+defaulting to stderr. Confirmed still happening live after the first fix
+deployed; fixed for real by also passing `stream=sys.stdout` there.
+
+## Active-users admin endpoint added (2026-08-01)
+
+Human request, arising from the incident investigation above ("is it
+whenever a user fetches data?" -> "how many users are even on the site").
+`dashboard.py` gained a `track_activity` middleware recording a per-client-IP
+last-seen timestamp for every `/api/*` request, and a superuser-gated
+`GET /api/admin/active-users` surfacing IPs seen in the last 15 minutes.
+`_client_ip()` reads `X-Forwarded-For`'s first entry rather than
+`request.client.host` -- confirmed live the latter shows Railway's internal
+edge-proxy hop (an `fd12:...` address, matching `railway logs --http`'s own
+`upstreamAddress` field), not the real visitor, while `X-Forwarded-For`
+matches that same command's `srcIp`. Deliberately IP-based, not resolved to
+a full account identity (cheap, no per-request DB lookup) and deliberately
+in-memory only, resetting on redeploy -- an observability convenience for a
+genuinely low-traffic period (confirmed live at the time: 1 distinct
+visitor, 15 requests over 2 hours, matching the dashboard's 60s
+auto-refresh polling), not a new analytics system. `railway logs --http
+--filter "@srcIp:..."` already gives the same underlying data ad hoc; this
+just makes "how many distinct visitors right now" a one-click authenticated
+check instead.
+
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 333 passing.
+
+## TSM sale-rate filter added (2026-08-01)
+
+Human request: "Lets work having a sellrate for each item from TSM, is this
+possible?" -- clarified via a follow-up question to "a filter, where the
+user can set a minimum sellrate," then confirmed the specific fields
+wanted ("Yes it is the region saleRate and soldPerDay") after checking
+what TSM's public feed actually exposes.
+
+**ToS check before building**: `WebFetch` was blocked (403) on every TSM
+URL tried (`tradeskillmaster.com/terms`, `robots.txt`,
+`public-data.tradeskillmaster.com/`, the support-docs page) -- worked
+around by switching to a real `claude-in-chrome` browser session, which
+wasn't blocked. First guessed ToS URL (`/terms-of-service`) 404'd; the
+real one, found via the page's own footer link, is `/terms`. Read both the
+real ToS (generic e-commerce boilerplate, no clause against third-party
+tools consuming the public feed) and the Public Data API docs
+(`support.tradeskillmaster.com/en_US/api-documentation/tsm-public-web-api`,
+explicitly invites third-party tools to pull the feed, and separately
+invites "more programmatic usage" to reach out to
+`admin@tradeskillmaster.com` first). No hard blocker found; that email
+hasn't been sent yet, worth doing before this sees heavier production
+traffic.
+
+**Schema discovery**: TSM's public CSVs come in two shapes --
+per-realm (`realm/{slug}/items.csv`, updates ~3h, has `marketValue`/
+`minBuyout`/`recent`/`historical` but *no* sale-rate fields) and
+region-wide (`region/items.csv`, updates ~daily, the only place
+`saleRate`/`soldPerDay` actually live). This fixed the feature's shape
+before any code was written: EU-region-wide liquidity, not sell-realm-
+specific, same relationship `region_median_g` already has to the sell
+realm's own price.
+
+**Implementation** (four pieces, same review/confirm-before-building
+pattern as the incident-prevention plan earlier the same day):
+
+1. `tsm.py` (new): `SaleRateCache`, same `AppearanceCache`/`NameCache`
+   display/filter-only convention -- never raises, `_fetch_csv()` returns
+   `{}` on any failure, `refresh_if_stale()` keeps stale data on a failed
+   refetch rather than clearing it. **Single-writer by design from the
+   start**, not found live and fixed later like `item_names.py`'s same-day
+   race: only `collect_all.py`'s background loop calls
+   `refresh_if_stale()`/writes the cache file; every live-request read
+   only calls `.get()`. Live-tested directly (`tsm._fetch_csv()` against
+   the real feed): 30,984 items parsed successfully.
+2. `collect_all.py`: refreshes the cache once per background cycle (after
+   the base-level prewarm block), wrapped in its own `try/except` so a TSM
+   outage can't break realm collection, reported in the cycle summary as
+   `tsm_refreshed`.
+3. `snipe_check.py`: `find_snipes()` gained `min_sale_rate`, applied via a
+   new `_filter_by_sale_rate()` -- same post-SQL-pool shape as
+   `_filter_by_appearance()`, attaches `region_sale_rate`/
+   `region_sold_per_day` to every row unconditionally (both `None` when
+   TSM has no data: never tracked, a caged pet since `item_id=82800` is
+   shared across every species, or a cold cache) and, when a minimum is
+   set, excludes rows with no TSM data rather than letting them through.
+   Triggers the same SQL-widening path `max_appearance_sources` already
+   uses, since a post-SQL filter can only shrink what the `LIMIT` already
+   cut down to.
+4. `dashboard.py`/`dashboard.html`: the two new fields pass through
+   `_row_to_json()` unconditionally (not gated behind `names=true`, same
+   as `region_median_g`); a new "Min sale rate %" filter-rail input
+   (0-100, converted to a fraction, matching `min_discount_pct`'s
+   convention) and a "Sale rate" hover-tooltip row. `CACHE_VERSION`
+   bumped 6 -> 7 for the row-shape change. The percentage-input parsing
+   deliberately uses the same `.trim() ? ... : null` pattern (not
+   `Number(x) || null`) as the "Max per item" fix from the day before --
+   `"0"` here is a real filter (excludes untracked items), not the same
+   as leaving the field blank.
+
+**Test isolation gap found three times, same root cause each time**:
+`tsm.CACHE_PATH` is computed once at import time from `tsm.DATA`, so
+patching `DATA` after import doesn't retroactively move it -- the exact
+same lesson already learned for `item_names.py`/`appearance.py` earlier in
+the project, re-learned here because a new module reintroduced the same
+pattern. First found in `test_collect_all.py`'s `env` fixture (confirmed
+live: suite runtime dropped 1.75s -> 0.75s once real TSM network calls
+during tests were actually stopped), then found missing the same way
+(silently reading whatever was in the real project's `data/
+tsm_sale_rates.json` instead of crashing, since the read paths are all
+non-raising) in `test_snipe_check.py` and `test_dashboard.py`. Fixed all
+three with an `isolate_tsm_cache` autouse fixture matching the established
+`isolate_appearance_cache`/`isolate_item_names_cache` pattern exactly.
+
+**Frontend verified in a real browser**, not just by reading the diff (per
+this project's own "Definition of done"): no local Postgres was running,
+so a throwaway `postgres:16-alpine` Docker container was spun up, migrated
+with `alembic upgrade head`, and torn down again after -- registered a
+real local account, logged in, loaded real Draenor data (a genuine cold
+`/api/snipes` call against real local snapshot/listing parquet files), and
+confirmed live: the filter input renders in the rail, the tooltip shows a
+"Sale rate" row with a real percentage against real data, typing a high
+threshold (50%) correctly empties the table, a low threshold (1%) narrows
+it without erroring, and clearing the field restores the full unfiltered
+set exactly. No console errors during any of it.
+
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 352 passing.
