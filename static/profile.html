@@ -252,6 +252,7 @@
     <div class="section-head">
       <h2>WoW Accounts</h2>
       <p class="section-lede">Register your WoW accounts and the realms where your sniping characters live.</p>
+      <p class="cap-note" id="realm-coverage" style="display:none;"></p>
     </div>
     <div id="wow-accounts-upsell" class="upsell" style="display:none;"></div>
     <div id="wow-accounts-loading" class="wow-accounts-loading" style="display:none;">
@@ -402,6 +403,24 @@ function renderWowAccounts() {
   $("wow-accounts-loading").style.display = "none";
   const list = $("wow-accounts-list");
   list.style.display = "grid";
+
+  // Distinct realms covered across every account, not a per-account sum --
+  // two accounts sharing a realm should still count as one realm covered.
+  // Denominator is every distinct EU connected realm (2026-08-02, human
+  // idea: "would be fun to add 'coverage counter' -- how many realms do
+  // you already have characters on, added to all your accounts").
+  const coveredIds = new Set();
+  for (const acct of currentAccounts) {
+    for (const id of acct.realms) coveredIds.add(id);
+  }
+  const totalRealms = new Set(realmSearchEntries.map(realm => realm.id)).size;
+  const coverageEl = $("realm-coverage");
+  if (totalRealms > 0) {
+    coverageEl.textContent = `Covering ${coveredIds.size} of ${totalRealms} EU realms.`;
+    coverageEl.style.display = "block";
+  } else {
+    coverageEl.style.display = "none";
+  }
 
   const cards = currentAccounts.map(acct => {
     const excludeIds = new Set(acct.realms);
