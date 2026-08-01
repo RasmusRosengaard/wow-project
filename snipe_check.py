@@ -224,13 +224,39 @@ SLITHERSHELL_ARMOR_ITEM_IDS = frozenset({
     169434,  # Slithershell Cloak (CLOAK)
 })
 
+# Black Tooth Grunt's set (added 2026-08-01, human request): the Plate
+# counterpart to SLITHERSHELL_ARMOR_ITEM_IDS -- same leveling quest-reward
+# pattern, confirmed live via blizz.api_get() (searched all 8 pages of
+# `name.en_US=Black Tooth` for the exact substring "Black Tooth Grunt",
+# since Blizzard's search API ORs individual words -- "Black"/"Tooth" alone
+# each match hundreds of unrelated items): 8 Plate pieces (CHEST/FEET/HAND/
+# HEAD/LEGS/SHOULDER/WAIST/WRIST -- e.g. Black Tooth Grunt's Armplates, the
+# WRIST piece the human named), all UNCOMMON quality, ilvl 60, required
+# level 50. No cloak this time (unlike Slithershell) -- checked the
+# contiguous id range around it (169289 is an unrelated item) and confirmed
+# via the same exact-substring scan. A related item, Plundered Black Tooth
+# Face-Splitter (169290, Weapon/Axe, RARE), uses a different naming pattern
+# ("Plundered ..." not "Black Tooth Grunt's ...") and quality tier --
+# deliberately excluded, same reasoning as Slithershell Warglaive.
+BLACK_TOOTH_GRUNT_ARMOR_ITEM_IDS = frozenset({
+    169281,  # Black Tooth Grunt's Breastplate (CHEST)
+    169282,  # Black Tooth Grunt's Crushers (HAND)
+    169283,  # Black Tooth Grunt's Greatbelt (WAIST)
+    169284,  # Black Tooth Grunt's Helm (HEAD)
+    169285,  # Black Tooth Grunt's Legplates (LEGS)
+    169286,  # Black Tooth Grunt's Pauldrons (SHOULDER)
+    169287,  # Black Tooth Grunt's Warboots (FEET)
+    169288,  # Black Tooth Grunt's Armplates (WRIST)
+})
+
 # Every curated (non-threshold) sus item-id set, unioned once here so
 # is_sus_item() only needs one membership check -- a new curated batch
 # should add its own documented frozenset above and join it into this set,
 # not grow one undifferentiated blob (each batch keeps its own provenance
 # comment, e.g. why CLASS_STARTER_ARMOR_ITEM_IDS or SLITHERSHELL_ARMOR_ITEM_IDS
 # exists, intact and separately searchable).
-CURATED_SUS_ITEM_IDS = CLASS_STARTER_ARMOR_ITEM_IDS | SLITHERSHELL_ARMOR_ITEM_IDS
+CURATED_SUS_ITEM_IDS = (CLASS_STARTER_ARMOR_ITEM_IDS | SLITHERSHELL_ARMOR_ITEM_IDS
+                        | BLACK_TOOTH_GRUNT_ARMOR_ITEM_IDS)
 
 
 def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None) -> bool:
@@ -239,7 +265,7 @@ def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None
     LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified examples and the
     twink-market caveat) or one of the curated known-junk item ids (see
     CURATED_SUS_ITEM_IDS's comment -- currently the class-starter armor
-    pieces and the Slithershell leveling set). None-safe: a caged pet or
+    pieces and the Slithershell/Black Tooth Grunt's leveling sets). None-safe: a caged pet or
     any item NameCache couldn't resolve yields inventory_type=None/
     base_level=None here, correctly returning False rather than raising --
     same defensive pattern NON_TRANSMOG_INVENTORY_TYPES's callers use."""

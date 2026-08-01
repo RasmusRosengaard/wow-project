@@ -1215,3 +1215,21 @@ def test_is_sus_item_slithershell_warglaive_not_included():
     # weapon -- deliberately excluded, the human asked for "armors."
     assert 170119 not in snipe_check.SLITHERSHELL_ARMOR_ITEM_IDS
     assert snipe_check.is_sus_item(170119, "WEAPON", None) is False
+
+
+def test_is_sus_item_black_tooth_grunt_flags_every_confirmed_piece():
+    # Black Tooth Grunt's set (added 2026-08-01, human request) -- the Plate
+    # counterpart to Slithershell, confirmed live via blizz.api_get(), see
+    # BLACK_TOOTH_GRUNT_ARMOR_ITEM_IDS's comment: 8 Plate pieces, all ilvl
+    # 60/req level 50. Armplates (169288, WRIST) is the piece the human
+    # named directly.
+    for item_id in snipe_check.BLACK_TOOTH_GRUNT_ARMOR_ITEM_IDS:
+        assert snipe_check.is_sus_item(item_id, "NON_EQUIP", None) is True
+
+
+def test_is_sus_item_black_tooth_face_splitter_not_included():
+    # Plundered Black Tooth Face-Splitter (169290) is a different naming
+    # pattern ("Plundered ..." not "Black Tooth Grunt's ...") and a
+    # different quality tier (RARE, not UNCOMMON) -- deliberately excluded.
+    assert 169290 not in snipe_check.BLACK_TOOTH_GRUNT_ARMOR_ITEM_IDS
+    assert snipe_check.is_sus_item(169290, "WEAPON", None) is False
