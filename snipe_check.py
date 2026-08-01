@@ -200,17 +200,50 @@ CLASS_STARTER_ARMOR_ITEM_IDS = frozenset({
     187774, 187775, 187776, 187777, 187778,
 })
 
+# Slithershell set (added 2026-08-01, human request): a naga-themed leveling
+# quest-reward armor set, not a class-starter set -- confirmed live via
+# blizz.api_get() (`/data/wow/search/item?name.en_US=Slithershell`, single
+# page, 10 total results): 8 Leather pieces (CHEST/FEET/HAND/HEAD/LEGS/
+# SHOULDER/WAIST/WRIST -- e.g. Slithershell Armwraps, the WRIST piece the
+# human named) + 1 Cloth CLOAK, all UNCOMMON quality, ilvl 58, required
+# level 50. Same "sus" reasoning as CLASS_STARTER_ARMOR_ITEM_IDS -- an old,
+# low-value leveling item, plausible decoy-priced reference for a fake
+# "100% discount" snipe. The 10th search result, Slithershell Warglaive
+# (170119, Weapon/Warglaives), is deliberately excluded -- the human asked
+# for "armors" specifically, and CLASS_STARTER_ARMOR_ITEM_IDS's own
+# precedent doesn't cover weapons either.
+SLITHERSHELL_ARMOR_ITEM_IDS = frozenset({
+    169405,  # Slithershell Vest (CHEST)
+    169406,  # Slithershell Boots (FEET)
+    169407,  # Slithershell Mitts (HAND)
+    169408,  # Slithershell Tricorne (HEAD)
+    169409,  # Slithershell Leggings (LEGS)
+    169410,  # Slithershell Mantle (SHOULDER)
+    169411,  # Slithershell Belt (WAIST)
+    169412,  # Slithershell Armwraps (WRIST)
+    169434,  # Slithershell Cloak (CLOAK)
+})
+
+# Every curated (non-threshold) sus item-id set, unioned once here so
+# is_sus_item() only needs one membership check -- a new curated batch
+# should add its own documented frozenset above and join it into this set,
+# not grow one undifferentiated blob (each batch keeps its own provenance
+# comment, e.g. why CLASS_STARTER_ARMOR_ITEM_IDS or SLITHERSHELL_ARMOR_ITEM_IDS
+# exists, intact and separately searchable).
+CURATED_SUS_ITEM_IDS = CLASS_STARTER_ARMOR_ITEM_IDS | SLITHERSHELL_ARMOR_ITEM_IDS
+
 
 def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None) -> bool:
     """True for a "sus" (suspect) item worth a second look before trusting a
     "100% discount" snipe: an old neck/ring/trinket item (see
     LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified examples and the
-    twink-market caveat) or one of the confirmed class-starter armor pieces
-    (see CLASS_STARTER_ARMOR_ITEM_IDS's comment). None-safe: a caged pet or
+    twink-market caveat) or one of the curated known-junk item ids (see
+    CURATED_SUS_ITEM_IDS's comment -- currently the class-starter armor
+    pieces and the Slithershell leveling set). None-safe: a caged pet or
     any item NameCache couldn't resolve yields inventory_type=None/
     base_level=None here, correctly returning False rather than raising --
     same defensive pattern NON_TRANSMOG_INVENTORY_TYPES's callers use."""
-    if item_id in CLASS_STARTER_ARMOR_ITEM_IDS:
+    if item_id in CURATED_SUS_ITEM_IDS:
         return True
     return (inventory_type in LEGACY_JEWELRY_INVENTORY_TYPES
             and base_level is not None
@@ -333,6 +366,25 @@ def _register_class_quota_maps(con: duckdb.DuckDBPyConnection, distinct_item_ids
                  pa.table({"bucket": list(class_quotas.keys()), "quota": list(class_quotas.values())}))
 
 
+# Server-side junk/decoy pre-filter (added 2026-08-01, human request): a row
+# is dropped from the SQL candidate pool -- before class_quotas/max_per_item/
+# top even see it -- only when BOTH the sell realm's own cheapest listing
+# AND the region median are under this, in gold. Deliberately an OR-to-keep
+# (AND-to-drop), not a floor on either number alone: an item can be
+# genuinely worth sniping on the strength of just one of the two numbers
+# (e.g. a real EU-wide market at healthy prices even if this particular sell
+# realm's own current listing happens to be a low outlier, or vice versa) --
+# requiring *both* to be healthy would wrongly cut those. The point is
+# freeing up a small top-N/class-quota budget from being spent on rows that
+# are unambiguously not worth the trip by either measure, not narrowing what
+# counts as a real snipe. Applied via find_snipes()'s min_value_floor_g
+# param -- dashboard.py's live API always passes MIN_VALUE_FLOOR_G; the CLI
+# and every existing test default to None (no floor), so debugging/
+# inspecting junk rows directly is still possible and no prior behavior
+# changed for callers that don't opt in.
+MIN_VALUE_FLOOR_G = 500
+
+
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
                 min_gold: float | None = None, max_gold: float | None = None,
@@ -340,6 +392,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 max_appearance_sources: int | None = None,
                 max_per_item: int | None = None,
                 class_quotas: dict[str, int] | None = None,
+                min_value_floor_g: float | None = None,
                 top: int = 50, sort: str = "discount") -> list[dict]:
     """**Pricing model, replaced 2026-07-25 (human product decision)**: the
     sell price for an item/variant is simply the sell realm's own current
@@ -471,14 +524,27 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     request): the *median* of the same per-other-realm cheapest listings
     (`region_stats.region_median_cheapest`, built from the same `buy` rows
     already loaded here -- no new data source), shown to the user as "the
-    EU median price" for the item -- purely informational display, doesn't
-    gate or filter anything. Median rather than a mean specifically because
-    this number is shown directly to a human as a reference point -- a
-    single other realm having its own outlier listing skews a mean far more
-    than a median, and the whole point of showing this figure is to be a
-    trustworthy "what does this actually cost around the region" number.
-    (`sell_price_suspect`, an earlier mean-based scam-price flag that used
-    to live alongside this, was removed 2026-07-31 -- see HISTORY.md.)
+    EU median price" for the item -- primarily an informational display
+    value (doesn't gate anything on its own), though see min_value_floor_g
+    below for the one place it's also used to filter. Median rather than a
+    mean specifically because this number is shown directly to a human as a
+    reference point -- a single other realm having its own outlier listing
+    skews a mean far more than a median, and the whole point of showing
+    this figure is to be a trustworthy "what does this actually cost
+    around the region" number. (`sell_price_suspect`, an earlier mean-based
+    scam-price flag that used to live alongside this, was removed
+    2026-07-31 -- see HISTORY.md.)
+
+    **min_value_floor_g** (added 2026-08-01, human request, see
+    MIN_VALUE_FLOOR_G's own comment above for the full rationale): drops a
+    row from the SQL candidate pool when BOTH the sell realm's cheapest
+    listing (sell_p_g) and the region median (region_median_g) are under
+    this many gold -- an OR-to-keep, AND-to-drop threshold, not a floor on
+    either number individually. None (the default, and every CLI call)
+    disables it entirely, matching class_quotas' own None-preserves-prior-
+    behavior convention. dashboard.py's live `/api/snipes` always passes
+    MIN_VALUE_FLOOR_G so a class-quota bucket's limited budget isn't spent
+    on rows that are unambiguously junk/decoy by both measures at once.
 
     **class_quotas** (added 2026-07-27, human request): a {bucket: max_rows}
     dict (bucket keys match dashboard.html's ITEM_CLASS_FILTERS -- weapon/
@@ -521,6 +587,13 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
         price_filter += f" AND b.buy_unit_price <= {float(max_gold) * 10000}"
     if min_sell_now is not None:
         price_filter += f" AND n.cheapest_now >= {float(min_sell_now) * 10000}"
+    if min_value_floor_g is not None:
+        # AND-to-drop (OR-to-keep), see MIN_VALUE_FLOOR_G's comment above --
+        # a row survives if *either* number clears the floor, only dropped
+        # when both fall short.
+        floor_copper = float(min_value_floor_g) * 10000
+        price_filter += (f" AND (n.cheapest_now >= {floor_copper}"
+                          f" OR rs.region_median_cheapest >= {floor_copper})")
     # When appearance-filtering, pull a wider SQL candidate pool since rows
     # get dropped *after* the query (the appearance cache is a local JSON
     # file, not something to join in SQL) -- otherwise a top-50 SQL LIMIT

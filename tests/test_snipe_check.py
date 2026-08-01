@@ -636,6 +636,71 @@ def test_find_snipes_region_median_uses_median_not_mean(tmp_path, monkeypatch):
     assert all(r["region_median_copper"] == 20_000 for r in rows)
 
 
+def test_find_snipes_min_value_floor_keeps_row_if_either_price_clears_it(tmp_path, monkeypatch):
+    """min_value_floor_g (human request, 2026-08-01): OR-to-keep, AND-to-drop
+    -- a row survives if *either* the sell price or the region median clears
+    the floor, only dropped when both fall short. Three items exercise all
+    three cases: sell price alone clears it, region median alone clears it,
+    neither does."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    ITEM_SELL_HIGH = 301   # sell price 600g (>=500g), region median ~10g (<500g)
+    ITEM_MEDIAN_HIGH = 302  # sell price 2g (<500g), region median 500g (>=500g)
+    ITEM_BOTH_LOW = 303    # sell price 2g, region median ~1g -- both under
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [
+        snap_row(9999, T1, item_id=103),
+        snap_row(1, T1, item_id=ITEM_SELL_HIGH, buyout=6_000_000),     # 600g
+        snap_row(2, T1, item_id=ITEM_MEDIAN_HIGH, buyout=20_000),      # 2g
+        snap_row(3, T1, item_id=ITEM_BOTH_LOW, buyout=20_000),         # 2g
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    # ITEM_SELL_HIGH: one cheap buy realm -> region median is low (~10g),
+    # but the sell-side price (600g) alone should keep it.
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(BUY_CR_A, item_id=ITEM_SELL_HIGH, buyout=100_000, auction_id=301)],  # 10g
+        schema=LISTING_SCHEMA), listings_dir / f"{BUY_CR_A}.parquet")
+    # ITEM_MEDIAN_HIGH: candidate realm B is cheap (for the discount to
+    # qualify), two decoy realms are exactly 500g each -- with 3 realms'
+    # floors sorted [cheap, 500g, 500g], the median (the true middle value,
+    # not an average -- that only applies to an even count) is exactly
+    # 500g, clearing the floor even though the sell price (2g) doesn't.
+    pq.write_table(pa.Table.from_pylist([
+        listing_row(BUY_CR_B, item_id=ITEM_MEDIAN_HIGH, buyout=1_000, auction_id=302),      # 0.1g
+        listing_row(3333, item_id=ITEM_MEDIAN_HIGH, buyout=5_000_000, auction_id=303),       # 500g
+        listing_row(4444, item_id=ITEM_MEDIAN_HIGH, buyout=5_000_000, auction_id=304),       # 500g
+    ], schema=LISTING_SCHEMA), listings_dir / "9001.parquet")
+    # ITEM_BOTH_LOW: cheap sell price, cheap region median -- neither clears.
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(BUY_CR_A, item_id=ITEM_BOTH_LOW, buyout=1_000, auction_id=305)],  # 0.1g
+        schema=LISTING_SCHEMA), listings_dir / f"{BUY_CR_A}_low.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+
+    # No floor (default None) -- every case present, matching prior behavior.
+    rows_no_floor = snipe_check.find_snipes(con, SELL_CR, min_discount=0)
+    item_ids_no_floor = {r["item_id"] for r in rows_no_floor}
+    assert {ITEM_SELL_HIGH, ITEM_MEDIAN_HIGH, ITEM_BOTH_LOW} <= item_ids_no_floor
+
+    # Floor on -- only the both-low item is cut.
+    rows_floored = snipe_check.find_snipes(con, SELL_CR, min_discount=0,
+                                           min_value_floor_g=snipe_check.MIN_VALUE_FLOOR_G)
+    item_ids_floored = {r["item_id"] for r in rows_floored}
+    assert ITEM_SELL_HIGH in item_ids_floored
+    assert ITEM_MEDIAN_HIGH in item_ids_floored
+    assert ITEM_BOTH_LOW not in item_ids_floored
+
+
 def _stub_item_classes(monkeypatch, mapping: dict[int, tuple[int | None, int | None]]):
     """mapping: item_id -> (item_class, item_subclass). Used by class_quotas
     tests to control which bucket (snipe_check._class_bucket()) each test
@@ -1134,3 +1199,19 @@ def test_is_sus_item_false_for_unrelated_item_at_matching_ilvl():
     # same ilvl 1 as real starter gear, in a non-jewelry slot -- must not be
     # flagged. Proves this is a curated id match, not "any ilvl-1 item."
     assert snipe_check.is_sus_item(999999, "WAIST", 1) is False
+
+
+def test_is_sus_item_slithershell_armor_flags_every_confirmed_piece():
+    # Slithershell set (added 2026-08-01, human request) -- confirmed live
+    # via blizz.api_get(), see SLITHERSHELL_ARMOR_ITEM_IDS's comment: 8
+    # Leather pieces + 1 Cloth cloak, all ilvl 58/req level 50. Armwraps
+    # (169412, WRIST) is the piece the human named directly.
+    for item_id in snipe_check.SLITHERSHELL_ARMOR_ITEM_IDS:
+        assert snipe_check.is_sus_item(item_id, "NON_EQUIP", None) is True
+
+
+def test_is_sus_item_slithershell_warglaive_not_included():
+    # The set's 10th search result, Slithershell Warglaive (170119), is a
+    # weapon -- deliberately excluded, the human asked for "armors."
+    assert 170119 not in snipe_check.SLITHERSHELL_ARMOR_ITEM_IDS
+    assert snipe_check.is_sus_item(170119, "WEAPON", None) is False

@@ -477,6 +477,17 @@ async def api_snipes(sell: int, items: str | None = None, min_discount: float = 
                                        max_appearance_sources=max_appearance_sources,
                                        max_per_item=max_per_item,
                                        class_quotas=_class_quotas(user),
+                                       # Junk/decoy pre-filter (2026-08-01, human
+                                       # request), always on for the live API --
+                                       # see snipe_check.MIN_VALUE_FLOOR_G's
+                                       # comment. Frees the tier's top-N/class-
+                                       # quota budget from rows that are under
+                                       # 500g by both sell price and EU median
+                                       # at once, not user-configurable (the
+                                       # existing min_sell_now query param is
+                                       # the user-adjustable floor, this is a
+                                       # baseline beneath it).
+                                       min_value_floor_g=snipe_check.MIN_VALUE_FLOOR_G,
                                        top=top, sort=sort)
 
     # find_snipes() can still make blocking Blizzard API calls mid-query --

@@ -119,6 +119,19 @@ def default_item_class_stub(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def disable_value_floor(monkeypatch):
+    """api_snipes() (2026-08-01) always passes snipe_check.MIN_VALUE_FLOOR_G
+    to find_snipes()'s min_value_floor_g -- without this default, every
+    test fixture's small, easy-to-read gold amounts (2g sell prices etc.,
+    same reasoning as default_item_class_stub above) would fall under the
+    real 500g floor and silently vanish from every /api/snipes response.
+    Same isolation precedent as that fixture: a test that specifically
+    exercises the floor sets snipe_check.MIN_VALUE_FLOOR_G back via its own
+    monkeypatch call, which overrides this default for that test."""
+    monkeypatch.setattr(snipe_check, "MIN_VALUE_FLOOR_G", None)
+
+
+@pytest.fixture(autouse=True)
 def isolate_appearance_cache(tmp_path, monkeypatch):
     """find_snipes() instantiates a real appearance.AppearanceCache, which
     reads CACHE_PATH (data/appearances.json) unless redirected -- same
@@ -718,6 +731,21 @@ def test_api_snipes_respects_min_gold_and_max_gold(data_dir, monkeypatch):
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
                                           "max_gold": 5})
     assert r.json()["count"] == 1
+
+
+def test_api_snipes_applies_the_junk_value_floor(data_dir, monkeypatch):
+    """api_snipes() (2026-08-01, human request) always passes
+    snipe_check.MIN_VALUE_FLOOR_G to find_snipes() -- proves the route
+    actually wires it through, not just that find_snipes() itself supports
+    it (see test_snipe_check.py's own min_value_floor_g tests for the
+    OR-to-keep/AND-to-drop logic). data_dir's fixture item (2g sell price,
+    ~1g region median -- both well under 500g) is visible by default
+    thanks to disable_value_floor's autouse override; re-enabling the real
+    floor here must make it disappear."""
+    run_diff(monkeypatch)
+    monkeypatch.setattr(snipe_check, "MIN_VALUE_FLOOR_G", 500)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
+    assert r.json()["rows"] == []
 
 
 def test_api_realms_lists_collected_realms(data_dir):
