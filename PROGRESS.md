@@ -7,7 +7,16 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-08-01 — the biggest incident this project has had:
+Last updated: 2026-08-02 — new feature: multi-WoW-account registration.
+A subscribed user can register their real WoW accounts and which EU
+realms each has a character on (`profile.html`, `wow_accounts.py`); the
+dashboard gets a new "Your account" column showing which account to log
+into for a given snipe. Also fixed a real horizontal-scrollbar regression
+the new column introduced (header text now wraps instead of forcing the
+table wider than its container). Full trace in `HISTORY.md`'s "Multi-
+WoW-account registration" entry.
+
+2026-08-01 — the biggest incident this project has had:
 a Postgres connection-pool exhaustion (broke login) plus a Blizzard
 rate-limit storm (missing icons, failed realm collection), both real,
 pre-existing architectural weaknesses triggered back-to-back by the
@@ -74,6 +83,14 @@ several entries around it, all dated 2026-08-01.
   and live requests self-bound their wait on it (15s) instead of blocking
   indefinitely. A superuser-only `GET /api/admin/active-users` shows who's
   currently on the site.
+- **Multi-WoW-account registration** (added 2026-08-02, human request,
+  subscribers only): register real WoW-account labels and which EU
+  realms each has a character on (`/profile`, `wow_accounts.py`, capped
+  at 10 accounts/50 realms each, human-specified). The dashboard's new
+  "Your account" column shows which account to log into for a snipe,
+  computed entirely client-side (never sent to the server as part of the
+  shared per-realm row cache). See `CLAUDE.md`'s `wow_accounts.py`/
+  `db.py`/`static/profile.html`/`static/dashboard.html` rows.
 
 **Not built yet**, in priority order — see "Next up" below:
 1. **Marketing** — explicitly named the next step (2026-07-26), superseding
@@ -381,6 +398,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | Item name/icon/quality cache | `item_names.py` |
 | Appearance-rarity cache (Phase 3 groundwork) | `appearance.py` |
 | TSM region-wide sale-rate cache | `tsm.py` (added 2026-08-01) |
+| Multi-WoW-account registration | `wow_accounts.py`, `static/profile.html` (added 2026-08-02) |
 | Public pricing page | `static/pricing.html`, `GET /pricing` in `dashboard.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
 | Tests | `tests/` (`pytest -q`; run `env -u DATABASE_URL pytest -q` too before pushing), no external services needed |

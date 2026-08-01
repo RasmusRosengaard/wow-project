@@ -38,7 +38,9 @@ import db
 import fetch_snapshot
 import forum
 import snipe_check
-from auth import UserCreate, UserRead, auth_backend, current_active_user, fastapi_users, has_active_subscription
+import wow_accounts
+from auth import (UserCreate, UserRead, auth_backend, current_active_user, current_subscribed_user,
+                  fastapi_users, has_active_subscription)
 from db import User, get_async_session
 from fetch_snapshot import ilvl_plausible
 from item_names import LIVE_RESOLVE_DEADLINE_SECONDS, NameCache
@@ -200,6 +202,7 @@ app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), pref
 app.include_router(billing.router)
 app.include_router(forum.router)
 app.include_router(forum.image_router)
+app.include_router(wow_accounts.router)
 
 # Realm name/slug never changes -- cache in-process for the life of the
 # server rather than a file cache, to keep this dashboard-only concern out of
@@ -697,6 +700,23 @@ def api_realms(user: User = Depends(current_active_user)) -> dict:
     # (see /api/snipes' SNIPE_TIER_CAPS) still needs the realm picker to
     # pick a sell realm at all, it's just capped on row count once it fetches.
     return {"realms": _realms_payload(_list_snapshotted_realms())}
+
+
+@app.get("/api/realms/eu")
+def api_realms_eu(user: User = Depends(current_subscribed_user)) -> dict:
+    """Every EU connected realm (contrast /api/realms, which is scoped to
+    realms this app has snapshot data for) -- backs profile.html's
+    WoW-account realm-registration picker (wow_accounts.py). Gated by
+    current_subscribed_user, not current_active_user: can trigger up to
+    ~92 individual Blizzard calls on a cold _realm_info_cache
+    (blizz.list_connected_realms() + one connected_realm_realms() per id),
+    so it's gated the same as the paid feature it exists to support.
+    Plain `def`, not `async def` -- Starlette runs synchronous routes in a
+    worker thread automatically, so this is already off the event loop
+    without needing asyncio.to_thread() (contrast api_snipes(), which is
+    `async def` and therefore does need it -- see "Real production
+    outage" in CLAUDE.md)."""
+    return {"realms": _realms_payload(blizz.list_connected_realms())}
 
 
 def _list_snapshotted_realms() -> list[int]:

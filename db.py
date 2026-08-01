@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from fastapi import Depends
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users_db_sqlalchemy.generics import GUID
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -75,6 +75,41 @@ class ForumPost(Base):
     # Set in Python (not a DB server_default) so the value is tz-aware and
     # identical across the Postgres-in-production / SQLite-in-tests split
     # this project already relies on (see this module's docstring).
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=lambda: datetime.now(timezone.utc))
+
+
+class WowAccount(Base):
+    """A user's self-declared WoW account label (e.g. "Main", "Alt account")
+    -- no Blizzard OAuth/credentials, purely metadata typed in on
+    profile.html. wow_accounts.py enforces the 10-per-user cap at write
+    time via an atomic INSERT...SELECT...WHERE, not a Python-side
+    count-then-insert (see that module for why)."""
+    __tablename__ = "wow_account"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("user.id"), nullable=False)
+    label: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=lambda: datetime.now(timezone.utc))
+
+
+class WowAccountRealm(Base):
+    """One EU connected-realm id (Blizzard's cr_id) a WowAccount has a
+    character on -- stores the raw int id, same convention every realm
+    reference in this app already uses (snipe_check/dashboard never store a
+    realm name for matching, only the id -- see dashboard._row_to_json's
+    buy_realm field). Never validated against blizz.list_connected_realms()
+    at write time (that's a live Blizzard call); a bogus id is harmless --
+    it simply never matches any dashboard row's buy_realm."""
+    __tablename__ = "wow_account_realm"
+    __table_args__ = (
+        UniqueConstraint("wow_account_id", "connected_realm_id", name="uq_wow_account_realm_account_realm"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wow_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("wow_account.id"), nullable=False)
+    connected_realm_id: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=lambda: datetime.now(timezone.utc))
 

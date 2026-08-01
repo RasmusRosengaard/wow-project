@@ -1688,3 +1688,122 @@ shared formatter.
 
 `pytest -q`: 352 passing (no Python-side change, `static/dashboard.html`
 only).
+
+## Multi-WoW-account registration + "Your account" column added (2026-08-02)
+
+Human request: "Lets add a 'multi-wow-account-service'. So the idea is,
+that a user on their profile can 'add' wow accounts... on each account
+there should be the option to add realms, where the user is has snipe
+toons on... display to the user, when a realm with a snipe pops up on the
+dashboard, the user should be able to see which wow account they actually
+should log into." Confirmed via a follow-up AskUserQuestion round: a
+dedicated table column (not just a badge/tooltip), gated behind
+`current_subscribed_user` (not the free tier -- same restriction as the
+paid sniping feature itself), and human-specified caps (10 WoW accounts
+per user, 50 realms per account).
+
+**Full Plan Mode workflow** (two parallel Explore agents for backend/
+frontend research, one Plan agent for the design, then a manual review
+pass reading the actual code before finalizing): the backend Explore agent
+confirmed realm identity throughout this app is always an integer
+Blizzard connected-realm id (`snipe_check.find_snipes()` aliases it
+`buy_realm`), never a name, so the new feature's matching key had to be
+that same integer, not anything typed in by hand. The frontend Explore
+agent confirmed there was no existing "add another X / remove X"
+repeatable-list UI pattern anywhere in this codebase to mirror -- this
+was genuinely new interaction, not an adaptation.
+
+**One real correction found only by directly reading the code, after the
+Plan agent's first draft assumed otherwise**: `/api/realms` (the existing
+sell-realm-list endpoint) turned out to be a plain `def`, not `async def`
+-- Starlette runs synchronous route handlers in a worker thread
+automatically, so it was already safe from the "blocking Blizzard call on
+the event loop" class of bug this app has hit twice before (that lesson
+specifically applies to blocking calls made *inside* an `async def`
+route, e.g. `api_snipes()`, which is why that one needs explicit
+`asyncio.to_thread()`). The new `GET /api/realms/eu` endpoint (full EU
+realm list, not just snapshotted ones -- backs the new realm picker on
+`profile.html`) was built the same plain-`def` way instead of the
+originally-planned `async def` + `asyncio.to_thread()` wrapper --
+simpler, and correct for the same underlying reason.
+
+**Data model** (`db.py`): `WowAccount` (`owner_id` FK to `user.id`,
+`label`) and `WowAccountRealm` (`wow_account_id` FK, `connected_realm_id`,
+`UniqueConstraint(wow_account_id, connected_realm_id)`). No ORM
+`relationship()` on either side, matching this file's existing
+plain-FK-column convention; no DB-level cascade delete (SQLite test
+fixtures don't enable FK enforcement) -- `wow_accounts.delete_account()`
+deletes child realm rows explicitly in the same transaction instead.
+New Alembic migration `b3e0f41fe4e9` verified by hand against a real
+scratch SQLite *and* a real scratch Postgres (`docker run
+postgres:16-alpine`, `alembic upgrade head`, then `\d wow_account` /
+`\d wow_account_realm` to eyeball the schema) -- confirmed important
+during planning: every test fixture in this suite builds its schema via
+`Base.metadata.create_all` directly against the ORM models, and CI never
+runs `alembic upgrade head` at all (only `docker-entrypoint.sh` does, at
+real deploy time), so the migration file's own correctness had no other
+safety net.
+
+**Backend** (`wow_accounts.py`, new): full CRUD -- list/create/rename/
+delete accounts, add/remove realms per account. The 10-account/50-realm
+caps are enforced via `_insert_account_atomic()`/`_insert_realm_atomic()`,
+a single `INSERT ... SELECT ... WHERE (SELECT COUNT(*) ...) < cap`
+statement rather than a separate `SELECT COUNT(*)` followed by a
+Python-side `if` -- this app has two recorded TOCTOU bugs from exactly
+that read-then-write pattern (`dashboard._enforce_realm_lock`'s old race,
+`item_names.NameCache.save()`'s lost-update race), both fixed the same
+way. Exposed as standalone functions specifically so tests can drive the
+exact interleaving directly with two independent sessions, mirroring
+`_enforce_realm_lock`'s own testability precedent -- new regression tests
+(`test_create_account_concurrent_requests_only_ten_win`,
+`test_add_realm_concurrent_duplicate_only_one_wins`) prove the atomic
+statement is the real guard, not anything held in a Python object. The
+duplicate-realm case doesn't need a second atomic check at all --
+`WowAccountRealm`'s `UniqueConstraint` is the actual atomic source of
+truth, caught as an `IntegrityError`.
+
+**Frontend**: `profile.html` gained a second `.card` (widened to 640px)
+with the account/realm management UI -- genuinely new interaction for
+this codebase, built from scratch rather than adapted from an existing
+pattern, reusing the inline-edit convention already proven by
+`#nickname`/`#nickname-save` for each account's rename control, and
+`dashboard.html`'s `populateRealmPicker()` fetch-then-build-`<option>`s
+shape for the realm picker (against the new `/api/realms/eu` instead of
+the existing `/api/realms`). Added a real regex-based `escapeHtml()`
+(not the `div.textContent`->`innerHTML` trick that caused this project's
+one real stored-XSS incident, see `snipeboard.html`'s own fix) since this
+page interpolates untrusted strings into `innerHTML` for the first time.
+`dashboard.html` gained a 9th "Your account" column, computed entirely
+client-side from a new `userRealmAccounts` Map (populated once in
+`init()`, skipped for free-tier accounts since they'd only ever get a
+402) cross-referenced against each row's existing `buy_realm` field --
+deliberately kept out of the cached per-realm row JSON and `CACHE_VERSION`
+(this is per-user data; baking it into the shared `localStorage`
+snipe-batch cache would leak one user's account labels into another
+user's cache-inspection surface).
+
+**Real bug found and fixed the same day, live in a real browser**: a
+human report immediately after shipping -- "the diagram rows and columns
+should not have a scroll bar... everything should be visible all the
+time" -- traced to `th`'s unconditional `white-space: nowrap`. With 9
+columns, the sum of every header label's forced-unbroken width (`table-
+layout: fixed` only fixes each column's *proportional* width, it doesn't
+stop unbreakable header text from forcing the table's overall rendered
+width past 100% of `.table-wrap`) pushed the table wider than its
+container, and `.table-wrap`'s own `overflow-x: auto` then showed a
+persistent scrollbar. Fixed by letting header text wrap (`white-space:
+normal`) instead of a narrower fix tied to one specific column or
+viewport width -- removes the forcing case entirely. Verified live: no
+scrollbar at the original window width or a resized-narrower one.
+
+**Verified end-to-end in a real browser** (same throwaway-Postgres-plus-
+local-server setup used earlier the same day for the Sale rate % work):
+registered a superuser test account, added a WoW account, added/removed/
+renamed it, added a second realm and confirmed the dashboard's "Your
+account" column showed the right label only on matching rows, confirmed
+column sorting puts matches first, deleted the account and confirmed its
+realms cascaded, and confirmed a free-tier (non-subscribed) account never
+fires `/api/wow-accounts` at all and sees a plain upsell message instead
+of the management UI on `/profile`.
+
+`pytest -q` and `env -u DATABASE_URL pytest -q`: 371 passing.

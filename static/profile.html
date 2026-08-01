@@ -80,7 +80,7 @@
   .nav a.active:hover { background: transparent; border-color: transparent; }
   #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
 
-  .shell { display: flex; justify-content: center; padding: 2.5rem 1.5rem; }
+  .shell { display: flex; flex-direction: column; align-items: center; gap: 1.5rem; padding: 2.5rem 1.5rem; }
   .card {
     background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
     padding: 2rem; width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 1.1rem;
@@ -112,6 +112,43 @@
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
   .contact { font-size: 0.75rem; color: var(--text-dim); text-align: center; margin-top: 0.9rem; }
   .contact a { color: var(--bullion); }
+
+  /* WoW Accounts (2026-08-02, human request) -- register real WoW accounts
+     + which EU realms have a character on them, so dashboard.html can show
+     which account to log into for a given snipe. Genuinely new UI for this
+     codebase (no existing repeatable add/remove-row pattern to mirror) --
+     kept as plain nested flex blocks rather than a <dialog>, matching this
+     page's existing inline-edit convention (#nickname/#nickname-save)
+     rather than snipeboard.html's modal-form convention, since this is a
+     settings page, not a one-off action. */
+  #wow-accounts-list { display: flex; flex-direction: column; gap: 1rem; }
+  .wow-account { border-bottom: 1px solid var(--hairline); padding-bottom: 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
+  .wow-account:last-child { border-bottom: none; padding-bottom: 0; }
+  .wow-account-head { display: flex; gap: 0.5rem; }
+  .wow-account-head input {
+    flex: 1; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.5rem; font-size: 0.85rem; font-family: inherit;
+  }
+  .wow-account-head button { width: auto; padding: 0.5rem 0.75rem; }
+  .wow-account-head button.danger { background: transparent; border-color: var(--alert); color: var(--alert); }
+  .wow-account-head button.danger:hover { background: var(--alert-bg); border-color: var(--alert); }
+  .realm-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .realm-chip {
+    display: inline-flex; align-items: center; gap: 0.35rem; background: var(--paper);
+    border: 1px solid var(--hairline-strong); border-radius: 3px; padding: 0.25rem 0.5rem; font-size: 0.78rem;
+  }
+  .realm-chip button {
+    width: auto; padding: 0; background: transparent; border: none; color: var(--text-dim);
+    font-weight: 700; line-height: 1; display: inline;
+  }
+  .realm-chip button:hover { color: var(--alert); background: transparent; }
+  .add-realm-row { display: flex; gap: 0.5rem; }
+  .add-realm-row select {
+    flex: 1; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.5rem; font-size: 0.85rem; font-family: inherit;
+  }
+  .add-realm-row button { width: auto; padding: 0.5rem 0.75rem; }
+  .cap-note { font-size: 0.72rem; color: var(--text-dim); }
 </style>
 </head>
 <body>
@@ -165,6 +202,21 @@
     <div id="error" class="error"></div>
     <div id="actions"></div>
   </div>
+  <div class="card" id="wow-accounts-card" style="max-width:640px;">
+    <h2>WoW Accounts</h2>
+    <div id="wow-accounts-upsell" class="cap-note" style="display:none;"></div>
+    <div id="wow-accounts-list"></div>
+    <div class="row" id="add-account-row" style="border-bottom:none; flex-direction:column; align-items:stretch; gap:0.5rem;">
+      <span class="lbl">Add a WoW account</span>
+      <div style="display:flex; gap:0.5rem;">
+        <input type="text" id="new-account-label" maxlength="50" placeholder="e.g. Main"
+               style="flex:1; background:var(--paper); border:1px solid var(--hairline-strong); color:var(--ink); border-radius:3px; padding:0.5rem; font-size:0.85rem; font-family:inherit;">
+        <button id="add-account-btn" style="width:auto; padding:0.5rem 0.9rem;">Add account</button>
+      </div>
+    </div>
+    <div id="add-account-cap-note" class="cap-note" style="display:none;">Maximum 10 WoW accounts reached.</div>
+    <div id="wow-accounts-error" class="error"></div>
+  </div>
 </div>
 <div class="contact">
   Issues with the site or payment? Email
@@ -173,6 +225,22 @@
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
+
+// Regex-based escaper, correct in any interpolation context (attribute or
+// text) -- not the div.textContent->innerHTML trick, which only escapes
+// what a browser escapes when serializing text nodes (&/</>) and not
+// quotes. This project shipped a real stored-XSS bug from that shortcut
+// once already (snipeboard.html, see HISTORY.md) -- realm/account-label
+// strings below are either Blizzard API data or free-text user input, so
+// this page needs the same real escaper dashboard.html/snipeboard.html use.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+let realmNameById = new Map();
+let currentAccounts = [];
 
 function badge(status, isSuperuser) {
   if (isSuperuser) return `<span class="badge active">Admin access</span>`;
@@ -218,6 +286,170 @@ async function saveNickname() {
   $("nickname").value = data.nickname;
 }
 
+async function loadEuRealms() {
+  try {
+    const r = await fetch("/api/realms/eu");
+    if (!r.ok) return; // not subscribed (402) -- leave the Map empty
+    const data = await r.json();
+    realmNameById = new Map((data.realms || []).map(realm => [realm.id, realm.name]));
+  } catch (e) { /* leave empty */ }
+}
+
+async function loadWowAccounts() {
+  try {
+    const r = await fetch("/api/wow-accounts");
+    if (!r.ok) return [];
+    const data = await r.json();
+    return data.accounts || [];
+  } catch (e) { return []; }
+}
+
+// Sorts by realm name, not by the html string (id-prefixed values would
+// otherwise sort lexicographically ahead of the name text).
+function realmOptionsHtml(excludeIds) {
+  const entries = [...realmNameById.entries()]
+    .filter(([id]) => !excludeIds.has(id))
+    .sort((a, b) => a[1].localeCompare(b[1]));
+  return entries.map(([id, name]) => `<option value="${id}">${escapeHtml(name)}</option>`).join("");
+}
+
+async function refreshWowAccounts() {
+  currentAccounts = await loadWowAccounts();
+  renderWowAccounts();
+}
+
+function renderWowAccounts() {
+  const list = $("wow-accounts-list");
+  if (!currentAccounts.length) {
+    list.innerHTML = `<div class="cap-note">No WoW accounts registered yet.</div>`;
+  } else {
+    list.innerHTML = currentAccounts.map(acct => {
+      const excludeIds = new Set(acct.realms);
+      const chips = acct.realms.map(id => {
+        const name = realmNameById.get(id) || String(id);
+        return `<span class="realm-chip">${escapeHtml(name)}<button data-remove-realm="${id}" data-account="${acct.id}" title="Remove">&times;</button></span>`;
+      }).join("") || `<span class="cap-note">No realms added yet.</span>`;
+      const atRealmCap = acct.realms.length >= 50;
+      const addRealmRow = atRealmCap
+        ? `<div class="cap-note">Maximum 50 realms reached.</div>`
+        : `<div class="add-realm-row">
+             <select data-account-select="${acct.id}"><option value="">Add a realm…</option>${realmOptionsHtml(excludeIds)}</select>
+             <button data-add-realm="${acct.id}">Add realm</button>
+           </div>`;
+      return `
+        <div class="wow-account" data-account-id="${acct.id}">
+          <div class="wow-account-head">
+            <input type="text" value="${escapeHtml(acct.label)}" maxlength="50" data-rename-input="${acct.id}">
+            <button data-rename="${acct.id}">Save</button>
+            <button class="danger" data-delete="${acct.id}">Delete</button>
+          </div>
+          <div class="realm-chips">${chips}</div>
+          ${addRealmRow}
+        </div>`;
+    }).join("");
+  }
+
+  list.querySelectorAll("[data-rename]").forEach(btn => {
+    btn.addEventListener("click", () => renameAccount(Number(btn.dataset.rename)));
+  });
+  list.querySelectorAll("[data-delete]").forEach(btn => {
+    btn.addEventListener("click", () => deleteAccount(Number(btn.dataset.delete)));
+  });
+  list.querySelectorAll("[data-add-realm]").forEach(btn => {
+    btn.addEventListener("click", () => addRealm(Number(btn.dataset.addRealm)));
+  });
+  list.querySelectorAll("[data-remove-realm]").forEach(btn => {
+    btn.addEventListener("click", () => removeRealm(Number(btn.dataset.account), Number(btn.dataset.removeRealm)));
+  });
+
+  const atAccountCap = currentAccounts.length >= 10;
+  $("add-account-btn").disabled = atAccountCap;
+  $("new-account-label").disabled = atAccountCap;
+  $("add-account-cap-note").style.display = atAccountCap ? "block" : "none";
+}
+
+async function addAccount() {
+  const err = $("wow-accounts-error");
+  err.textContent = "";
+  const input = $("new-account-label");
+  const label = input.value.trim();
+  if (!label) { err.textContent = "Account label can't be empty."; return; }
+  const r = await fetch("/api/wow-accounts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't add that account.";
+    return;
+  }
+  input.value = "";
+  await refreshWowAccounts();
+}
+
+async function renameAccount(accountId) {
+  const err = $("wow-accounts-error");
+  err.textContent = "";
+  const input = document.querySelector(`[data-rename-input="${accountId}"]`);
+  const label = input.value.trim();
+  if (!label) { err.textContent = "Account label can't be empty."; return; }
+  const r = await fetch(`/api/wow-accounts/${accountId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't rename that account.";
+    return;
+  }
+  await refreshWowAccounts();
+}
+
+async function deleteAccount(accountId) {
+  const err = $("wow-accounts-error");
+  err.textContent = "";
+  const r = await fetch(`/api/wow-accounts/${accountId}`, { method: "DELETE" });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't delete that account.";
+    return;
+  }
+  await refreshWowAccounts();
+}
+
+async function addRealm(accountId) {
+  const err = $("wow-accounts-error");
+  err.textContent = "";
+  const select = document.querySelector(`[data-account-select="${accountId}"]`);
+  const realmId = Number(select.value);
+  if (!realmId) { err.textContent = "Pick a realm first."; return; }
+  const r = await fetch(`/api/wow-accounts/${accountId}/realms`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ connected_realm_id: realmId }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't add that realm.";
+    return;
+  }
+  await refreshWowAccounts();
+}
+
+async function removeRealm(accountId, realmId) {
+  const err = $("wow-accounts-error");
+  err.textContent = "";
+  const r = await fetch(`/api/wow-accounts/${accountId}/realms/${realmId}`, { method: "DELETE" });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't remove that realm.";
+    return;
+  }
+  await refreshWowAccounts();
+}
+
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
   if (!me || !me.ok) { window.location.href = "/login"; return; }
@@ -241,6 +473,21 @@ async function saveNickname() {
     $("manage").addEventListener("click", startPortal);
   } else {
     actions.innerHTML = `<a class="btn" href="/subscribe">Subscribe</a>`;
+  }
+
+  // WoW Accounts card -- gated client-side (mirrors the actions div logic
+  // just above) since the server 402s anyway; no reason to show controls
+  // that will always fail for a non-subscribed account.
+  $("add-account-btn").addEventListener("click", addAccount);
+  const subscribed = data.subscription_status === "active" || data.is_superuser;
+  if (subscribed) {
+    await loadEuRealms();
+    await refreshWowAccounts();
+  } else {
+    $("wow-accounts-upsell").style.display = "block";
+    $("wow-accounts-upsell").innerHTML = `Subscribe to register WoW accounts and realms. <a href="/subscribe">See plans &rarr;</a>`;
+    $("wow-accounts-list").style.display = "none";
+    $("add-account-row").style.display = "none";
   }
 })();
 

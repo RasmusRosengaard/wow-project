@@ -971,6 +971,31 @@ def test_api_realms_empty_when_nothing_collected(tmp_path, monkeypatch):
     assert r.json()["realms"] == []
 
 
+def test_api_realms_eu_returns_full_list(tmp_path, monkeypatch):
+    """Contrast with /api/realms: independent of snapshot state entirely --
+    backs wow_accounts.py's realm-registration picker on profile.html, which
+    needs every EU connected realm, not just ones this app has collected."""
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)  # no snapshots at all
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [SELL_CR, BUY_CR_A])
+    r = client.get("/api/realms/eu")
+    assert r.status_code == 200
+    realms = r.json()["realms"]
+    assert {"id": SELL_CR, "name": f"Realm {SELL_CR}", "slug": f"realm-{SELL_CR}"} in realms
+    assert {"id": BUY_CR_A, "name": f"Realm {BUY_CR_A}", "slug": f"realm-{BUY_CR_A}"} in realms
+
+
+def test_api_realms_eu_requires_subscription(monkeypatch):
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [SELL_CR])
+    dashboard.app.dependency_overrides[auth.current_active_user] = lambda: _user(subscription_status=None)
+    dashboard.app.dependency_overrides.pop(auth.current_subscribed_user, None)  # let the real 402 check run
+    try:
+        r = client.get("/api/realms/eu")
+        assert r.status_code == 402
+    finally:
+        dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
+        dashboard.app.dependency_overrides[auth.current_subscribed_user] = lambda: FAKE_USER
+
+
 def test_api_status_reports_last_modified(data_dir):
     r = client.get("/api/status", params={"sell": SELL_CR})
     assert r.status_code == 200

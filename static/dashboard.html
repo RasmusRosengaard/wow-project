@@ -187,30 +187,43 @@
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
   /* Column widths (sums to 100%) -- order matches the <thead> in the markup:
      Buy realm / Item / Variant / Buy / Sell price / EU median / Sale rate % /
-     Discount %. Item gets the lion's share since it carries an icon + the
-     longest text; the three money columns match each other so their coin
-     icons/figures line up down the column. Sale rate % (added 2026-08-01,
-     human request -- see showTooltip()'s comment) took its width mostly out
-     of Item/the three money columns rather than Buy realm/Variant, which
-     were already tight. */
+     Discount % / Your account. Item gets the lion's share since it carries
+     an icon + the longest text; the three money columns match each other so
+     their coin icons/figures line up down the column. Your account (added
+     2026-08-02, human request -- see loadUserRealmAccounts()'s comment)
+     took its width mostly out of Item (26%->18%, can afford it -- icon +
+     name still fit) plus 1% off each money column; Buy realm/Variant left
+     untouched, already tight (see Sale rate %'s own 2026-08-01 comment,
+     since folded into this one). */
   th:nth-child(1), td:nth-child(1) { width: 11%; }
-  th:nth-child(2), td:nth-child(2) { width: 23%; }
+  th:nth-child(2), td:nth-child(2) { width: 18%; }
   th:nth-child(3), td:nth-child(3) { width: 9%; }
-  th:nth-child(4), td:nth-child(4) { width: 12%; }
-  th:nth-child(5), td:nth-child(5) { width: 12%; }
-  th:nth-child(6), td:nth-child(6) { width: 12%; }
+  th:nth-child(4), td:nth-child(4) { width: 11%; }
+  th:nth-child(5), td:nth-child(5) { width: 11%; }
+  th:nth-child(6), td:nth-child(6) { width: 11%; }
   th:nth-child(7), td:nth-child(7) { width: 11%; }
   th:nth-child(8), td:nth-child(8) { width: 10%; }
+  th:nth-child(9), td:nth-child(9) { width: 8%; }
   /* Fixed layout no longer lets a cell grow to fit its content, so anything
      that can run long needs an explicit truncation rule instead of silently
      overflowing into the next column -- the existing hover tooltip (see
      showTooltip()) already surfaces the untruncated realm/item name, so
      truncating here doesn't lose information, just display width. */
-  td:nth-child(1), td:nth-child(3) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td:nth-child(1), td:nth-child(3), td:nth-child(9) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { white-space: nowrap; overflow: hidden; }
   th {
     cursor: pointer; user-select: none; color: var(--text-dim); font-weight: 700;
-    white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem;
+    /* Wraps onto two lines rather than forcing the table wider than its
+       container (2026-08-02, human report: a persistent horizontal
+       scrollbar appeared once a 9th column's header label ("Your account")
+       pushed the sum of every header's forced-nowrap width past what fits
+       -- table-layout: fixed only fixes each column's *proportional* width,
+       it doesn't stop unbreakable header text from forcing the table's
+       overall rendered width past 100% of .table-wrap, which is exactly
+       what .table-wrap's own overflow-x: auto then shows a scrollbar for).
+       Letting the label text wrap removes the forcing case entirely,
+       regardless of column count or viewport width. */
+    white-space: normal; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem;
     border-bottom: 1px solid var(--hairline-strong);
   }
   th.active { color: var(--bullion); }
@@ -419,6 +432,7 @@
           <th data-sort="eu_median">EU median <span class="dir"></span></th>
           <th data-sort="sale_rate" title="EU region-wide TSM sale rate -- roughly what fraction of days this item sells at least once, region-wide. Shown as a percentage with full precision since real rates for niche items are often well under 1%.">Sale rate % <span class="dir"></span></th>
           <th data-sort="discount">Discount % <span class="dir"></span></th>
+          <th data-sort="your_account" title="Which of your registered WoW accounts has a character on this buy-side realm">Your account <span class="dir"></span></th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -654,7 +668,42 @@ const SORT_VALUE = {
   // null-handling comment.
   sale_rate: r => r.region_sale_rate,
   discount: r => r.discount_pct,
+  // Not in NUMERIC_SORT_KEYS -- a string column like buy_realm/item/variant,
+  // should default ascending on first click, not descending. null (no
+  // matching account) sorts last regardless of direction via compareRows()'s
+  // existing generic null-handling -- no new code needed there.
+  your_account: r => {
+    const labels = userRealmAccounts.get(r.buy_realm);
+    return labels && labels.length ? labels.join(", ").toLowerCase() : null;
+  },
 };
+
+// realm id -> array of this user's own WoW-account labels with a character
+// there (usually 0 or 1 entries; >1 if two of the user's accounts both have
+// a character on the same realm). Populated once in init(), before the
+// first render, from a dedicated fetch -- kept OUT of the cached row JSON
+// deliberately (see CACHE_VERSION's own comment): this is per-user data,
+// baking it into the shared per-realm snipe-batch cache would leak one
+// user's account labels into another user's localStorage inspection
+// surface if that cache were ever shared/logged. No CACHE_VERSION bump
+// needed as a result -- the row shape itself is unchanged.
+let userRealmAccounts = new Map();
+
+async function loadUserRealmAccounts() {
+  try {
+    const r = await fetch("/api/wow-accounts");
+    if (!r.ok) return; // free tier (402) or logged out -- Map stays empty, column shows "--"
+    const data = await r.json();
+    const map = new Map();
+    for (const acct of data.accounts || []) {
+      for (const realmId of acct.realms || []) {
+        if (!map.has(realmId)) map.set(realmId, []);
+        map.get(realmId).push(acct.label);
+      }
+    }
+    userRealmAccounts = map;
+  } catch (e) { /* leave Map empty */ }
+}
 
 // Ties on the primary sort column always resolve to cheapest buy price
 // first, regardless of sortDir (added 2026-07-28, human decision, mirrors
@@ -968,6 +1017,8 @@ function buildRowHtml(row, idx, group, isSub) {
   const susFlag = row.sus_item_suspect
     ? `<span class="sus-flag" title="Sus item -- an ancient neck/ring/trinket item or a class-starter armor piece. Experimental, non-authoritative: can't rule out a genuinely valuable twink item.">&#8987;</span>`
     : "";
+  const accountLabels = userRealmAccounts.get(row.buy_realm);
+  const yourAccount = accountLabels && accountLabels.length ? accountLabels.join(", ") : "--";
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}${row.buy_realm_category ? " &middot; " + escapeHtml(row.buy_realm_category) : ""}">${escapeHtml(row.buy_realm_name)}${row.buy_realm_category ? ` <span class="realm-lang">${escapeHtml(realmLangTag(row.buy_realm_category))}</span>` : ""}</td>
@@ -978,6 +1029,7 @@ function buildRowHtml(row, idx, group, isSub) {
       <td class="num">${formatMoney(row.region_median_copper)}</td>
       <td class="num">${formatSaleRate(row.region_sale_rate)}</td>
       <td class="num">${row.discount_pct.toFixed(1)}</td>
+      <td title="${escapeHtml(yourAccount)}">${escapeHtml(yourAccount)}</td>
     </tr>`;
 }
 
@@ -1438,6 +1490,12 @@ function applyFreeTierRealmLock(lockedSellRealm) {
   }
   const meData = await me.json();
   const isFreeTier = !meData.is_superuser && meData.subscription_status !== "active";
+  // Skipped entirely for free-tier accounts -- they'd only ever get a 402
+  // from /api/wow-accounts (see wow_accounts.py, current_subscribed_user),
+  // no point spending the round trip. Must resolve before the first
+  // renderFromCache()/checkForUpdates() call below so the very first paint
+  // already has account data, not just later re-renders.
+  if (!isFreeTier) await loadUserRealmAccounts();
   let defaultSell = null;
   try {
     const r = await fetch("/api/config");
