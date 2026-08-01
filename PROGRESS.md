@@ -63,8 +63,11 @@ several entries around it, all dated 2026-08-01.
   per-realm files don't carry them); every snipe row is annotated with them
   regardless of whether the filter is used, and the dashboard's "Min sale
   rate %" input excludes rows below the threshold (and rows TSM has no data
-  for, once a threshold is set). See `CLAUDE.md`'s `tsm.py`/`snipe_check.py`
-  rows.
+  for, once a threshold is set). A dedicated, sortable "Sale rate %" table
+  column (5 decimal places — human-specified precision, real rates for
+  niche items are routinely under 1%) was added the same day after a
+  human follow-up. See `CLAUDE.md`'s `tsm.py`/`snipe_check.py`/
+  `static/dashboard.html` rows.
 - `/api/snipes` no longer holds a Postgres connection during its slow
   DuckDB/Blizzard work (2026-08-01, real production incident — see
   `HISTORY.md`); every Blizzard API call in the app shares a rate limiter,

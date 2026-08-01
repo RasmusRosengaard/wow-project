@@ -186,24 +186,28 @@
   th, td { padding: 0.55rem 0.7rem; text-align: right; border-bottom: 1px solid var(--hairline); }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
   /* Column widths (sums to 100%) -- order matches the <thead> in the markup:
-     Buy realm / Item / Variant / Buy / Sell price / EU median / Discount %.
-     Item gets the lion's share since it carries an icon + the longest text;
-     the three money columns match each other so their coin icons/figures
-     line up down the column. */
-  th:nth-child(1), td:nth-child(1) { width: 12%; }
-  th:nth-child(2), td:nth-child(2) { width: 26%; }
-  th:nth-child(3), td:nth-child(3) { width: 10%; }
-  th:nth-child(4), td:nth-child(4) { width: 14%; }
-  th:nth-child(5), td:nth-child(5) { width: 14%; }
-  th:nth-child(6), td:nth-child(6) { width: 14%; }
-  th:nth-child(7), td:nth-child(7) { width: 10%; }
+     Buy realm / Item / Variant / Buy / Sell price / EU median / Sale rate % /
+     Discount %. Item gets the lion's share since it carries an icon + the
+     longest text; the three money columns match each other so their coin
+     icons/figures line up down the column. Sale rate % (added 2026-08-01,
+     human request -- see showTooltip()'s comment) took its width mostly out
+     of Item/the three money columns rather than Buy realm/Variant, which
+     were already tight. */
+  th:nth-child(1), td:nth-child(1) { width: 11%; }
+  th:nth-child(2), td:nth-child(2) { width: 23%; }
+  th:nth-child(3), td:nth-child(3) { width: 9%; }
+  th:nth-child(4), td:nth-child(4) { width: 12%; }
+  th:nth-child(5), td:nth-child(5) { width: 12%; }
+  th:nth-child(6), td:nth-child(6) { width: 12%; }
+  th:nth-child(7), td:nth-child(7) { width: 11%; }
+  th:nth-child(8), td:nth-child(8) { width: 10%; }
   /* Fixed layout no longer lets a cell grow to fit its content, so anything
      that can run long needs an explicit truncation rule instead of silently
      overflowing into the next column -- the existing hover tooltip (see
      showTooltip()) already surfaces the untruncated realm/item name, so
      truncating here doesn't lose information, just display width. */
   td:nth-child(1), td:nth-child(3) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  td:nth-child(4), td:nth-child(5), td:nth-child(6) { white-space: nowrap; overflow: hidden; }
+  td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { white-space: nowrap; overflow: hidden; }
   th {
     cursor: pointer; user-select: none; color: var(--text-dim); font-weight: 700;
     white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem;
@@ -413,6 +417,7 @@
           <th data-sort="buy">Buy <span class="dir"></span></th>
           <th data-sort="gold">Sell price <span class="dir"></span></th>
           <th data-sort="eu_median">EU median <span class="dir"></span></th>
+          <th data-sort="sale_rate" title="EU region-wide TSM sale rate -- roughly what fraction of days this item sells at least once, region-wide. Shown as a percentage with full precision since real rates for niche items are often well under 1%.">Sale rate % <span class="dir"></span></th>
           <th data-sort="discount">Discount % <span class="dir"></span></th>
         </tr>
       </thead>
@@ -636,7 +641,7 @@ const QUALITY_FILTERS = [
   { key: "legendary", label: "Legendary", test: r => r.quality === "LEGENDARY" },
 ];
 
-const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "eu_median", "discount"]);
+const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "eu_median", "sale_rate", "discount"]);
 const SORT_VALUE = {
   buy_realm: r => (r.buy_realm_name || "").toLowerCase(),
   item: r => (r.name || String(r.item_id)).toLowerCase(),
@@ -644,6 +649,10 @@ const SORT_VALUE = {
   buy: r => r.buy_copper,
   gold: r => r.sell_copper,
   eu_median: r => r.region_median_copper,
+  // null (TSM has no data for the item) sorts last regardless of direction,
+  // same as every other nullable numeric column -- see compareRows()'s
+  // null-handling comment.
+  sale_rate: r => r.region_sale_rate,
   discount: r => r.discount_pct,
 };
 
@@ -881,7 +890,7 @@ function showTooltip(row, x, y) {
     <div class="tt-row"><span class="lbl">Sell price</span>${formatMoney(row.sell_copper)}</div>
     <div class="tt-row"><span class="lbl">EU median</span>${formatMoney(row.region_median_copper)}</div>
     ${row.region_sale_rate != null
-      ? `<div class="tt-row"><span class="lbl">Sale rate</span><span>${(row.region_sale_rate * 100).toFixed(0)}%${row.region_sold_per_day != null ? ` &middot; ${row.region_sold_per_day.toFixed(1)}/day` : ""}</span></div>`
+      ? `<div class="tt-row"><span class="lbl">Sale rate</span><span>${formatSaleRate(row.region_sale_rate)}%${row.region_sold_per_day != null ? ` &middot; ${row.region_sold_per_day.toFixed(1)}/day` : ""}</span></div>`
       : ""}
     <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
     ${row.appearance_sources != null
@@ -967,8 +976,21 @@ function buildRowHtml(row, idx, group, isSub) {
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>
       <td class="num">${formatMoney(row.region_median_copper)}</td>
+      <td class="num">${formatSaleRate(row.region_sale_rate)}</td>
       <td class="num">${row.discount_pct.toFixed(1)}</td>
     </tr>`;
+}
+
+// Real region_sale_rate values for niche items are routinely well under 1%
+// (e.g. 0.00003%) -- toFixed(1)/(0) the way discount_pct is shown would
+// round every one of them to "0.0", indistinguishable from "never sells at
+// all" (null). Fixed at 5 decimal places (human request, 2026-08-01: "in
+// 0,00003 every deci is important") so real, meaningfully-different-from-
+// zero rates stay visible instead of getting rounded away. null (TSM has no
+// data for the item) shows as "-", matching the variant column's convention
+// for "nothing to show" rather than a misleading "0.00000".
+function formatSaleRate(rate) {
+  return rate == null ? "-" : (rate * 100).toFixed(5);
 }
 
 // How many top-level groups renderTable() actually builds DOM for on one

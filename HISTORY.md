@@ -1643,3 +1643,48 @@ it without erroring, and clearing the field restores the full unfiltered
 set exactly. No console errors during any of it.
 
 `pytest -q` and `env -u DATABASE_URL pytest -q`: 352 passing.
+
+## Dedicated Sale Rate % column added (2026-08-01, same day)
+
+Human follow-up after the deploy above went out but hadn't populated data
+yet: "i dont see the sellrates on the dashboard???". Checked production
+via `railway ssh` first rather than assuming a code bug -- the deploy had
+restarted the app (18:37:58) and the first post-deploy background cycle
+was still mid-sweep through the ~100 EU realms; `tsm.SaleRateCache().
+refresh_if_stale()` runs after the deep-collect/scan/prewarm steps in that
+cycle, so `data/tsm_sale_rates.json` genuinely didn't exist yet. Explained
+the timing, plus that the shipped design deliberately had no dedicated
+table column (tooltip + filter only, matching `min_sell_now`'s
+no-column precedent) -- and scheduled a wakeup to confirm the cache
+populated.
+
+Before that wakeup fired, a second, more specific request landed: "There
+needs to be a sellrate columnn... in 0,00003 ever deci is important" --
+a dedicated column was wanted after all, and with real decimal precision,
+not the tooltip's original `toFixed(0)` whole-number percent (which would
+round a real `0.00003%` down to `0.0`, indistinguishable from "no TSM
+data"). Added a "Sale rate %" column (`static/dashboard.html`) between
+"EU median" and "Discount %", sortable via a new `sale_rate` key in
+`SORT_VALUE`/`NUMERIC_SORT_KEYS` (nulls sort last, reusing `compareRows()`'s
+existing null-handling, no new logic needed there). New shared
+`formatSaleRate()` helper (fixed at 5 decimal places, matching the human's
+own example precision exactly) used by both the column cell and the
+tooltip row, so the two can never show different-looking numbers for the
+same value; `null` renders as `-`, matching the `variant` column's
+"nothing to show" convention rather than a misleading `0.00000`. Column
+widths across all eight columns were redistributed (mostly taken from Item
+and the three money columns, which had the most headroom) to fit the new
+one at 100% total.
+
+Verified live in the same throwaway-Postgres local-browser setup as the
+filter/tooltip work earlier the same day: real Draenor data painted from
+`localStorage` cache (the fetch was skipped since `/api/status` hadn't
+advanced since the last real fetch -- confirms `checkForUpdates()`'s
+existing skip-if-unchanged logic still behaves correctly with the new row
+rendering), the column shows real 5-decimal values (e.g. `5.90000`),
+clicking the header sorts descending by sale rate correctly, and the
+tooltip's "Sale rate" row matches the column's value exactly via the
+shared formatter.
+
+`pytest -q`: 352 passing (no Python-side change, `static/dashboard.html`
+only).
