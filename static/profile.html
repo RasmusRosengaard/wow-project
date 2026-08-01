@@ -346,10 +346,17 @@ async function loadEuRealms() {
     if (!r.ok) return; // not subscribed (402) -- leave both empty
     const data = await r.json();
     realmSearchEntries = data.realms || [];
-    realmNameById = new Map();
+    // Chip display shows EVERY member name of a connected realm, not just
+    // the first (2026-08-02, human report: picked "Todeswache", the chip
+    // showed "Der Mithrilorden" -- correct by id, but looked like a bug
+    // since the name the user actually searched for vanished). Joined with
+    // " / " so it's immediately clear one add covers every name listed.
+    const namesById = new Map();
     for (const realm of realmSearchEntries) {
-      if (!realmNameById.has(realm.id)) realmNameById.set(realm.id, realm.name);
+      if (!namesById.has(realm.id)) namesById.set(realm.id, []);
+      if (!namesById.get(realm.id).includes(realm.name)) namesById.get(realm.id).push(realm.name);
     }
+    realmNameById = new Map([...namesById].map(([id, names]) => [id, names.join(" / ")]));
   } catch (e) { /* leave empty */ }
 }
 
