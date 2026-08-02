@@ -9,6 +9,7 @@ call sites.
 """
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import pyarrow as pa
@@ -61,9 +62,21 @@ def bypass_get_async_session(tmp_path, monkeypatch):
             yield session
 
     dashboard.app.dependency_overrides[get_async_session] = override_get_async_session
-    # check_triggers() opens its own session via db.sessionmaker() directly
-    # (it doesn't run inside a request at all) -- same precedent as
-    # test_auth.py/test_dashboard.py's direct-session call sites.
+    # check_triggers() opens its own session via db.isolated_session()
+    # directly (it doesn't run inside a request at all) -- same precedent
+    # as test_auth.py/test_dashboard.py's direct-session call sites.
+    # Reuses this fixture's own engine/session_factory rather than
+    # db.isolated_session()'s real production behavior of creating and
+    # disposing a brand-new engine per call -- that dance exists only to
+    # dodge asyncpg's loop-binding, which SQLite/aiosqlite doesn't have.
+    @asynccontextmanager
+    async def _fake_isolated_session():
+        async with session_factory() as session:
+            yield session
+    monkeypatch.setattr(db, "isolated_session", _fake_isolated_session)
+    # Some tests also open a direct db.sessionmaker() session outside any
+    # request (e.g. to mutate state between two check_triggers() calls) --
+    # keep that seam patched too, same as before this function existed.
     monkeypatch.setattr(db, "sessionmaker", lambda: session_factory)
     yield session_factory
     dashboard.app.dependency_overrides.pop(get_async_session, None)

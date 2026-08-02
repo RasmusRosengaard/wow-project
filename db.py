@@ -11,6 +11,7 @@ Postgres.
 """
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends
@@ -234,6 +235,31 @@ def sessionmaker() -> async_sessionmaker[AsyncSession]:
     if _sessionmaker is None:
         _sessionmaker = async_sessionmaker(engine(), expire_on_commit=False)
     return _sessionmaker
+
+
+@asynccontextmanager
+async def isolated_session():
+    """An AsyncSession backed by a brand-new engine, not engine()'s shared
+    process-wide singleton -- for a caller running inside its own
+    asyncio.run()-created event loop (watchlist.check_triggers(), called
+    from collect_all.py's background thread) rather than the main FastAPI
+    loop. asyncpg connections are loop-bound; handing one out of engine()'s
+    pool (populated from connections opened under the main loop) to a
+    different loop crashes with "attached to a different loop" / "got
+    result for unknown protocol state 3" -- confirmed live in production,
+    every single collect_all cycle, 2026-08-02, silently swallowing every
+    Watchlist Discord notification with no visible symptom on the dashboard
+    itself. The engine here is created and fully disposed within this one
+    call, so no connection ever escapes to be reused by a different loop.
+    pool_size=1: a single-threaded, once-per-cycle check, not concurrent
+    request traffic, doesn't need engine()'s much larger pool."""
+    bg_engine = create_async_engine(_database_url(), pool_size=1, max_overflow=0)
+    try:
+        bg_sessionmaker = async_sessionmaker(bg_engine, expire_on_commit=False)
+        async with bg_sessionmaker() as session:
+            yield session
+    finally:
+        await bg_engine.dispose()
 
 
 async def get_async_session():

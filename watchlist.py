@@ -443,7 +443,11 @@ def _send_discord_notification(webhook_url: str, item: WatchlistItem, price_copp
 
 
 async def _check_triggers_async() -> dict:
-    async with db.sessionmaker()() as session:
+    # db.isolated_session(), not db.sessionmaker()'s process-wide singleton
+    # -- see that function's docstring for why (asyncpg connections are
+    # loop-bound, and this coroutine runs inside its own asyncio.run() loop,
+    # separate from the main FastAPI loop that owns db.sessionmaker()'s pool).
+    async with db.isolated_session() as session:
         rows = (await session.execute(
             select(WatchlistItem, User)
             .join(User, WatchlistItem.owner_id == User.id)
@@ -493,8 +497,10 @@ async def _check_triggers_async() -> dict:
 def check_triggers() -> dict:
     """Sync entry point -- called from collect_all.py's background loop
     (itself invoked via asyncio.to_thread(), a real OS thread with no
-    running event loop), so a fresh asyncio.run() here is safe and doesn't
-    conflict with anything."""
+    running event loop), so a fresh asyncio.run() here doesn't raise on a
+    nested loop. That alone isn't sufficient, though -- see
+    _check_triggers_async()'s own docstring for why it can't reuse
+    db.sessionmaker()'s shared engine even so."""
     start = time.monotonic()
     result = asyncio.run(_check_triggers_async())
     result["elapsed_seconds"] = round(time.monotonic() - start, 2)
