@@ -106,7 +106,18 @@ class WowAccountRealm(Base):
     realm name for matching, only the id -- see dashboard._row_to_json's
     buy_realm field). Never validated against blizz.list_connected_realms()
     at write time (that's a live Blizzard call); a bogus id is harmless --
-    it simply never matches any dashboard row's buy_realm."""
+    it simply never matches any dashboard row's buy_realm.
+
+    realm_name (added 2026-08-02, human request -- Watchlist's Discord
+    alert should say which specific member name of a connected realm an
+    account is on, e.g. "Zul'jin" rather than "Zul'jin / Sanguino
+    (connected realm)"): the specific name the user searched/picked on
+    profile.html at registration time, purely descriptive -- matching is
+    still by connected_realm_id only, same as everywhere else in this app
+    (picking any one member name still registers the whole connected
+    realm). Nullable because rows created before this column existed have
+    none; those fall back to the generic "list every member name" display
+    wherever this is read."""
     __tablename__ = "wow_account_realm"
     __table_args__ = (
         UniqueConstraint("wow_account_id", "connected_realm_id", name="uq_wow_account_realm_account_realm"),
@@ -115,6 +126,7 @@ class WowAccountRealm(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     wow_account_id: Mapped[int] = mapped_column(Integer, ForeignKey("wow_account.id"), nullable=False)
     connected_realm_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    realm_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=lambda: datetime.now(timezone.utc))
 

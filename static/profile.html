@@ -456,7 +456,11 @@ function renderWowAccounts() {
   const cards = currentAccounts.map(acct => {
     const excludeIds = new Set(acct.realms);
     const chips = acct.realms.map(id => {
-      const name = realmNameById.get(id) || String(id);
+      // Prefer the specific name stored for this account (2026-08-02) over
+      // the generic "every member name joined" fallback -- a registration
+      // made before realm_names existed (or one added a different way)
+      // still falls back to the old join-all-names display.
+      const name = (acct.realm_names && acct.realm_names[id]) || realmNameById.get(id) || String(id);
       return `<span class="realm-chip">${escapeHtml(name)}<button data-remove-realm="${id}" data-account="${acct.id}" title="Remove realm">&times;</button></span>`;
     }).join("") || `<span class="cap-note">No realms added yet.</span>`;
     const atRealmCap = acct.realms.length >= 50;
@@ -534,13 +538,21 @@ function updateRealmSearchResults(accountId) {
     `<div class="realm-search-item" data-pick-realm="${id}" data-account="${accountId}">${escapeHtml(name)}</div>`
   ).join("");
   resultsEl.style.display = "block";
-  resultsEl.querySelectorAll("[data-pick-realm]").forEach(item => {
+  // Correlated by position with `matches`, not re-read from the DOM's
+  // data-pick-realm attribute -- carries the exact matched name (2026-08-02)
+  // straight from realmSearchMatches() into addRealmLocal(), the specific
+  // member name the user searched/picked (e.g. "Zul'jin", not "Sanguino"
+  // even though they're the same connected realm) that Watchlist's Discord
+  // alert can later say "log in on X" using.
+  const items = resultsEl.querySelectorAll("[data-pick-realm]");
+  items.forEach((item, i) => {
+    const [id, name] = matches[i];
     // mousedown, not click -- fires (and completes synchronously) before
     // the search input's own blur handler, so the pick always registers
     // before hideRealmSearchResults() could race the dropdown closed.
     item.addEventListener("mousedown", (e) => {
       e.preventDefault();
-      addRealmLocal(Number(item.dataset.account), Number(item.dataset.pickRealm));
+      addRealmLocal(accountId, id, name);
     });
   });
 }
@@ -551,7 +563,7 @@ function pickTopRealmMatch(accountId) {
   const acct = currentAccounts.find(a => a.id === accountId);
   const excludeIds = new Set(acct ? acct.realms : []);
   const matches = realmSearchMatches(input.value, excludeIds);
-  if (matches.length) addRealmLocal(accountId, matches[0][0]);
+  if (matches.length) addRealmLocal(accountId, matches[0][0], matches[0][1]);
 }
 
 async function addAccount() {
@@ -582,10 +594,15 @@ async function addAccount() {
 // label and the current realm list, in one request via
 // PATCH /api/wow-accounts/{id}/batch. Un-saved local edits are lost on
 // reload, same as the rename input already worked before this change.
-function addRealmLocal(accountId, realmId) {
+function addRealmLocal(accountId, realmId, realmName) {
   const acct = currentAccounts.find(a => a.id === accountId);
   if (!acct || acct.realms.includes(realmId)) return;
   acct.realms.push(realmId);
+  // realm_names (2026-08-02): the specific member name searched/picked,
+  // e.g. "Zul'jin" not "Sanguino" even though they're the same connected
+  // realm -- see saveAccount()'s payload and wow_accounts.py's row for why.
+  if (!acct.realm_names) acct.realm_names = {};
+  if (realmName) acct.realm_names[realmId] = realmName;
   renderWowAccounts();
 }
 
@@ -593,6 +610,7 @@ function removeRealmLocal(accountId, realmId) {
   const acct = currentAccounts.find(a => a.id === accountId);
   if (!acct) return;
   acct.realms = acct.realms.filter(id => id !== realmId);
+  if (acct.realm_names) delete acct.realm_names[realmId];
   renderWowAccounts();
 }
 
@@ -603,10 +621,13 @@ async function saveAccount(accountId) {
   const label = input.value.trim();
   if (!label) { err.textContent = "Account name can't be empty."; return; }
   const acct = currentAccounts.find(a => a.id === accountId);
+  const realms = acct
+    ? acct.realms.map(id => ({ connected_realm_id: id, realm_name: (acct.realm_names || {})[id] || null }))
+    : [];
   const r = await fetch(`/api/wow-accounts/${accountId}/batch`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ label, realm_ids: acct ? acct.realms : [] }),
+    body: JSON.stringify({ label, realms }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));

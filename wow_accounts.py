@@ -45,8 +45,14 @@ MAX_REALMS_PER_ACCOUNT = 50
 LABEL_MAX_LEN = 50  # matches dashboard.NICKNAME_MAX_LEN's precedent
 
 
-def _account_to_json(account: WowAccount, realms: list[int]) -> dict:
-    return {"id": account.id, "label": account.label, "realms": realms}
+def _account_to_json(account: WowAccount, realms: list[int], realm_names: dict[int, str] | None = None) -> dict:
+    # realm_names (added 2026-08-02): the specific member name picked at
+    # registration time, id -> name, only present for realms that have one
+    # (rows added before this existed have none -- see db.WowAccountRealm's
+    # docstring). Additive to the existing plain `realms` id list rather
+    # than replacing it, so dashboard.html's existing id-only cross-
+    # reference logic is untouched.
+    return {"id": account.id, "label": account.label, "realms": realms, "realm_names": realm_names or {}}
 
 
 async def _get_owned_account(account_id: int, user: User, session: AsyncSession) -> WowAccount:
@@ -64,6 +70,14 @@ async def _realm_ids_for_account(account_id: int, session: AsyncSession) -> list
     return list((await session.execute(
         select(WowAccountRealm.connected_realm_id).where(WowAccountRealm.wow_account_id == account_id)
     )).scalars().all())
+
+
+async def _realm_names_for_account(account_id: int, session: AsyncSession) -> dict[int, str]:
+    rows = (await session.execute(
+        select(WowAccountRealm.connected_realm_id, WowAccountRealm.realm_name)
+        .where(WowAccountRealm.wow_account_id == account_id, WowAccountRealm.realm_name.isnot(None))
+    )).all()
+    return {cr_id: name for cr_id, name in rows}
 
 
 async def _insert_account_atomic(owner_id: uuid.UUID, label: str, session: AsyncSession) -> bool:
@@ -93,22 +107,29 @@ async def _insert_account_atomic(owner_id: uuid.UUID, label: str, session: Async
     return result.rowcount > 0
 
 
-async def _insert_realm_atomic(wow_account_id: int, connected_realm_id: int, session: AsyncSession) -> bool:
+async def _insert_realm_atomic(wow_account_id: int, connected_realm_id: int, session: AsyncSession,
+                               realm_name: str | None = None) -> bool:
     """Same atomic-cap pattern as _insert_account_atomic, for
     MAX_REALMS_PER_ACCOUNT. Raises sqlalchemy.exc.IntegrityError (uncaught)
     if this realm is already registered on the account -- the table's
     UniqueConstraint is the actual atomic source of truth for the duplicate
-    case, so no separate pre-check is needed here; the caller catches it."""
+    case, so no separate pre-check is needed here; the caller catches it.
+
+    realm_name (added 2026-08-02): the specific member name the user
+    searched/picked, stored purely for display -- see db.WowAccountRealm's
+    docstring. Optional; matching stays by connected_realm_id alone."""
     count_subq = (
         select(func.count()).select_from(WowAccountRealm)
         .where(WowAccountRealm.wow_account_id == wow_account_id)
         .scalar_subquery()
     )
     insert_stmt = insert(WowAccountRealm).from_select(
-        [WowAccountRealm.wow_account_id, WowAccountRealm.connected_realm_id, WowAccountRealm.created_at],
+        [WowAccountRealm.wow_account_id, WowAccountRealm.connected_realm_id,
+         WowAccountRealm.realm_name, WowAccountRealm.created_at],
         select(
             literal(wow_account_id, type_=WowAccountRealm.wow_account_id.type),
             literal(connected_realm_id, type_=WowAccountRealm.connected_realm_id.type),
+            literal(realm_name, type_=WowAccountRealm.realm_name.type),
             literal(datetime.now(timezone.utc), type_=WowAccountRealm.created_at.type),
         ).where(count_subq < MAX_REALMS_PER_ACCOUNT),
     )
@@ -124,14 +145,17 @@ async def list_accounts(user: User = Depends(current_subscribed_user),
     )).scalars().all()
     account_ids = [a.id for a in accounts]
     realms_by_account: dict[int, list[int]] = {aid: [] for aid in account_ids}
+    names_by_account: dict[int, dict[int, str]] = {aid: {} for aid in account_ids}
     if account_ids:
         rows = (await session.execute(
-            select(WowAccountRealm.wow_account_id, WowAccountRealm.connected_realm_id)
+            select(WowAccountRealm.wow_account_id, WowAccountRealm.connected_realm_id, WowAccountRealm.realm_name)
             .where(WowAccountRealm.wow_account_id.in_(account_ids))
         )).all()
-        for wow_account_id, connected_realm_id in rows:
+        for wow_account_id, connected_realm_id, realm_name in rows:
             realms_by_account[wow_account_id].append(connected_realm_id)
-    return {"accounts": [_account_to_json(a, realms_by_account[a.id]) for a in accounts]}
+            if realm_name:
+                names_by_account[wow_account_id][connected_realm_id] = realm_name
+    return {"accounts": [_account_to_json(a, realms_by_account[a.id], names_by_account[a.id]) for a in accounts]}
 
 
 class WowAccountCreate(BaseModel):
@@ -178,12 +202,18 @@ async def rename_account(account_id: int, payload: WowAccountRename,
         raise HTTPException(400, f"label must be {LABEL_MAX_LEN} characters or fewer")
     account.label = label
     await session.commit()
-    return _account_to_json(account, await _realm_ids_for_account(account.id, session))
+    return _account_to_json(account, await _realm_ids_for_account(account.id, session),
+                            await _realm_names_for_account(account.id, session))
+
+
+class WowAccountRealmInput(BaseModel):
+    connected_realm_id: int
+    realm_name: str | None = None
 
 
 class WowAccountBatchUpdate(BaseModel):
     label: str | None = None
-    realm_ids: list[int] | None = None
+    realms: list[WowAccountRealmInput] | None = None
 
 
 @router.patch("/{account_id}/batch")
@@ -196,9 +226,9 @@ async def batch_update_account(account_id: int, payload: WowAccountBatchUpdate,
     profile.html's card now lets a user add/remove several realms locally
     before ever hitting Save, instead of one POST/DELETE /realms round trip
     per click). Either field is optional -- omit label to leave the name
-    untouched, omit realm_ids to leave realms untouched.
+    untouched, omit realms to leave realms untouched.
 
-    realm_ids, when given, is treated as the account's *complete* desired
+    realms, when given, is treated as the account's *complete* desired
     realm set, not a delta -- the diff (add missing, remove extra) is
     computed here, not by the client. Not wrapped in the atomic
     INSERT...SELECT...WHERE pattern _insert_realm_atomic() uses (see that
@@ -210,7 +240,15 @@ async def batch_update_account(account_id: int, payload: WowAccountBatchUpdate,
     it ever produced a merged-rather-than-one-wins result -- not worth the
     added complexity here, same reasoning this module's docstring already
     gives for why the atomic pattern is convention, not a hard requirement,
-    for caps like this one."""
+    for caps like this one.
+
+    Each entry also carries the specific realm_name the user picked
+    (2026-08-02) -- for an id already registered, its stored name is
+    synced to whatever the client sends (a user can re-pick a different
+    member name for the same connected realm later); a null/omitted name
+    leaves an existing stored name untouched rather than blanking it, so a
+    plain realm-removal-only save elsewhere in the payload can't
+    accidentally wipe a name it never meant to touch."""
     account = await _get_owned_account(account_id, user, session)
 
     if payload.label is not None:
@@ -221,23 +259,32 @@ async def batch_update_account(account_id: int, payload: WowAccountBatchUpdate,
             raise HTTPException(400, f"label must be {LABEL_MAX_LEN} characters or fewer")
         account.label = label
 
-    if payload.realm_ids is not None:
-        desired = set(payload.realm_ids)
+    if payload.realms is not None:
+        desired = {r.connected_realm_id: r.realm_name for r in payload.realms}
         if len(desired) > MAX_REALMS_PER_ACCOUNT:
             raise HTTPException(400, f"maximum {MAX_REALMS_PER_ACCOUNT} realms per account")
-        current = set(await _realm_ids_for_account(account.id, session))
-        to_remove = current - desired
-        to_add = desired - current
+        existing_rows = (await session.execute(
+            select(WowAccountRealm).where(WowAccountRealm.wow_account_id == account.id)
+        )).scalars().all()
+        current = {r.connected_realm_id: r for r in existing_rows}
+        to_remove = current.keys() - desired.keys()
+        to_add = desired.keys() - current.keys()
         if to_remove:
             await session.execute(delete(WowAccountRealm).where(
                 WowAccountRealm.wow_account_id == account.id,
                 WowAccountRealm.connected_realm_id.in_(to_remove),
             ))
         for realm_id in to_add:
-            session.add(WowAccountRealm(wow_account_id=account.id, connected_realm_id=realm_id))
+            session.add(WowAccountRealm(wow_account_id=account.id, connected_realm_id=realm_id,
+                                        realm_name=desired[realm_id]))
+        for realm_id in (current.keys() & desired.keys()):
+            new_name = desired[realm_id]
+            if new_name is not None and current[realm_id].realm_name != new_name:
+                current[realm_id].realm_name = new_name
 
     await session.commit()
-    return _account_to_json(account, await _realm_ids_for_account(account.id, session))
+    return _account_to_json(account, await _realm_ids_for_account(account.id, session),
+                            await _realm_names_for_account(account.id, session))
 
 
 @router.delete("/{account_id}")
@@ -254,6 +301,7 @@ async def delete_account(account_id: int, user: User = Depends(current_subscribe
 
 class WowAccountRealmAdd(BaseModel):
     connected_realm_id: int
+    realm_name: str | None = None
 
 
 @router.post("/{account_id}/realms")
@@ -265,7 +313,7 @@ async def add_realm(account_id: int, payload: WowAccountRealmAdd,
         raise HTTPException(400, "invalid realm id")
 
     try:
-        inserted = await _insert_realm_atomic(account.id, payload.connected_realm_id, session)
+        inserted = await _insert_realm_atomic(account.id, payload.connected_realm_id, session, payload.realm_name)
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -273,7 +321,8 @@ async def add_realm(account_id: int, payload: WowAccountRealmAdd,
     if not inserted:
         raise HTTPException(400, f"maximum {MAX_REALMS_PER_ACCOUNT} realms per account")
 
-    return _account_to_json(account, await _realm_ids_for_account(account.id, session))
+    return _account_to_json(account, await _realm_ids_for_account(account.id, session),
+                            await _realm_names_for_account(account.id, session))
 
 
 @router.delete("/{account_id}/realms/{connected_realm_id}")
@@ -290,4 +339,5 @@ async def remove_realm(account_id: int, connected_realm_id: int,
     await session.commit()
     if result.rowcount == 0:
         raise HTTPException(404, "realm not registered on this account")
-    return _account_to_json(account, await _realm_ids_for_account(account.id, session))
+    return _account_to_json(account, await _realm_ids_for_account(account.id, session),
+                            await _realm_names_for_account(account.id, session))

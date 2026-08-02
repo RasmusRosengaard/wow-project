@@ -171,28 +171,45 @@ def test_remove_realm_not_found_returns_404():
 def test_batch_update_renames_and_sets_realms_in_one_request():
     account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
     r = client.patch(f"/api/wow-accounts/{account_id}/batch",
-                     json={"label": "Renamed", "realm_ids": [1403, 1096]})
+                     json={"label": "Renamed", "realms": [
+                         {"connected_realm_id": 1403, "realm_name": "Draenor"},
+                         {"connected_realm_id": 1096},
+                     ]})
     assert r.status_code == 200
     body = r.json()
     assert body["label"] == "Renamed"
     assert sorted(body["realms"]) == [1096, 1403]
+    assert body["realm_names"] == {"1403": "Draenor"}
 
 
-def test_batch_update_realm_ids_replaces_full_set_add_and_remove():
+def test_batch_update_realms_replaces_full_set_add_and_remove():
     account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
-    client.patch(f"/api/wow-accounts/{account_id}/batch", json={"realm_ids": [1, 2, 3]})
-    r = client.patch(f"/api/wow-accounts/{account_id}/batch", json={"realm_ids": [2, 3, 4]})
+    client.patch(f"/api/wow-accounts/{account_id}/batch",
+                 json={"realms": [{"connected_realm_id": i} for i in (1, 2, 3)]})
+    r = client.patch(f"/api/wow-accounts/{account_id}/batch",
+                     json={"realms": [{"connected_realm_id": i} for i in (2, 3, 4)]})
     assert r.status_code == 200
     assert sorted(r.json()["realms"]) == [2, 3, 4]  # 1 removed, 4 added, 2/3 kept
 
 
+def test_batch_update_realms_syncs_realm_name_for_an_already_registered_id():
+    account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
+    client.patch(f"/api/wow-accounts/{account_id}/batch",
+                 json={"realms": [{"connected_realm_id": 1403, "realm_name": "Zul'jin"}]})
+    r = client.patch(f"/api/wow-accounts/{account_id}/batch",
+                     json={"realms": [{"connected_realm_id": 1403, "realm_name": "Sanguino"}]})
+    assert r.status_code == 200
+    assert r.json()["realm_names"] == {"1403": "Sanguino"}
+
+
 def test_batch_update_omitted_fields_leave_existing_state_untouched():
     account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
-    client.patch(f"/api/wow-accounts/{account_id}/batch", json={"realm_ids": [1403]})
+    client.patch(f"/api/wow-accounts/{account_id}/batch",
+                 json={"realms": [{"connected_realm_id": 1403}]})
     r = client.patch(f"/api/wow-accounts/{account_id}/batch", json={"label": "Renamed"})
     assert r.status_code == 200
     assert r.json()["label"] == "Renamed"
-    assert r.json()["realms"] == [1403]  # untouched, realm_ids wasn't in this call
+    assert r.json()["realms"] == [1403]  # untouched, realms wasn't in this call
 
 
 def test_batch_update_rejects_empty_label():
@@ -204,7 +221,7 @@ def test_batch_update_rejects_empty_label():
 def test_batch_update_enforces_max_50_realm_cap():
     account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
     r = client.patch(f"/api/wow-accounts/{account_id}/batch",
-                     json={"realm_ids": list(range(1, 52))})
+                     json={"realms": [{"connected_realm_id": i} for i in range(1, 52)]})
     assert r.status_code == 400
     assert client.get("/api/wow-accounts").json()["accounts"][0]["realms"] == []
 

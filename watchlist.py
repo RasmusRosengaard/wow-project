@@ -47,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import db
 from auth import current_subscribed_user
-from db import User, WatchlistItem, get_async_session
+from db import User, WatchlistItem, WowAccount, WowAccountRealm, get_async_session
 from item_names import LIVE_RESOLVE_DEADLINE_SECONDS, NameCache
 from tsm_import import TsmImportError, decode_group_export
 
@@ -365,26 +365,76 @@ def _region_cheapest_by_item(item_ids: list[int]) -> dict[tuple[int, int | None]
 
 
 def _realm_label(cr_id: int) -> str:
+    """Every member realm name of the connected realm, not just the first
+    (2026-08-02, human request -- matches the fix already made for
+    dashboard.py's realm chips: a connected realm can bundle several named
+    realms sharing one AH, e.g. Zul'jin and Sanguino, confirmed live -- a
+    user whose account is registered under one name shouldn't be told
+    about a listing "on Sanguino" when they only recognize "Zul'jin").
+    Joined with " / ", with an explicit "(connected realm)" note when
+    there's more than one name, since a Discord message doesn't have this
+    app's own UI convention to lean on for context the way profile.html's
+    realm chips do."""
     try:
         import blizz
         members = blizz.connected_realm_realms(cr_id)
-        if members:
-            return members[0].get("name", str(cr_id))
+        names = [m.get("name") for m in members if m.get("name")]
+        if names:
+            label = " / ".join(names)
+            if len(names) > 1:
+                label += " (connected realm)"
+            return label
     except Exception:
         log.exception("watchlist: realm label lookup failed for %s", cr_id)
     return str(cr_id)
 
 
+async def _account_labels_for_realm(owner_id: uuid.UUID, cr_id: int,
+                                    session: AsyncSession) -> list[tuple[str, str | None]]:
+    """Which of the user's own registered WoW accounts (wow_accounts.py)
+    have a character on the buy realm, if any -- same cross-reference
+    dashboard.html's "Your account" column does client-side, but here it's
+    the only way to get that answer into a Discord message, which has no
+    client-side JS of its own. A realm can legitimately be registered on
+    more than one of a user's WoW accounts (no uniqueness constraint across
+    accounts, only within one), so this returns every match, not just the
+    first. Empty list if the user hasn't registered any account for this
+    realm (or has no WoW accounts at all) -- the caller omits the mention
+    entirely rather than saying "no account" every single time, since most
+    users may never use this optional feature.
+
+    Each result also carries the specific member realm name the user
+    picked at registration time (WowAccountRealm.realm_name, added
+    2026-08-02 -- see that column's docstring), or None for a registration
+    made before that column existed. A connected realm can bundle several
+    names (e.g. Zul'jin/Sanguino) under one id, so this is what lets the
+    message say exactly which one this particular account is on instead of
+    just the account label alone."""
+    rows = (await session.execute(
+        select(WowAccount.label, WowAccountRealm.realm_name)
+        .join(WowAccountRealm, WowAccountRealm.wow_account_id == WowAccount.id)
+        .where(WowAccount.owner_id == owner_id, WowAccountRealm.connected_realm_id == cr_id)
+        .order_by(WowAccount.id)
+    )).all()
+    return [(label, realm_name) for label, realm_name in rows]
+
+
 def _send_discord_notification(webhook_url: str, item: WatchlistItem, price_copper: int, cr_id: int,
-                               name_cache: NameCache) -> None:
+                               name_cache: NameCache,
+                               account_labels: list[tuple[str, str | None]] | None = None) -> None:
     name = name_cache.get(item.item_id, item.pet_species_id)
     price_g = price_copper / 10000
     trigger_g = item.trigger_price_copper / 10000
     realm = _realm_label(cr_id)
     label_suffix = f" ({item.label})" if item.label else ""
+    account_note = ""
+    if account_labels:
+        parts = [f"**{label}** ({realm_name})" if realm_name else f"**{label}**"
+                for label, realm_name in account_labels]
+        account_note = f" (log in on {', '.join(parts)})"
     content = (
-        f"\U0001F514 **{name}**{label_suffix} is at **{price_g:,.2f}g** on {realm} "
-        f"-- your trigger was {trigger_g:,.2f}g."
+        f"\U0001F514 **{name}**{label_suffix} is at **{price_g:,.2f}g** on {realm}{account_note}. "
+        f"Your trigger: {trigger_g:,.2f}g."
     )
     try:
         requests.post(webhook_url, json={"content": content}, timeout=10)
@@ -429,8 +479,10 @@ async def _check_triggers_async() -> dict:
                     continue
             if user.discord_webhook_url:
                 price_copper, cr_id = hit
+                account_labels = await _account_labels_for_realm(user.id, cr_id, session)
                 await asyncio.to_thread(
-                    _send_discord_notification, user.discord_webhook_url, item, price_copper, cr_id, name_cache,
+                    _send_discord_notification, user.discord_webhook_url, item, price_copper, cr_id,
+                    name_cache, account_labels,
                 )
             item.last_notified_at = now
             notified += 1

@@ -24,7 +24,7 @@ import dashboard
 import db
 import item_names
 import watchlist
-from db import Base, User, WatchlistItem, get_async_session
+from db import Base, User, WatchlistItem, WowAccount, WowAccountRealm, get_async_session
 from scan_region import LISTING_SCHEMA
 from tests.test_tsm_import import REAL_SAMPLE
 
@@ -380,6 +380,119 @@ def test_check_triggers_notifies_when_price_clears_trigger(listings_dir, real_us
     assert result["notified"] == 1
     assert len(posted) == 1
     assert "5.00g" in posted[0][1]["content"] or "5.0" in posted[0][1]["content"]
+
+
+async def _add_wow_account_realm(session_factory, owner_id, label, cr_id, realm_name=None):
+    async with session_factory() as session:
+        account = WowAccount(owner_id=owner_id, label=label)
+        session.add(account)
+        await session.flush()
+        session.add(WowAccountRealm(wow_account_id=account.id, connected_realm_id=cr_id, realm_name=realm_name))
+        await session.commit()
+
+
+def test_check_triggers_notification_names_the_registered_wow_account(listings_dir, real_user, monkeypatch,
+                                                                      bypass_get_async_session):
+    user = real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 10})
+    asyncio.run(_add_wow_account_realm(bypass_get_async_session, user.id, "Main", 99))
+
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(cr=99, item_id=555, buyout=50_000, auction_id=1)],
+        schema=LISTING_SCHEMA,
+    ), listings_dir / "99.parquet")
+
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append((url, json)))
+
+    watchlist.check_triggers()
+    assert "log in on **Main**" in posted[0][1]["content"]
+
+
+def test_check_triggers_notification_names_every_matching_wow_account(listings_dir, real_user, monkeypatch,
+                                                                      bypass_get_async_session):
+    """A realm can legitimately be registered on more than one of the
+    user's own WoW accounts -- no uniqueness constraint across accounts,
+    only within one (see db.WowAccountRealm)."""
+    user = real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 10})
+    asyncio.run(_add_wow_account_realm(bypass_get_async_session, user.id, "Main", 99))
+    asyncio.run(_add_wow_account_realm(bypass_get_async_session, user.id, "Alt", 99))
+
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(cr=99, item_id=555, buyout=50_000, auction_id=1)],
+        schema=LISTING_SCHEMA,
+    ), listings_dir / "99.parquet")
+
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append((url, json)))
+
+    watchlist.check_triggers()
+    assert "log in on **Main**, **Alt**" in posted[0][1]["content"]
+
+
+def test_check_triggers_notification_shows_the_specific_realm_name_registered(listings_dir, real_user, monkeypatch,
+                                                                              bypass_get_async_session):
+    """WowAccountRealm.realm_name (added 2026-08-02) carries the specific
+    member name the user picked at registration -- a connected realm can
+    bundle several names under one id, so this is what lets the message
+    say exactly which one this account is on."""
+    user = real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 10})
+    asyncio.run(_add_wow_account_realm(bypass_get_async_session, user.id, "Main", 99, realm_name="Zul'jin"))
+
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(cr=99, item_id=555, buyout=50_000, auction_id=1)],
+        schema=LISTING_SCHEMA,
+    ), listings_dir / "99.parquet")
+
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append((url, json)))
+
+    watchlist.check_triggers()
+    assert "log in on **Main** (Zul'jin)" in posted[0][1]["content"]
+
+
+def test_check_triggers_notification_omits_account_note_when_none_registered(listings_dir, real_user, monkeypatch):
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 10})
+
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(cr=99, item_id=555, buyout=50_000, auction_id=1)],
+        schema=LISTING_SCHEMA,
+    ), listings_dir / "99.parquet")
+
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append((url, json)))
+
+    watchlist.check_triggers()
+    assert "log in on" not in posted[0][1]["content"]
+
+
+def test_check_triggers_notification_lists_every_connected_realm_member_name(listings_dir, real_user, monkeypatch):
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 10})
+    monkeypatch.setattr(blizz, "connected_realm_realms",
+                        lambda cr_id: [{"name": "Zul'jin", "slug": "zuljin", "category": "English"},
+                                      {"name": "Sanguino", "slug": "sanguino", "category": "Spanish"}])
+
+    pq.write_table(pa.Table.from_pylist(
+        [listing_row(cr=99, item_id=555, buyout=50_000, auction_id=1)],
+        schema=LISTING_SCHEMA,
+    ), listings_dir / "99.parquet")
+
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append((url, json)))
+
+    watchlist.check_triggers()
+    content = posted[0][1]["content"]
+    assert "Zul'jin / Sanguino" in content
+    assert "(connected realm)" in content
 
 
 def test_check_triggers_does_not_notify_above_trigger(listings_dir, real_user, monkeypatch):
