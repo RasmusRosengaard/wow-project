@@ -415,9 +415,9 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   live-verified id set, not a threshold. See `HISTORY.md` for the
   live-verified examples of both, and for `sell_price_suspect`'s removal
   the same day.
-- The tightened background-poll window (`:12-:28` past the hour) is based
-  on ~7 observed data points from one realm (Draenor) — a shared, global
-  schedule, not learned per-realm.
+- The tightened background-poll window (`:18-:26` past the hour, narrowed
+  2026-08-02 from an earlier `:12-:28` estimate on further human-confirmed
+  observation) is still a shared, global schedule, not learned per-realm.
 - Stripe is on the full `sk_live_...` secret key, not a restricted key
   scoped to what `billing.py` actually needs (see "Next up").
 

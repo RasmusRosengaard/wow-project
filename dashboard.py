@@ -89,14 +89,17 @@ COLLECTION_INTERVAL_SECONDS = 10 * 60
 # generous window around that mark so a real update gets caught within
 # TIGHT_INTERVAL_SECONDS instead of up to the full 10-minute baseline; fall
 # back to the normal cadence the rest of the hour so total request volume
-# for a quiet 44 minutes/hour barely changes. The window is deliberately
-# wider (16 min) than the observed band (~1.5 min) since this schedule is
-# shared across every deep-collected realm, not tuned per-realm -- other
-# realms likely publish at a slightly different offset. Revisit with a
-# per-realm learned offset if this window turns out too narrow/wide once
-# more realms have enough /log history to check.
-TIGHT_WINDOW_START_MINUTE = 12
-TIGHT_WINDOW_END_MINUTE = 28
+# for a quiet 44 minutes/hour barely changes.
+# Window narrowed 2026-08-02 (human-confirmed, more observations than the
+# original 7: Blizzard "always" publishes between :18 and :26) from an
+# earlier, more cautious :12-:28 estimate -- still wider (8 min) than the
+# originally observed ~1.5-minute band since this schedule is shared across
+# every deep-collected realm, not tuned per-realm -- other realms likely
+# publish at a slightly different offset. Revisit with a per-realm learned
+# offset if this window turns out too narrow/wide once more realms have
+# enough /log history to check.
+TIGHT_WINDOW_START_MINUTE = 18
+TIGHT_WINDOW_END_MINUTE = 26
 TIGHT_INTERVAL_SECONDS = 45
 
 
