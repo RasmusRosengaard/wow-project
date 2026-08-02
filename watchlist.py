@@ -174,6 +174,56 @@ async def update_discord_webhook(payload: DiscordWebhookUpdate,
     return {"discord_webhook_url": user.discord_webhook_url}
 
 
+class WatchlistBatchUpdateItem(BaseModel):
+    id: int
+    trigger_price_g: float | None = None
+
+
+class WatchlistBatchUpdateRequest(BaseModel):
+    items: list[WatchlistBatchUpdateItem]
+
+
+# Also registered before "/{item_id}" for the same route-order reason as
+# /discord-webhook above.
+@router.patch("/batch")
+async def batch_update_items(payload: WatchlistBatchUpdateRequest,
+                             user: User = Depends(current_subscribed_user),
+                             session: AsyncSession = Depends(get_async_session)) -> dict:
+    """Updates trigger prices for many items in a single request (added
+    2026-08-02, human request: editing trigger prices on a large TSM import
+    -- 300 items in the real sample used to build this feature -- one row
+    at a time meant one PATCH per row, up to hundreds of round trips just
+    to fill in prices after a bulk import). The frontend now collects
+    edits locally and calls this once instead of static/watchlist.html's
+    old per-row PATCH /{item_id}, which still exists for other callers but
+    is no longer used by the batch-edit flow.
+
+    Unknown or not-owned ids are silently skipped (not 404'd) -- same
+    non-existence-leaking precedent as _get_owned_item(), but batched: one
+    query fetches every id in this user's list, one loop applies the
+    matched edits, one commit. A negative trigger price is skipped the
+    same way rather than failing the whole batch over one bad row."""
+    if not payload.items:
+        return {"updated": 0, "skipped": 0}
+    ids = [entry.id for entry in payload.items]
+    owned = {item.id: item for item in (await session.execute(
+        select(WatchlistItem).where(WatchlistItem.id.in_(ids), WatchlistItem.owner_id == user.id)
+    )).scalars().all()}
+    updated = 0
+    skipped = 0
+    for entry in payload.items:
+        item = owned.get(entry.id)
+        if item is None or (entry.trigger_price_g is not None and entry.trigger_price_g < 0):
+            skipped += 1
+            continue
+        item.trigger_price_copper = (
+            round(entry.trigger_price_g * 10000) if entry.trigger_price_g is not None else None
+        )
+        updated += 1
+    await session.commit()
+    return {"updated": updated, "skipped": skipped}
+
+
 class WatchlistItemCreate(BaseModel):
     item_id: int
     pet_species_id: int | None = None
@@ -186,8 +236,14 @@ async def add_item(payload: WatchlistItemCreate, user: User = Depends(current_su
                    session: AsyncSession = Depends(get_async_session)) -> dict:
     if payload.item_id <= 0:
         raise HTTPException(400, "invalid item id")
-    if payload.trigger_price_g is not None and payload.trigger_price_g < 0:
-        raise HTTPException(400, "trigger price can't be negative")
+    # Required for a manual add (2026-08-02, human request) -- a
+    # newly-added item should always have something to actually trigger on.
+    # TSM import is deliberately exempt: import_tsm_group() below calls
+    # _insert_item_atomic() directly rather than through this model, since
+    # a TSM export carries no per-item price data to require in the first
+    # place -- see that function's own docstring.
+    if payload.trigger_price_g is None or payload.trigger_price_g <= 0:
+        raise HTTPException(400, "trigger price is required and must be greater than 0")
     label = (payload.label or "").strip() or None
     if label and len(label) > LABEL_MAX_LEN:
         raise HTTPException(400, f"label must be {LABEL_MAX_LEN} characters or fewer")

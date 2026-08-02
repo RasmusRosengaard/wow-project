@@ -121,14 +121,18 @@ def test_add_item_by_id():
     assert body["pet_species_id"] is None
 
 
-def test_add_item_without_trigger_price_is_allowed():
+def test_add_item_requires_trigger_price():
     r = client.post("/api/watchlist", json={"item_id": 111})
-    assert r.status_code == 200
-    assert r.json()["trigger_price_g"] is None
+    assert r.status_code == 400
+
+
+def test_add_item_rejects_zero_trigger_price():
+    r = client.post("/api/watchlist", json={"item_id": 111, "trigger_price_g": 0})
+    assert r.status_code == 400
 
 
 def test_add_item_rejects_invalid_item_id():
-    r = client.post("/api/watchlist", json={"item_id": 0})
+    r = client.post("/api/watchlist", json={"item_id": 0, "trigger_price_g": 10})
     assert r.status_code == 400
 
 
@@ -157,7 +161,7 @@ def test_update_missing_item_404s():
 
 
 def test_delete_item():
-    added = client.post("/api/watchlist", json={"item_id": 111}).json()
+    added = client.post("/api/watchlist", json={"item_id": 111, "trigger_price_g": 10}).json()
     r = client.delete(f"/api/watchlist/{added['id']}")
     assert r.status_code == 200
     assert client.get("/api/watchlist").json()["items"] == []
@@ -165,10 +169,80 @@ def test_delete_item():
 
 def test_add_item_enforces_cap(monkeypatch):
     monkeypatch.setattr(watchlist, "MAX_WATCHLIST_ITEMS_PER_USER", 2)
-    assert client.post("/api/watchlist", json={"item_id": 1}).status_code == 200
-    assert client.post("/api/watchlist", json={"item_id": 2}).status_code == 200
-    r = client.post("/api/watchlist", json={"item_id": 3})
+    assert client.post("/api/watchlist", json={"item_id": 1, "trigger_price_g": 10}).status_code == 200
+    assert client.post("/api/watchlist", json={"item_id": 2, "trigger_price_g": 10}).status_code == 200
+    r = client.post("/api/watchlist", json={"item_id": 3, "trigger_price_g": 10})
     assert r.status_code == 400
+
+
+# --------------------------------------------------------- batch update ----
+# add_item() requires a trigger price at creation (2026-08-02, human
+# request), but the batch/single update endpoints still allow setting or
+# clearing one later (e.g. a TSM-imported item, which starts with none) --
+# these tests create with a placeholder initial price where the point of
+# the test is the *update*, not the starting state.
+
+def test_batch_update_sets_multiple_trigger_prices_in_one_request():
+    a = client.post("/api/watchlist", json={"item_id": 1, "trigger_price_g": 1}).json()
+    b = client.post("/api/watchlist", json={"item_id": 2, "trigger_price_g": 1}).json()
+    r = client.patch("/api/watchlist/batch", json={"items": [
+        {"id": a["id"], "trigger_price_g": 10},
+        {"id": b["id"], "trigger_price_g": 25.5},
+    ]})
+    assert r.status_code == 200
+    assert r.json() == {"updated": 2, "skipped": 0}
+    items = {i["id"]: i["trigger_price_g"] for i in client.get("/api/watchlist").json()["items"]}
+    assert items[a["id"]] == 10
+    assert items[b["id"]] == 25.5
+
+
+def test_batch_update_can_clear_a_trigger_price():
+    a = client.post("/api/watchlist", json={"item_id": 1, "trigger_price_g": 10}).json()
+    r = client.patch("/api/watchlist/batch", json={"items": [{"id": a["id"], "trigger_price_g": None}]})
+    assert r.status_code == 200
+    assert r.json() == {"updated": 1, "skipped": 0}
+    assert client.get("/api/watchlist").json()["items"][0]["trigger_price_g"] is None
+
+
+def test_batch_update_skips_unowned_and_missing_ids():
+    a = client.post("/api/watchlist", json={"item_id": 1, "trigger_price_g": 1}).json()
+    r = client.patch("/api/watchlist/batch", json={"items": [
+        {"id": a["id"], "trigger_price_g": 5},
+        {"id": 999999, "trigger_price_g": 5},
+    ]})
+    assert r.status_code == 200
+    assert r.json() == {"updated": 1, "skipped": 1}
+
+
+def test_batch_update_skips_negative_prices_without_failing_whole_batch():
+    a = client.post("/api/watchlist", json={"item_id": 1, "trigger_price_g": 1}).json()
+    b = client.post("/api/watchlist", json={"item_id": 2, "trigger_price_g": 1}).json()
+    r = client.patch("/api/watchlist/batch", json={"items": [
+        {"id": a["id"], "trigger_price_g": -5},
+        {"id": b["id"], "trigger_price_g": 5},
+    ]})
+    assert r.status_code == 200
+    assert r.json() == {"updated": 1, "skipped": 1}
+    items = {i["id"]: i["trigger_price_g"] for i in client.get("/api/watchlist").json()["items"]}
+    assert items[a["id"]] == 1  # unchanged, the negative edit was skipped
+    assert items[b["id"]] == 5
+
+
+def test_batch_update_empty_list_is_a_no_op():
+    r = client.patch("/api/watchlist/batch", json={"items": []})
+    assert r.status_code == 200
+    assert r.json() == {"updated": 0, "skipped": 0}
+
+
+def test_batch_update_cannot_touch_another_users_items():
+    a = client.post("/api/watchlist", json={"item_id": 1, "trigger_price_g": 1}).json()
+    other_user = User(id=uuid.uuid4(), email="other-batch@example.com", hashed_password="x",
+                      is_active=True, is_superuser=False, is_verified=True,
+                      subscription_status="active")
+    dashboard.app.dependency_overrides[auth.current_subscribed_user] = lambda: other_user
+    r = client.patch("/api/watchlist/batch", json={"items": [{"id": a["id"], "trigger_price_g": 5}]})
+    assert r.status_code == 200
+    assert r.json() == {"updated": 0, "skipped": 1}
 
 
 # ---------------------------------------------------------- webhook URL ----
@@ -239,7 +313,7 @@ def test_cannot_touch_another_users_item():
     other_user_id = uuid.uuid4()
     # add via the real user, then swap the authenticated user and confirm
     # the row is invisible to them (404, not leaked)
-    added = client.post("/api/watchlist", json={"item_id": 111}).json()
+    added = client.post("/api/watchlist", json={"item_id": 111, "trigger_price_g": 10}).json()
     other_user = User(id=other_user_id, email="other@example.com", hashed_password="x",
                       is_active=True, is_superuser=False, is_verified=True,
                       subscription_status="active")
@@ -328,7 +402,11 @@ def test_check_triggers_does_not_notify_above_trigger(listings_dir, real_user, m
 
 def test_check_triggers_skips_items_with_no_trigger_set(listings_dir, real_user, monkeypatch):
     real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
-    client.post("/api/watchlist", json={"item_id": 555})  # no trigger_price_g
+    # add_item() requires a trigger price at creation (2026-08-02) -- clear
+    # it via batch update to reach the "no trigger set" state this test
+    # needs, same as a TSM-imported item (which starts with none) would be.
+    added = client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 1}).json()
+    client.patch("/api/watchlist/batch", json={"items": [{"id": added["id"], "trigger_price_g": None}]})
 
     pq.write_table(pa.Table.from_pylist(
         [listing_row(cr=99, item_id=555, buyout=1, auction_id=1)],

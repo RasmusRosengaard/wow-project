@@ -181,6 +181,65 @@ async def rename_account(account_id: int, payload: WowAccountRename,
     return _account_to_json(account, await _realm_ids_for_account(account.id, session))
 
 
+class WowAccountBatchUpdate(BaseModel):
+    label: str | None = None
+    realm_ids: list[int] | None = None
+
+
+@router.patch("/{account_id}/batch")
+async def batch_update_account(account_id: int, payload: WowAccountBatchUpdate,
+                               user: User = Depends(current_subscribed_user),
+                               session: AsyncSession = Depends(get_async_session)) -> dict:
+    """Saves a rename and/or a full realm-set replacement in one request
+    (added 2026-08-02, human request -- same "don't fire a request per
+    click" principle as watchlist.py's own /batch route, applied here too:
+    profile.html's card now lets a user add/remove several realms locally
+    before ever hitting Save, instead of one POST/DELETE /realms round trip
+    per click). Either field is optional -- omit label to leave the name
+    untouched, omit realm_ids to leave realms untouched.
+
+    realm_ids, when given, is treated as the account's *complete* desired
+    realm set, not a delta -- the diff (add missing, remove extra) is
+    computed here, not by the client. Not wrapped in the atomic
+    INSERT...SELECT...WHERE pattern _insert_realm_atomic() uses (see that
+    function's docstring / module docstring for why it exists elsewhere):
+    that pattern fits "insert one row if under a count," not "replace a
+    whole set to match exactly this list," and two concurrent batch saves
+    on the *same* account by the *same* user is an extreme edge case for
+    self-declared personal metadata with no cost/security consequence if
+    it ever produced a merged-rather-than-one-wins result -- not worth the
+    added complexity here, same reasoning this module's docstring already
+    gives for why the atomic pattern is convention, not a hard requirement,
+    for caps like this one."""
+    account = await _get_owned_account(account_id, user, session)
+
+    if payload.label is not None:
+        label = payload.label.strip()
+        if not label:
+            raise HTTPException(400, "label can't be empty")
+        if len(label) > LABEL_MAX_LEN:
+            raise HTTPException(400, f"label must be {LABEL_MAX_LEN} characters or fewer")
+        account.label = label
+
+    if payload.realm_ids is not None:
+        desired = set(payload.realm_ids)
+        if len(desired) > MAX_REALMS_PER_ACCOUNT:
+            raise HTTPException(400, f"maximum {MAX_REALMS_PER_ACCOUNT} realms per account")
+        current = set(await _realm_ids_for_account(account.id, session))
+        to_remove = current - desired
+        to_add = desired - current
+        if to_remove:
+            await session.execute(delete(WowAccountRealm).where(
+                WowAccountRealm.wow_account_id == account.id,
+                WowAccountRealm.connected_realm_id.in_(to_remove),
+            ))
+        for realm_id in to_add:
+            session.add(WowAccountRealm(wow_account_id=account.id, connected_realm_id=realm_id))
+
+    await session.commit()
+    return _account_to_json(account, await _realm_ids_for_account(account.id, session))
+
+
 @router.delete("/{account_id}")
 async def delete_account(account_id: int, user: User = Depends(current_subscribed_user),
                          session: AsyncSession = Depends(get_async_session)) -> dict:

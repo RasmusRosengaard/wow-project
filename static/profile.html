@@ -128,7 +128,24 @@
 
   /* --- WoW Accounts section --- */
   .section-head { display: flex; flex-direction: column; gap: 0.3rem; }
-  .section-lede { margin: 0; font-size: 0.85rem; color: var(--text-dim); max-width: 62ch; }
+  /* "?" hover/focus tooltip (2026-08-02, human request) -- replaces the
+     always-visible lede paragraph this section used to show under its
+     heading, matching the same pattern applied to watchlist.html. */
+  .info-icon {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%; background: var(--hairline-strong);
+    color: var(--text-dim); font-size: 0.65rem; font-weight: 700; font-style: normal;
+    text-transform: none; letter-spacing: normal; cursor: help; margin-left: 0.4rem;
+    vertical-align: middle;
+  }
+  .info-icon:hover, .info-icon:focus { background: var(--bullion); color: #fff; outline: none; }
+  .info-icon .info-tooltip {
+    display: none; position: absolute; top: 135%; left: 0; z-index: 50;
+    background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 4px;
+    padding: 0.55rem 0.7rem; font-size: 0.76rem; font-weight: 400; color: var(--ink);
+    width: 260px; line-height: 1.45; box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+  }
+  .info-icon:hover .info-tooltip, .info-icon:focus .info-tooltip { display: block; }
   .upsell { font-size: 0.88rem; color: var(--text-dim); }
   .upsell a { color: var(--bullion); font-weight: 700; text-decoration: none; }
   .upsell a:hover { text-decoration: underline; }
@@ -258,8 +275,7 @@
 
   <section class="wow-accounts-section">
     <div class="section-head">
-      <h2>WoW Accounts</h2>
-      <p class="section-lede">Register your WoW accounts and the realms where your sniping characters live.</p>
+      <h2>WoW Accounts<span class="info-icon" tabindex="0">?<span class="info-tooltip">Register your WoW accounts and the realms where your sniping characters live.</span></span></h2>
       <p class="cap-note" id="realm-coverage" style="display:none;"></p>
     </div>
     <div id="wow-accounts-upsell" class="upsell" style="display:none;"></div>
@@ -449,9 +465,9 @@ function renderWowAccounts() {
         <div class="wow-account-card-name-row">
           <input type="text" value="${escapeHtml(acct.label)}" maxlength="50" data-rename-input="${acct.id}">
         </div>
-        <div class="cap-note">Press Save to save changes.</div>
+        <div class="cap-note">Remember to click Save -- name and realm changes aren't saved until you do.</div>
         <div class="wow-account-card-actions-row">
-          <button data-rename="${acct.id}">Save</button>
+          <button data-save-account="${acct.id}">Save</button>
         </div>
         <div class="realm-chips">${chips}</div>
         ${searchBlock}
@@ -466,14 +482,14 @@ function renderWowAccounts() {
   list.innerHTML = cards + addTile;
 
   if (!atAccountCap) $("add-account-btn").addEventListener("click", addAccount);
-  list.querySelectorAll("[data-rename]").forEach(btn => {
-    btn.addEventListener("click", () => renameAccount(Number(btn.dataset.rename)));
+  list.querySelectorAll("[data-save-account]").forEach(btn => {
+    btn.addEventListener("click", () => saveAccount(Number(btn.dataset.saveAccount)));
   });
   list.querySelectorAll("[data-delete]").forEach(btn => {
     btn.addEventListener("click", () => deleteAccount(Number(btn.dataset.delete)));
   });
   list.querySelectorAll("[data-remove-realm]").forEach(btn => {
-    btn.addEventListener("click", () => removeRealm(Number(btn.dataset.account), Number(btn.dataset.removeRealm)));
+    btn.addEventListener("click", () => removeRealmLocal(Number(btn.dataset.account), Number(btn.dataset.removeRealm)));
   });
   list.querySelectorAll("[data-realm-search]").forEach(input => {
     const accountId = Number(input.dataset.realmSearch);
@@ -517,7 +533,7 @@ function updateRealmSearchResults(accountId) {
     // before hideRealmSearchResults() could race the dropdown closed.
     item.addEventListener("mousedown", (e) => {
       e.preventDefault();
-      addRealm(Number(item.dataset.account), Number(item.dataset.pickRealm));
+      addRealmLocal(Number(item.dataset.account), Number(item.dataset.pickRealm));
     });
   });
 }
@@ -528,7 +544,7 @@ function pickTopRealmMatch(accountId) {
   const acct = currentAccounts.find(a => a.id === accountId);
   const excludeIds = new Set(acct ? acct.realms : []);
   const matches = realmSearchMatches(input.value, excludeIds);
-  if (matches.length) addRealm(accountId, matches[0][0]);
+  if (matches.length) addRealmLocal(accountId, matches[0][0]);
 }
 
 async function addAccount() {
@@ -551,20 +567,43 @@ async function addAccount() {
   await refreshWowAccounts();
 }
 
-async function renameAccount(accountId) {
+// Realm add/remove are now purely local edits (2026-08-02, human request:
+// batch this the same way watchlist.py's trigger-price edits were batched
+// -- adding realms one at a time used to fire one POST per click, same for
+// remove). No network call happens here at all -- the account's card-level
+// "Save" button (saveAccount() below) is what actually persists both the
+// label and the current realm list, in one request via
+// PATCH /api/wow-accounts/{id}/batch. Un-saved local edits are lost on
+// reload, same as the rename input already worked before this change.
+function addRealmLocal(accountId, realmId) {
+  const acct = currentAccounts.find(a => a.id === accountId);
+  if (!acct || acct.realms.includes(realmId)) return;
+  acct.realms.push(realmId);
+  renderWowAccounts();
+}
+
+function removeRealmLocal(accountId, realmId) {
+  const acct = currentAccounts.find(a => a.id === accountId);
+  if (!acct) return;
+  acct.realms = acct.realms.filter(id => id !== realmId);
+  renderWowAccounts();
+}
+
+async function saveAccount(accountId) {
   const err = $("wow-accounts-error");
   err.textContent = "";
   const input = document.querySelector(`[data-rename-input="${accountId}"]`);
   const label = input.value.trim();
   if (!label) { err.textContent = "Account name can't be empty."; return; }
-  const r = await fetch(`/api/wow-accounts/${accountId}`, {
+  const acct = currentAccounts.find(a => a.id === accountId);
+  const r = await fetch(`/api/wow-accounts/${accountId}/batch`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, realm_ids: acct ? acct.realms : [] }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
-    err.textContent = body.detail || "Couldn't rename that account.";
+    err.textContent = body.detail || "Couldn't save that account.";
     return;
   }
   await refreshWowAccounts();
@@ -577,34 +616,6 @@ async function deleteAccount(accountId) {
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     err.textContent = body.detail || "Couldn't delete that account.";
-    return;
-  }
-  await refreshWowAccounts();
-}
-
-async function addRealm(accountId, realmId) {
-  const err = $("wow-accounts-error");
-  err.textContent = "";
-  const r = await fetch(`/api/wow-accounts/${accountId}/realms`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ connected_realm_id: realmId }),
-  });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    err.textContent = body.detail || "Couldn't add that realm.";
-    return;
-  }
-  await refreshWowAccounts();
-}
-
-async function removeRealm(accountId, realmId) {
-  const err = $("wow-accounts-error");
-  err.textContent = "";
-  const r = await fetch(`/api/wow-accounts/${accountId}/realms/${realmId}`, { method: "DELETE" });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    err.textContent = body.detail || "Couldn't remove that realm.";
     return;
   }
   await refreshWowAccounts();

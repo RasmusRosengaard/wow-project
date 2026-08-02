@@ -166,6 +166,62 @@ def test_remove_realm_not_found_returns_404():
     assert r.status_code == 404
 
 
+# ----------------------------------------------------- batch save ----
+
+def test_batch_update_renames_and_sets_realms_in_one_request():
+    account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
+    r = client.patch(f"/api/wow-accounts/{account_id}/batch",
+                     json={"label": "Renamed", "realm_ids": [1403, 1096]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["label"] == "Renamed"
+    assert sorted(body["realms"]) == [1096, 1403]
+
+
+def test_batch_update_realm_ids_replaces_full_set_add_and_remove():
+    account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
+    client.patch(f"/api/wow-accounts/{account_id}/batch", json={"realm_ids": [1, 2, 3]})
+    r = client.patch(f"/api/wow-accounts/{account_id}/batch", json={"realm_ids": [2, 3, 4]})
+    assert r.status_code == 200
+    assert sorted(r.json()["realms"]) == [2, 3, 4]  # 1 removed, 4 added, 2/3 kept
+
+
+def test_batch_update_omitted_fields_leave_existing_state_untouched():
+    account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
+    client.patch(f"/api/wow-accounts/{account_id}/batch", json={"realm_ids": [1403]})
+    r = client.patch(f"/api/wow-accounts/{account_id}/batch", json={"label": "Renamed"})
+    assert r.status_code == 200
+    assert r.json()["label"] == "Renamed"
+    assert r.json()["realms"] == [1403]  # untouched, realm_ids wasn't in this call
+
+
+def test_batch_update_rejects_empty_label():
+    account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
+    r = client.patch(f"/api/wow-accounts/{account_id}/batch", json={"label": "   "})
+    assert r.status_code == 400
+
+
+def test_batch_update_enforces_max_50_realm_cap():
+    account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
+    r = client.patch(f"/api/wow-accounts/{account_id}/batch",
+                     json={"realm_ids": list(range(1, 52))})
+    assert r.status_code == 400
+    assert client.get("/api/wow-accounts").json()["accounts"][0]["realms"] == []
+
+
+def test_batch_update_not_owned_returns_404():
+    account_id = client.post("/api/wow-accounts", json={"label": "Main"}).json()["id"]
+    other_user = User(id=uuid.uuid4(), email="other-batch@example.com", hashed_password="x",
+                      is_active=True, is_superuser=False, is_verified=True,
+                      subscription_status="active")
+    dashboard.app.dependency_overrides[auth.current_subscribed_user] = lambda: other_user
+    try:
+        r = client.patch(f"/api/wow-accounts/{account_id}/batch", json={"label": "Hijacked"})
+        assert r.status_code == 404
+    finally:
+        dashboard.app.dependency_overrides[auth.current_subscribed_user] = lambda: FAKE_USER
+
+
 def test_wow_accounts_requires_active_subscription():
     dashboard.app.dependency_overrides[auth.current_active_user] = lambda: NON_SUBSCRIBED_USER
     dashboard.app.dependency_overrides.pop(auth.current_subscribed_user, None)  # let the real check run

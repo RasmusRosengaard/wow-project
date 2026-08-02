@@ -63,7 +63,7 @@
   .nav a, .nav button {
     background: transparent; border: 1px solid transparent; color: var(--text-dim);
     border-radius: 4px; padding: 0.45rem 0.8rem; cursor: pointer; font-size: 0.8rem;
-    text-decoration: none; font-weight: 600; font-family: inherit;
+    text-decoration: none; font-weight: 600; font-family: inherit; text-transform: none;
     transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   }
   .nav a:hover, .nav button:hover { background: var(--paper); border-color: var(--hairline-strong); color: var(--ink); }
@@ -72,10 +72,17 @@
   #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
 
   .shell { display: flex; justify-content: center; padding: 2rem 1.5rem 3rem; }
-  .wrap { max-width: 900px; width: 100%; display: flex; flex-direction: column; gap: 1.5rem; }
+  .wrap { max-width: 1600px; width: 100%; display: flex; flex-direction: column; gap: 1.5rem; }
+  /* Setup (Discord/add/import) stacked in a fixed-width left column,
+     Watched Items given the rest of the width on the right (2026-08-02,
+     human request: "utilize the screen" -- a wide table benefits from
+     room far more than a handful of compact form fields do). */
+  .page-grid { display: grid; grid-template-columns: 400px 1fr; gap: 1.5rem; align-items: start; }
+  @media (max-width: 1000px) { .page-grid { grid-template-columns: 1fr; } }
+  .left-col { display: flex; flex-direction: column; gap: 1.5rem; min-width: 0; }
+  .right-col { min-width: 0; }
   h2 { font-size: 1.1rem; margin: 0; font-weight: 800; letter-spacing: -0.01em; }
   h3 { font-size: 0.85rem; margin: 0; font-weight: 800; text-transform: uppercase; letter-spacing: 0.02em; color: var(--text-dim); }
-  .lede { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin: 0; }
   .card {
     background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
     padding: 1.25rem 1.5rem; display: flex; flex-direction: column; gap: 0.9rem;
@@ -102,6 +109,33 @@
   button.danger { background: transparent; border-color: var(--alert); color: var(--alert); padding: 0.4rem 0.7rem; }
   button.danger:hover { background: var(--alert-bg); border-color: var(--alert); }
   .row { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
+  /* Every left-column card's action button sits in this same row shape
+     (2026-08-02, human request: "import, add, save btns should be the
+     same locations in every box") -- own row below the field(s), left-
+     aligned, instead of Discord/Add's buttons sitting inline-right of
+     their inputs while Import's sat below its textarea. */
+  .card-actions { display: flex; }
+  .card-actions button { min-width: 110px; }
+  /* "?" hover/focus tooltip (2026-08-02, human request) -- replaces the
+     always-visible lede/help paragraphs this page used to show under each
+     heading, so the explanation is available without permanently taking
+     up space. cursor:help + tabindex on the icon makes it keyboard-
+     reachable too, not hover-only. */
+  .info-icon {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%; background: var(--hairline-strong);
+    color: var(--text-dim); font-size: 0.65rem; font-weight: 700; font-style: normal;
+    text-transform: none; letter-spacing: normal; cursor: help; margin-left: 0.4rem;
+    vertical-align: middle;
+  }
+  .info-icon:hover, .info-icon:focus { background: var(--bullion); color: #fff; outline: none; }
+  .info-icon .info-tooltip {
+    display: none; position: absolute; top: 135%; left: 0; z-index: 50;
+    background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 4px;
+    padding: 0.55rem 0.7rem; font-size: 0.76rem; font-weight: 400; color: var(--ink);
+    width: 260px; line-height: 1.45; box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+  }
+  .info-icon:hover .info-tooltip, .info-icon:focus .info-tooltip { display: block; }
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
   .field.grow { flex: 1; min-width: 140px; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
@@ -119,11 +153,18 @@
   .trigger-cell { display: flex; align-items: center; gap: 0.4rem; }
   .trigger-cell input { width: 90px; }
   .trigger-cell .unit { font-size: 0.75rem; color: var(--text-dim); }
-  .trigger-cell button { padding: 0.35rem 0.6rem; font-size: 0.68rem; }
+  tr.dirty .trigger-cell input { border-color: var(--bullion); background: var(--verified-bg); }
   .empty-state { text-align: center; padding: 2rem 1rem; color: var(--text-dim); font-size: 0.85rem; }
   .import-result { font-size: 0.8rem; color: var(--ink); }
   @keyframes skeleton-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.75; } }
   .skeleton-row { height: 40px; border-radius: 4px; background: var(--hairline); animation: skeleton-pulse 1.3s ease-in-out infinite; margin-bottom: 0.4rem; }
+  .save-bar {
+    display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;
+    background: var(--verified-bg); border: 1px solid var(--verified); border-radius: 4px;
+    padding: 0.6rem 0.9rem;
+  }
+  .save-bar span { font-size: 0.8rem; color: var(--ink); }
+  .save-bar button { padding: 0.4rem 0.9rem; font-size: 0.72rem; }
 </style>
 </head>
 <body>
@@ -162,8 +203,7 @@
 <div class="shell">
 <div class="wrap">
   <div>
-    <h2>Watchlist</h2>
-    <p class="lede">Track specific items across every EU realm, no sell realm required. Set a gold trigger price and get a Discord message when a listing anywhere clears it.</p>
+    <h2>Watchlist<span class="info-icon" tabindex="0">?<span class="info-tooltip">Track specific items across every EU realm, no sell realm required. Set a gold trigger price and get a Discord message when a listing anywhere clears it.</span></span></h2>
   </div>
 
   <div id="logged-out-card" class="card" style="display:none;">
@@ -175,63 +215,73 @@
   </div>
 
   <div id="app" style="display:none;">
-    <div class="card">
-      <h3>Discord notifications</h3>
-      <p>Paste a Discord webhook URL to get notified when a watched item clears its trigger price. Leave empty to track items without any delivery.</p>
-      <div class="row">
-        <div class="field grow">
+   <div class="page-grid">
+    <div class="left-col">
+      <div class="card">
+        <h3>Discord notifications<span class="info-icon" tabindex="0">?<span class="info-tooltip">Paste a Discord webhook URL to get notified when a watched item clears its trigger price. Leave empty to track items without any delivery.</span></span></h3>
+        <div class="field">
           <label for="webhook-url">Webhook URL</label>
           <input type="text" id="webhook-url" placeholder="https://discord.com/api/webhooks/...">
         </div>
-        <button id="webhook-save">Save</button>
-      </div>
-      <div class="error" id="webhook-error"></div>
-      <div class="status-msg" id="webhook-status"></div>
-    </div>
-
-    <div class="card">
-      <h3>Add an item</h3>
-      <div class="row">
-        <div class="field">
-          <label for="add-item-id">Item ID</label>
-          <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
+        <div class="card-actions">
+          <button id="webhook-save">Save</button>
         </div>
-        <div class="field">
-          <label for="add-trigger">Trigger price (g)</label>
-          <input type="number" id="add-trigger" min="0" step="0.01" placeholder="optional">
+        <div class="error" id="webhook-error"></div>
+        <div class="status-msg" id="webhook-status"></div>
+      </div>
+
+      <div class="card">
+        <h3>Add an item</h3>
+        <div class="row">
+          <div class="field">
+            <label for="add-item-id">Item ID</label>
+            <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
+          </div>
+          <div class="field">
+            <label for="add-trigger">Trigger price (g)</label>
+            <input type="number" id="add-trigger" min="0.01" step="0.01" placeholder="e.g. 50" required>
+          </div>
         </div>
-        <button id="add-item-btn">Add</button>
+        <div class="card-actions">
+          <button id="add-item-btn">Add</button>
+        </div>
+        <div class="error" id="add-item-error"></div>
       </div>
-      <div class="error" id="add-item-error"></div>
+
+      <div class="card">
+        <h3>Import a TSM group<span class="info-icon" tabindex="0">?<span class="info-tooltip">Paste a TSM group export string (right-click a group in TSM &rarr; Export). Items are added without a trigger price set &mdash; fill one in per item in the table.</span></span></h3>
+        <textarea id="tsm-export" placeholder="Paste TSM group export string here (right-click a group in TSM -> Export)..."></textarea>
+        <div class="card-actions">
+          <button id="tsm-import-btn">Import</button>
+        </div>
+        <div class="error" id="tsm-error"></div>
+        <div class="import-result" id="tsm-result"></div>
+      </div>
     </div>
 
-    <div class="card">
-      <h3>Import a TSM group</h3>
-      <p>Paste a TSM group export string (right-click a group in TSM &rarr; Export). Items are added without a trigger price set &mdash; fill one in per item below.</p>
-      <textarea id="tsm-export" placeholder="Paste TSM group export string here..."></textarea>
-      <div class="row">
-        <button id="tsm-import-btn">Import</button>
-      </div>
-      <div class="error" id="tsm-error"></div>
-      <div class="import-result" id="tsm-result"></div>
-    </div>
-
-    <div class="card">
+    <div class="right-col">
+     <div class="card">
       <div class="row" style="justify-content: space-between;">
         <h3>Watched items (<span id="item-count">0</span> / <span id="item-cap">-</span>)</h3>
+      </div>
+      <div id="save-bar" class="save-bar" style="display:none;">
+        <span id="save-bar-text"></span>
+        <button id="save-changes-btn">Save changes</button>
       </div>
       <div id="items-loading">
         <div class="skeleton-row"></div>
         <div class="skeleton-row"></div>
         <div class="skeleton-row"></div>
       </div>
-      <div id="items-empty" class="empty-state" style="display:none;">No items watched yet &mdash; add one above.</div>
+      <div id="items-empty" class="empty-state" style="display:none;">No items watched yet.</div>
       <table id="items-table" style="display:none;">
         <thead><tr><th>Item</th><th>Group</th><th>Trigger price</th><th></th></tr></thead>
         <tbody id="items-body"></tbody>
       </table>
       <div class="error" id="items-error"></div>
+     </div>
     </div>
+   </div>
   </div>
 </div>
 </div>
@@ -253,6 +303,14 @@ function iconStyle(color) {
 }
 
 let currentItems = [];
+// itemId -> pending trigger_price_g (number) or null (cleared) -- only
+// present for rows the user has actually edited since the last load/save.
+// A single "Save changes" button flushes this whole map in one request
+// (2026-08-02, human request: editing trigger prices on a large TSM
+// import -- 300 items in the real sample used to build this feature --
+// used to mean one PATCH per row saved individually, up to hundreds of
+// round trips) instead of firing a request per row.
+let pendingChanges = new Map();
 
 async function loadWatchlist() {
   const r = await fetch("/api/watchlist");
@@ -261,9 +319,22 @@ async function loadWatchlist() {
   if (!r.ok) { $("items-error").textContent = "Couldn't load your watchlist."; return; }
   const data = await r.json();
   currentItems = data.items || [];
+  // Drop any pending edit for an item that no longer exists (removed, or
+  // an id from before a reload that's since vanished) -- everything else
+  // survives a reload so an add/import/remove elsewhere on the page
+  // doesn't discard in-progress trigger-price edits.
+  const liveIds = new Set(currentItems.map(i => i.id));
+  for (const id of pendingChanges.keys()) if (!liveIds.has(id)) pendingChanges.delete(id);
   $("webhook-url").value = data.discord_webhook_url || "";
   $("item-cap").textContent = data.max_items;
   renderItems();
+}
+
+function updateSaveBar() {
+  const bar = $("save-bar");
+  if (pendingChanges.size === 0) { bar.style.display = "none"; return; }
+  bar.style.display = "flex";
+  $("save-bar-text").textContent = `${pendingChanges.size} unsaved trigger-price change${pendingChanges.size === 1 ? "" : "s"} -- remember to click Save.`;
 }
 
 function renderItems() {
@@ -272,6 +343,7 @@ function renderItems() {
   if (!currentItems.length) {
     $("items-empty").style.display = "block";
     $("items-table").style.display = "none";
+    updateSaveBar();
     return;
   }
   $("items-empty").style.display = "none";
@@ -282,47 +354,70 @@ function renderItems() {
       : `<span class="item-icon"${iconStyle(item.quality_color)}></span>`;
     const name = escapeHtml(item.name || `Item ${item.item_id}`);
     const label = item.label ? escapeHtml(item.label) : "";
-    const triggerValue = item.trigger_price_g != null ? item.trigger_price_g : "";
+    const isDirty = pendingChanges.has(item.id);
+    const displayValue = isDirty ? pendingChanges.get(item.id) : item.trigger_price_g;
+    const triggerValue = displayValue != null ? displayValue : "";
     return `
-      <tr data-item-id="${item.id}">
+      <tr data-item-id="${item.id}" class="${isDirty ? "dirty" : ""}">
         <td><div class="item-cell">${icon}<span class="item-name" title="${name}">${name}</span></div></td>
         <td><span class="item-label" title="${label}">${label}</span></td>
         <td>
           <div class="trigger-cell">
             <input type="number" min="0" step="0.01" value="${triggerValue}" data-trigger-input="${item.id}" placeholder="none">
             <span class="unit">g</span>
-            <button data-save-trigger="${item.id}">Save</button>
           </div>
         </td>
         <td><button class="danger" data-remove="${item.id}">Remove</button></td>
       </tr>`;
   }).join("");
 
-  $("items-body").querySelectorAll("[data-save-trigger]").forEach(btn => {
-    btn.addEventListener("click", () => saveTrigger(Number(btn.dataset.saveTrigger)));
+  $("items-body").querySelectorAll("[data-trigger-input]").forEach(input => {
+    input.addEventListener("input", () => onTriggerInputChanged(Number(input.dataset.triggerInput), input));
   });
   $("items-body").querySelectorAll("[data-remove]").forEach(btn => {
     btn.addEventListener("click", () => removeItem(Number(btn.dataset.remove)));
   });
+  updateSaveBar();
 }
 
-async function saveTrigger(itemId) {
+function onTriggerInputChanged(itemId, input) {
+  const raw = input.value.trim();
+  const newValue = raw === "" ? null : Number(raw);
+  const item = currentItems.find(i => i.id === itemId);
+  const savedValue = item ? item.trigger_price_g : null;
+  if (newValue === savedValue) {
+    pendingChanges.delete(itemId);
+    input.closest("tr").classList.remove("dirty");
+  } else {
+    pendingChanges.set(itemId, newValue);
+    input.closest("tr").classList.add("dirty");
+  }
+  updateSaveBar();
+}
+
+async function saveChanges() {
   const err = $("items-error");
   err.textContent = "";
-  const input = document.querySelector(`[data-trigger-input="${itemId}"]`);
-  const raw = input.value.trim();
-  const trigger_price_g = raw === "" ? null : Number(raw);
-  const r = await fetch(`/api/watchlist/${itemId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ trigger_price_g }),
-  });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    err.textContent = body.detail || "Couldn't save that trigger price.";
-    return;
+  if (pendingChanges.size === 0) return;
+  const items = [...pendingChanges.entries()].map(([id, trigger_price_g]) => ({ id, trigger_price_g }));
+  const btn = $("save-changes-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/watchlist/batch", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      err.textContent = body.detail || "Couldn't save those changes.";
+      return;
+    }
+    pendingChanges.clear();
+    await loadWatchlist();
+  } finally {
+    btn.disabled = false;
   }
-  await loadWatchlist();
 }
 
 async function removeItem(itemId) {
@@ -334,6 +429,7 @@ async function removeItem(itemId) {
     err.textContent = body.detail || "Couldn't remove that item.";
     return;
   }
+  pendingChanges.delete(itemId);
   await loadWatchlist();
 }
 
@@ -343,8 +439,8 @@ async function addItem() {
   const itemIdRaw = $("add-item-id").value.trim();
   const triggerRaw = $("add-trigger").value.trim();
   if (!itemIdRaw) { err.textContent = "Enter an item id."; return; }
-  const payload = { item_id: Number(itemIdRaw) };
-  if (triggerRaw !== "") payload.trigger_price_g = Number(triggerRaw);
+  if (!triggerRaw || Number(triggerRaw) <= 0) { err.textContent = "Enter a trigger price."; return; }
+  const payload = { item_id: Number(itemIdRaw), trigger_price_g: Number(triggerRaw) };
   const r = await fetch("/api/watchlist", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -425,6 +521,7 @@ function showLoggedOut() {
 $("add-item-btn").addEventListener("click", addItem);
 $("webhook-save").addEventListener("click", saveWebhook);
 $("tsm-import-btn").addEventListener("click", importTsmGroup);
+$("save-changes-btn").addEventListener("click", saveChanges);
 
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
