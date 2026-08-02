@@ -7,7 +7,23 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-08-02 — the WoW Accounts profile page was rebuilt from
+Last updated: 2026-08-02 — new feature, **Watchlist** (`watchlist.py`,
+`tsm_import.py`, `static/watchlist.html`): a subscribed user tracks specific
+items region-wide (no sell realm), sets a plain gold trigger price per item,
+and gets a Discord webhook notification when any EU realm's current
+cheapest listing clears it. Items can be added one at a time or bulk-
+imported from a pasted TSM group export string. The interesting build risk
+was decoding that export string: it's LibSerialize+LibDeflate binary data,
+not plain text, and the project's own conventions (real test vectors,
+"don't guess, get a real sample first") ruled out hand-porting the format
+from documentation — a real, human-provided sample string was decoded by
+running TSM's own unmodified `LibDeflate.lua`/`LibSerialize.lua` via a
+vendored Lua runtime (`lupa`) rather than a reimplementation, after a
+research pass confirmed the exact format against TSM's real addon source.
+Trigger checking rides `collect_all.py`'s existing ~10-minute cycle (no new
+cadence). Full trace in `HISTORY.md`'s "Watchlist" entry.
+
+2026-08-02 (earlier) — the WoW Accounts profile page was rebuilt from
 scratch (same day it first shipped, after rapid human follow-up):
 numbered auto-suggested accounts (cap lowered 10→8, matching Blizzard's
 real per-account limit), a side-by-side card grid instead of a stacked
@@ -109,6 +125,11 @@ several entries around it, all dated 2026-08-01.
   client-side (never sent to the server as part of the
   shared per-realm row cache). See `CLAUDE.md`'s `wow_accounts.py`/
   `db.py`/`static/profile.html`/`static/dashboard.html` rows.
+- **Watchlist** (added 2026-08-02, subscribers only): track items region-
+  wide with a plain gold trigger price, add by item id or bulk-import a
+  TSM group export, Discord webhook delivery with a cooldown so a still-
+  cheap listing doesn't re-notify every cycle. See `CLAUDE.md`'s
+  `watchlist.py`/`tsm_import.py`/`static/watchlist.html` rows.
 
 **Not built yet**, in priority order — see "Next up" below:
 1. **Marketing** — explicitly named the next step (2026-07-26), superseding
@@ -278,7 +299,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | 1 — Cross-realm engine + hardening | Region scanner, snipe-check, orchestration | **Mostly done.** Remaining: sell/scan realm config file, `--since` incremental diff. |
 | 2 — Commodities feed | Region-wide, quantity-delta inference | **Out of scope** (2026-07-24) — not being pursued. |
 | 3 — Appearance layer | ItemModifiedAppearance scarcity mapping | **Groundwork started 2026-07-23.** Done: itemId→appearance-rarity mapping, wired into "unique transmog" filter. Not done: static-API fallback, real obtainability flags, region-wide AH scarcity of *currently listed* appearances. Transferability flag question is **closed, no flag will be built**. |
-| 4 — Deal score + Discord alerts | Second paid feature | Not started — blocked on Phase 3 data. |
+| 4 — Deal score + Discord alerts | Second paid feature | Deal score itself not started — blocked on Phase 3 data. **Discord delivery infra now exists** (`watchlist.py`'s per-user webhook + notification, built 2026-08-02 for Watchlist, a separate feature) and could plausibly be reused rather than rebuilt when this phase starts. |
 | 5 — Free companion addon | In-game tooltip overlay | Not started. The *web dashboard* half already shipped; only the addon itself remains. |
 
 ## Known gaps / risks
@@ -417,6 +438,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | Appearance-rarity cache (Phase 3 groundwork) | `appearance.py` |
 | TSM region-wide sale-rate cache | `tsm.py` (added 2026-08-01) |
 | Multi-WoW-account registration | `wow_accounts.py`, `static/profile.html` (added 2026-08-02) |
+| Watchlist (region-wide item tracking + Discord alerts) | `watchlist.py`, `tsm_import.py`, `static/watchlist.html`, `vendor/tsm_lua/` (added 2026-08-02) |
 | Public pricing page | `static/pricing.html`, `GET /pricing` in `dashboard.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
 | Tests | `tests/` (`pytest -q`; run `env -u DATABASE_URL pytest -q` too before pushing), no external services needed |

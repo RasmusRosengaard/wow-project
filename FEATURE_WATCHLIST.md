@@ -1,9 +1,12 @@
 # Feature idea: Watchlist (TSM group import, cross-realm item tracking)
 
-**Status: idea only, not started.** This file is a design sketch, not a
-commitment or a spec ready to build from. A stub nav tab (`/watchlist`,
-"Coming soon") exists on the live site so the idea is visible and can
-collect feedback, but there is no tracking/alerting logic behind it yet.
+**Status: shipped 2026-08-02.** This file is kept as the original design
+sketch/rationale — see `CLAUDE.md`'s `watchlist.py`/`tsm_import.py`/
+`static/watchlist.html` rows for what actually got built and how it
+resolved the open questions below, and `PROGRESS.md`/`HISTORY.md` for the
+build trace. Left in place rather than deleted since the "why" reasoning
+here (especially the TSM-format and delivery-mechanism tradeoffs) isn't
+duplicated anywhere else.
 
 ## The idea (as pitched, 2026-07-31)
 
@@ -87,18 +90,33 @@ what's there).
 
 ## Open questions to resolve before this becomes a real plan
 
-1. Exact TSM group export format to parse (get a real sample first).
-2. Discount threshold: fixed constant, human-tuned per launch (matching
-   how every other threshold in this product has been set), or
-   user-configurable per watched item?
-3. Does matching need ilvl/bonus awareness for "high-tier" items
-   specifically, reopening a question the rest of the product deliberately
-   closed in the other direction (2026-07-26)?
-4. Notification delivery mechanism — build alongside Phase 4, or a
-   cheaper in-app-only v1 first?
-5. Free tier or paid-only? How many watched items does a tier get?
+**All resolved 2026-08-02, human decisions — see `CLAUDE.md` for the
+implementation each one led to:**
+
+1. Exact TSM group export format to parse (get a real sample first). —
+   **Resolved**: LibSerialize (TSM's pinned MINOR=1) + LibDeflate's
+   `EncodeForPrint`, confirmed against TSM's real addon source and decoded
+   via a vendored Lua runtime (`tsm_import.py`), not a hand-ported
+   reimplementation.
+2. Discount threshold: fixed constant, human-tuned per launch, or
+   user-configurable per watched item? — **Resolved, and reframed**: no
+   discount/auto-price logic at all. A plain user-set absolute gold price
+   per item, explicit human call ("we only want to trigger for whatever
+   price the user wants").
+3. Does matching need ilvl/bonus awareness for "high-tier" items? —
+   **Resolved: no.** item_id-only (+ pet_species_id), matching the rest of
+   the product's 2026-07-26 decision rather than reopening it.
+4. Notification delivery mechanism — build alongside Phase 4, or a cheaper
+   in-app-only v1 first? — **Resolved**: built now, as a per-user Discord
+   webhook URL (no OAuth) — real delivery, not an in-app-only placeholder,
+   since a watchlist a user never checks back on defeats the point.
+5. Free tier or paid-only? How many watched items does a tier get? —
+   **Resolved**: subscribers only (matches the placeholder page's existing
+   "premium-only" badge), 500 items/user (a UX cap, not human-tuned like
+   most thresholds in this product — worth revisiting with real usage).
 6. Does this get its own scan cadence, or ride the existing ~10-minute
-   region sweep as-is?
+   region sweep as-is? — **Resolved: rides the existing cycle**, no new
+   cadence.
 
 ## Relationship to the existing roadmap
 

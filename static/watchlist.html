@@ -23,7 +23,9 @@
     --bullion: #a67c2e;
     --bullion-dim: #8a6624;
     --verified: #2f7d72;
+    --verified-bg: rgba(47,125,114,0.08);
     --alert: #b0392f;
+    --alert-bg: rgba(176,57,47,0.08);
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
@@ -36,7 +38,9 @@
     --bullion: #d4af61;
     --bullion-dim: #b8934f;
     --verified: #3fa9a0;
+    --verified-bg: rgba(63,169,160,0.14);
     --alert: #e0645a;
+    --alert-bg: rgba(224,100,90,0.14);
   }
   * { box-sizing: border-box; }
   body {
@@ -67,24 +71,59 @@
   .nav a.active:hover { background: transparent; border-color: transparent; }
   #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
 
-  .shell { display: flex; justify-content: center; padding: 2rem 1.5rem; }
-  .wrap { max-width: 640px; width: 100%; display: flex; flex-direction: column; gap: 1.1rem; }
+  .shell { display: flex; justify-content: center; padding: 2rem 1.5rem 3rem; }
+  .wrap { max-width: 900px; width: 100%; display: flex; flex-direction: column; gap: 1.5rem; }
+  h2 { font-size: 1.1rem; margin: 0; font-weight: 800; letter-spacing: -0.01em; }
+  h3 { font-size: 0.85rem; margin: 0; font-weight: 800; text-transform: uppercase; letter-spacing: 0.02em; color: var(--text-dim); }
   .lede { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin: 0; }
-  .badge {
-    display: inline-flex; align-self: flex-start; align-items: center; gap: 0.4rem;
-    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--bullion);
-    border-radius: 999px; padding: 0.3rem 0.7rem; font-size: 0.72rem; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.05em;
-  }
   .card {
     background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
-    padding: 1.4rem; display: flex; flex-direction: column; gap: 0.9rem;
+    padding: 1.25rem 1.5rem; display: flex; flex-direction: column; gap: 0.9rem;
   }
-  .card p { margin: 0; font-size: 0.88rem; line-height: 1.6; color: var(--ink); }
-  .card ul { margin: 0; padding-left: 1.1rem; font-size: 0.86rem; line-height: 1.7; color: var(--ink); }
-  li::marker { color: var(--bullion); }
-  .note { color: var(--text-dim); font-size: 0.8rem; }
-  .note a { color: var(--bullion); }
+  .card p { margin: 0; font-size: 0.85rem; line-height: 1.6; color: var(--text-dim); }
+  .upsell { font-size: 0.9rem; }
+  .upsell a { color: var(--bullion); font-weight: 700; text-decoration: none; }
+  .upsell a:hover { text-decoration: underline; }
+
+  label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
+  input[type=text], input[type=number], textarea {
+    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.85rem; font-family: inherit; width: 100%;
+  }
+  textarea { min-height: 5.5rem; resize: vertical; font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 0.72rem; }
+  button {
+    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
+    border-radius: 3px; padding: 0.55rem 1rem; cursor: pointer; font-size: 0.8rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    font-family: inherit; white-space: nowrap;
+  }
+  button:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
+  button:disabled { opacity: 0.55; cursor: default; }
+  button.danger { background: transparent; border-color: var(--alert); color: var(--alert); padding: 0.4rem 0.7rem; }
+  button.danger:hover { background: var(--alert-bg); border-color: var(--alert); }
+  .row { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
+  .field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .field.grow { flex: 1; min-width: 140px; }
+  .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
+  .status-msg { font-size: 0.8rem; color: var(--verified); min-height: 1em; }
+  .cap-note { font-size: 0.75rem; color: var(--text-dim); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--hairline-strong); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  .item-cell { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+  .item-icon { width: 26px; height: 26px; border-radius: 4px; flex-shrink: 0; border: 1px solid var(--hairline-strong); box-shadow: inset 0 0 0 3px var(--q, transparent); background: var(--paper); }
+  .item-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item-label { font-size: 0.74rem; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+  .trigger-cell { display: flex; align-items: center; gap: 0.4rem; }
+  .trigger-cell input { width: 90px; }
+  .trigger-cell .unit { font-size: 0.75rem; color: var(--text-dim); }
+  .trigger-cell button { padding: 0.35rem 0.6rem; font-size: 0.68rem; }
+  .empty-state { text-align: center; padding: 2rem 1rem; color: var(--text-dim); font-size: 0.85rem; }
+  .import-result { font-size: 0.8rem; color: var(--ink); }
+  @keyframes skeleton-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.75; } }
+  .skeleton-row { height: 40px; border-radius: 4px; background: var(--hairline); animation: skeleton-pulse 1.3s ease-in-out infinite; margin-bottom: 0.4rem; }
 </style>
 </head>
 <body>
@@ -122,29 +161,285 @@
 </div>
 <div class="shell">
 <div class="wrap">
-  <span class="badge">Coming soon (premium-only)</span>
-  <h2 style="margin:0;font-size:1.1rem;font-weight:800;letter-spacing:-0.01em;">Watchlist</h2>
-  <p class="lede">Track specific items across every EU realm, no sell realm required.</p>
-  <div class="card">
-    <p>Instead of "cheap relative to my sell realm," Watchlist asks a different question: <b>is this specific item cheap anywhere in the region, right now?</b> Paste in a TSM group export of the items you care about, and get notified onn Discord when one of the items shows up priced well below its usual EU price on any realm, or a price you set.</p>
-    <ul>
-      <li>Import a TSM group instead of adding items one at a time.</li>
-    </ul>
-   
+  <div>
+    <h2>Watchlist</h2>
+    <p class="lede">Track specific items across every EU realm, no sell realm required. Set a gold trigger price and get a Discord message when a listing anywhere clears it.</p>
+  </div>
+
+  <div id="logged-out-card" class="card" style="display:none;">
+    <p class="upsell">Log in to use Watchlist. <a href="/login">Log in &rarr;</a></p>
+  </div>
+
+  <div id="upsell-card" class="card" style="display:none;">
+    <p class="upsell">Watchlist is a subscriber feature. <a href="/subscribe">See plans &rarr;</a></p>
+  </div>
+
+  <div id="app" style="display:none;">
+    <div class="card">
+      <h3>Discord notifications</h3>
+      <p>Paste a Discord webhook URL to get notified when a watched item clears its trigger price. Leave empty to track items without any delivery.</p>
+      <div class="row">
+        <div class="field grow">
+          <label for="webhook-url">Webhook URL</label>
+          <input type="text" id="webhook-url" placeholder="https://discord.com/api/webhooks/...">
+        </div>
+        <button id="webhook-save">Save</button>
+      </div>
+      <div class="error" id="webhook-error"></div>
+      <div class="status-msg" id="webhook-status"></div>
+    </div>
+
+    <div class="card">
+      <h3>Add an item</h3>
+      <div class="row">
+        <div class="field">
+          <label for="add-item-id">Item ID</label>
+          <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
+        </div>
+        <div class="field">
+          <label for="add-trigger">Trigger price (g)</label>
+          <input type="number" id="add-trigger" min="0" step="0.01" placeholder="optional">
+        </div>
+        <button id="add-item-btn">Add</button>
+      </div>
+      <div class="error" id="add-item-error"></div>
+    </div>
+
+    <div class="card">
+      <h3>Import a TSM group</h3>
+      <p>Paste a TSM group export string (right-click a group in TSM &rarr; Export). Items are added without a trigger price set &mdash; fill one in per item below.</p>
+      <textarea id="tsm-export" placeholder="Paste TSM group export string here..."></textarea>
+      <div class="row">
+        <button id="tsm-import-btn">Import</button>
+      </div>
+      <div class="error" id="tsm-error"></div>
+      <div class="import-result" id="tsm-result"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content: space-between;">
+        <h3>Watched items (<span id="item-count">0</span> / <span id="item-cap">-</span>)</h3>
+      </div>
+      <div id="items-loading">
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>
+      <div id="items-empty" class="empty-state" style="display:none;">No items watched yet &mdash; add one above.</div>
+      <table id="items-table" style="display:none;">
+        <thead><tr><th>Item</th><th>Group</th><th>Trigger price</th><th></th></tr></thead>
+        <tbody id="items-body"></tbody>
+      </table>
+      <div class="error" id="items-error"></div>
+    </div>
   </div>
 </div>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
 
+// Regex-based escaper, correct in any interpolation context -- see
+// dashboard.html/profile.html's own copy of this function for why (this
+// project shipped a real stored-XSS bug from the div.textContent shortcut
+// once already, see snipeboard.html/HISTORY.md).
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function iconStyle(color) {
+  return color ? ` style="--q:${color}"` : "";
+}
+
+let currentItems = [];
+
+async function loadWatchlist() {
+  const r = await fetch("/api/watchlist");
+  if (r.status === 402) { showUpsell(); return; }
+  if (r.status === 401) { showLoggedOut(); return; }
+  if (!r.ok) { $("items-error").textContent = "Couldn't load your watchlist."; return; }
+  const data = await r.json();
+  currentItems = data.items || [];
+  $("webhook-url").value = data.discord_webhook_url || "";
+  $("item-cap").textContent = data.max_items;
+  renderItems();
+}
+
+function renderItems() {
+  $("items-loading").style.display = "none";
+  $("item-count").textContent = currentItems.length;
+  if (!currentItems.length) {
+    $("items-empty").style.display = "block";
+    $("items-table").style.display = "none";
+    return;
+  }
+  $("items-empty").style.display = "none";
+  $("items-table").style.display = "table";
+  $("items-body").innerHTML = currentItems.map(item => {
+    const icon = item.icon
+      ? `<img class="item-icon"${iconStyle(item.quality_color)} src="${item.icon}" alt="" onerror="this.style.display='none'">`
+      : `<span class="item-icon"${iconStyle(item.quality_color)}></span>`;
+    const name = escapeHtml(item.name || `Item ${item.item_id}`);
+    const label = item.label ? escapeHtml(item.label) : "";
+    const triggerValue = item.trigger_price_g != null ? item.trigger_price_g : "";
+    return `
+      <tr data-item-id="${item.id}">
+        <td><div class="item-cell">${icon}<span class="item-name" title="${name}">${name}</span></div></td>
+        <td><span class="item-label" title="${label}">${label}</span></td>
+        <td>
+          <div class="trigger-cell">
+            <input type="number" min="0" step="0.01" value="${triggerValue}" data-trigger-input="${item.id}" placeholder="none">
+            <span class="unit">g</span>
+            <button data-save-trigger="${item.id}">Save</button>
+          </div>
+        </td>
+        <td><button class="danger" data-remove="${item.id}">Remove</button></td>
+      </tr>`;
+  }).join("");
+
+  $("items-body").querySelectorAll("[data-save-trigger]").forEach(btn => {
+    btn.addEventListener("click", () => saveTrigger(Number(btn.dataset.saveTrigger)));
+  });
+  $("items-body").querySelectorAll("[data-remove]").forEach(btn => {
+    btn.addEventListener("click", () => removeItem(Number(btn.dataset.remove)));
+  });
+}
+
+async function saveTrigger(itemId) {
+  const err = $("items-error");
+  err.textContent = "";
+  const input = document.querySelector(`[data-trigger-input="${itemId}"]`);
+  const raw = input.value.trim();
+  const trigger_price_g = raw === "" ? null : Number(raw);
+  const r = await fetch(`/api/watchlist/${itemId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trigger_price_g }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't save that trigger price.";
+    return;
+  }
+  await loadWatchlist();
+}
+
+async function removeItem(itemId) {
+  const err = $("items-error");
+  err.textContent = "";
+  const r = await fetch(`/api/watchlist/${itemId}`, { method: "DELETE" });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't remove that item.";
+    return;
+  }
+  await loadWatchlist();
+}
+
+async function addItem() {
+  const err = $("add-item-error");
+  err.textContent = "";
+  const itemIdRaw = $("add-item-id").value.trim();
+  const triggerRaw = $("add-trigger").value.trim();
+  if (!itemIdRaw) { err.textContent = "Enter an item id."; return; }
+  const payload = { item_id: Number(itemIdRaw) };
+  if (triggerRaw !== "") payload.trigger_price_g = Number(triggerRaw);
+  const r = await fetch("/api/watchlist", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't add that item.";
+    return;
+  }
+  $("add-item-id").value = "";
+  $("add-trigger").value = "";
+  await loadWatchlist();
+}
+
+async function saveWebhook() {
+  const err = $("webhook-error");
+  const status = $("webhook-status");
+  err.textContent = "";
+  status.textContent = "";
+  const url = $("webhook-url").value.trim();
+  const r = await fetch("/api/watchlist/discord-webhook", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ discord_webhook_url: url || null }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't save that webhook URL.";
+    return;
+  }
+  status.textContent = "Saved.";
+  setTimeout(() => { status.textContent = ""; }, 2500);
+}
+
+async function importTsmGroup() {
+  const err = $("tsm-error");
+  const result = $("tsm-result");
+  err.textContent = "";
+  result.textContent = "";
+  const exportStr = $("tsm-export").value.trim();
+  if (!exportStr) { err.textContent = "Paste a TSM group export string first."; return; }
+  const btn = $("tsm-import-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/watchlist/import-tsm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ export: exportStr }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      err.textContent = body.detail || "Couldn't import that group.";
+      return;
+    }
+    const data = await r.json();
+    result.textContent = `Imported ${data.imported} of ${data.total_in_export} items from "${data.group_name}"`
+      + (data.skipped_existing ? ` (${data.skipped_existing} already watched)` : "")
+      + (data.skipped_cap ? ` (${data.skipped_cap} skipped, watchlist full)` : "") + ".";
+    $("tsm-export").value = "";
+    await loadWatchlist();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showUpsell() {
+  $("app").style.display = "none";
+  $("logged-out-card").style.display = "none";
+  $("upsell-card").style.display = "block";
+}
+function showLoggedOut() {
+  $("app").style.display = "none";
+  $("upsell-card").style.display = "none";
+  $("logged-out-card").style.display = "block";
+}
+
+$("add-item-btn").addEventListener("click", addItem);
+$("webhook-save").addEventListener("click", saveWebhook);
+$("tsm-import-btn").addEventListener("click", importTsmGroup);
+
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
-  if (me && me.ok) {
-    $("nav-pricing").remove();
-    $("nav-login").remove();
-    $("nav-profile").style.display = "inline-block";
-    $("nav-logout").style.display = "inline-block";
-  }
+  if (!me || !me.ok) { showLoggedOut(); applyThemeButtonState(); return; }
+  const data = await me.json();
+  $("nav-pricing").remove();
+  $("nav-login").remove();
+  $("nav-profile").style.display = "inline-block";
+  $("nav-logout").style.display = "inline-block";
+
+  const subscribed = data.subscription_status === "active" || data.is_superuser;
+  if (!subscribed) { showUpsell(); applyThemeButtonState(); return; }
+
+  $("app").style.display = "block";
+  await loadWatchlist();
 })();
 
 $("nav-logout").addEventListener("click", async () => {

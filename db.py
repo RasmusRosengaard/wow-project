@@ -50,6 +50,11 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # posts). No uniqueness constraint -- a duplicate nickname is a cosmetic
     # nuisance, not a correctness problem, not worth the extra validation.
     nickname: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Watchlist notification delivery target (added 2026-08-02, human
+    # decision -- see watchlist.py). A plain Discord webhook URL the user
+    # pastes in themselves (no OAuth) -- NULL means Watchlist triggers are
+    # tracked but never delivered anywhere for this account.
+    discord_webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class ForumPost(Base):
@@ -112,6 +117,46 @@ class WowAccountRealm(Base):
     connected_realm_id: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=lambda: datetime.now(timezone.utc))
+
+
+class WatchlistItem(Base):
+    """A single item a subscribed user wants notified about, independent of
+    any sell realm (see FEATURE_WATCHLIST.md -- Watchlist has no sell realm
+    at all, unlike the main snipe flow). Matching is item_id-only (2026-08-02
+    human decision, matching the rest of the product's 2026-07-26 call to
+    drop bonus/ilvl-aware matching rather than reopen it here) --
+    pet_species_id is kept alongside since every caged pet shares one
+    item_id (82800), same reason snipe_check.py/dashboard.py both carry it;
+    there is no pet_quality_id column here, deliberately -- a per-quality
+    trigger wasn't asked for and would add matching granularity the rest of
+    this model doesn't have.
+
+    trigger_price_copper is a plain user-chosen absolute price, not a
+    discount vs region_median_cheapest (human explicitly rejected an
+    "auto-price" discount-threshold design during a 2026-08-02 conversation
+    -- "we only want to trigger for whatever price the user wants"). Nullable
+    (not required at creation) specifically because a TSM group import can
+    add dozens/hundreds of items at once with wildly different values --
+    forcing one shared trigger price on a whole imported group would be
+    meaningless; watchlist.py's checker simply skips a row with no trigger
+    set yet, and the item sits watched-but-silent until the user fills one
+    in per-row. label is optional, populated from a TSM group's path when
+    added via tsm_import.py, NULL for a plain add-by-item-id.
+
+    last_notified_at backs watchlist.py's notification cooldown -- a listing
+    that stays under the trigger for hours shouldn't re-fire a Discord
+    message every ~10-minute collect_all.py cycle."""
+    __tablename__ = "watchlist_item"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[uuid.UUID] = mapped_column(GUID, ForeignKey("user.id"), nullable=False)
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    pet_species_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trigger_price_copper: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=lambda: datetime.now(timezone.utc))
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 def _database_url() -> str:

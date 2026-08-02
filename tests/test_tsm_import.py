@@ -1,0 +1,67 @@
+"""Tests for tsm_import.py's TSM group-export decoder.
+
+REAL_SAMPLE below is an actual TSM4 group export string pasted by the human
+during development (2026-08-02) -- a real 300-item crafting-materials group
+spanning 112 sub-paths, not a synthetic/invented fixture. Expected values
+were independently confirmed by hand-decoding this exact string against
+TSM's real, unmodified addon source before tsm_import.py was written (see
+CLAUDE.md's tsm_import.py row) -- this test re-derives those same numbers
+through the actual module, not just re-asserting the earlier trace.
+"""
+import pytest
+
+import tsm_import
+from tsm_import import TsmImportError, decode_group_export
+
+REAL_SAMPLE = (
+    "nM5xSXrX9dCTaccrqOjKyNeBswCBi(CmH9FZ(NQiHCIdqASdUoPXrri1z95n(2MZ3nA9zssvqc5hOfKqQGOu(9RLsJtjv9bEXIkEJhaH4bKqFbXdRqO8qKqINqiKOp3V7T7S)7UZ7ePt5ZTZN578)zN5S0gN7SZ(Bp5fM7zN)C3n7GZ109AEbYpt71w1V1YYpU80E1BhiF9RlFIa3l15pjn56()snDhnvd2yZ452PHxWvAhCzuME5AYNUH7VxEQMl7gip(5wyHArYgAog2S9vs2TM8jA6U6Q(176OR4OW2FjNM1KN1FPw(l3OtSKQIkB8Z563SDqu6nWcCTMYNZpWTL8tiFr3wl520nWxE8J)utfx266AwW9KG6MSDNL7s1am66SrpvRvRh4Z643Uf9s1KNoW1Rf2(hFH2txJRzWg9KTw2VLNx34minl4H4OnBVt1SEdVvU2aTDsT10zhSuhrFZerxHWEKS2ZG6(j6QASh94nDRF5vxXVtJT2vthgHJMSror728AWaYGJjBp571wUM8mElJuC6gkMS9wQ50JIfmghTzdxSQwwgBmpEP4jW8amFgWH5iHnr(QSy53eMGJ2W2tqnv2(Zgc6)4KHgo(Z7ixS)k6AWWC0KDGIDbdiSgQjZzigehqobTnypgVWQlsddhaN8x5DfVM1JwHlC)PJdV)GOOXgkF)zPvwOGoCmo6W2xXsZRM8CrLqGVBIdUqC48XRpggWuC0ITB(IRLWc2TJB9MxB1vssw3G3jriwSHlw0LMBrioShTOXaxOyQOa6CuLnYjBvVHBRodE4Ye7L2B(9n6TYAIBumu2SP(iGt32B(EM(PObZZr9e0uX0KDW8f(GAxMQQyruC6xPHttdvf2q5dwVc6S9wSFShfnLKPeiQNIMkSHZh5YVbW0W2KnrEdbMRIzYgEoo6axigj4i4IXOPIrkAtGhmbD0JANPJR9uzSWiCrosydXx2HJkNTH7sTVstS2SAxblnnf2dZfClnHgtvJnkpvVUZFwUDl5tTAtVvLhF6NQgxZayCKWrttv2(koKvEfd64KSIXYsZgEYeuxn9P66f767jew6KmzZSqyZ2t2C2EZfrd6KGMw98k(E8TjMWlgJokoWHsqC3xzoANIr9PzLDXvZyQAPzhFN6UZns2JjjjK2kQkWlfJQ4BUKZVy73nOXfu1cEvoANHoSXkUmylcbwWVghvzJY3sBRYHoto)i2wPAW(5L653k7SMaEUeoIRytrv2bY63hCKmjg8gLjXcERy0XKu(DaLxA5OAOZ2FrNY71HVeWwd2zc6qyhOOF)2gMOsmmHJMGef4wXOjHaZ0f1uWP5teJ62oPOJfBYIRXQENNOS5aVxmAOOYdMfwA7JJ2Sr4J1dytz8GE42dhm)uXbBIRmFFo6WoqUj9dmpQMg88GDezOvg6KIwQWheJAef2EYf)IBXhLUgCEoQdNkgnW5bBlgj4cShM32lndikv7INcOSHPQLs0l1sRadAEyKPk8PXOoU)YhhJgAwSXkoMo4qG3qb(Sy00wHTtE9UWwjrPPcVCx0cNiv(GC4H)E216e9wbS))4NOgx0e(coAv4Oedkd2WxXrN08AOuU5GN)7mTd60iWlkal0UZmNMhcdv2U4THsJCyIAS9xms9S4dL0Zg9kTnEuQgWU5ib(CoAYEmEEey9dMbl4oC0MnAXkLFpVNnsZb(2eeNGoeV06Rlrf(ooQbVbh1H3obD0t7ODmkmzBl6AXTIgoNzF66WJCN)Gf9275yb)ihX7oNZTFTdv8CiFnhvHVNJAWMXObkmgh1G54Ob8dC0eUjhDGVjbXT8JxRyzIBfEMeepwu5xMm4EdthdyAosIppAeAYrl8LV3BmAJBimsPi3tVNTQJspxqUVRtqt1qP7NZAfVD)GYIEXB3pinJqPDWzs(7aoOmyMldwHspaNTZXoPSMIs53N1)aRPGTXH5SwO0o5SEXtVmWHiufBmJWzsOKeNnZ)A(Tkaw5cGD5d9Svz0jlJQk5ySrngN1Yon0wekv9qPdZzd42CKK1NIhI8AjiEqAzosIEnw2iEXD0X0XrUJYzl4PtqC399NV)Tplmrjl4N4On7rknRT)zb7s0syCh99NVQ13myOLldg5yso2khJZ4ijmrj75emo2CwhEZeex4FSemAU6bJz8ijWlWr9KtuzJxXo(0ZrOnCyo6WQLBlmb24hVfawZEgoJxjnBEyVDc41BDCyJwCwxF000J6hgoHjA5V4sPtxeLUr8MFrijdn5Ob(MMTLG4jj95ypxgRNqBe1vVaNnGBWrswumZzyLJTZuCsXOolUHPAA8WZ19jCKauoMfc8CDCxRSwGvAei2PnrItQajAB154SwowphNw2eCB)u0kdTZqN08f9ZQSnoQYnmXzBjvFt1Sc3uvl1qvNxPnvjzp1mdTYcHDkAIv5zJzlSXM8y8QNj5dNNBbFycQBK(udURbopiPgByAzcHCeh0UpoJRBonNtUqLPr0pzq6plC)2CpsbNg8h4SvXR7nO9cJuXc8v4StwiW7ygYr1mfvT06Qv02OX1vcEv7KwMD0jo95OtkAOc()r2Drd4nd4RPyPHFomfMMc3Mc7McFofUdf(ok8guytk8X0VS46d4cu4lOqif(gk0Hc6u4qu49OW3sHpJcJGHBbAa)xhbArbfkyrHMuGrHdq3i3ElWhsHVIcFpf(bk8Juygk8Yy(Fgk8tu4tPWhqbF6M57gHlIPVd8ZRqHZqbSnSt8lhLclI)NnfEtkCEkqPBMFZE4yyIpa(zekmpfMIcpefKPWe4J0OWRsH3NcFc9llULe8CyYdJFgJc3KcpjfUffEAk4GpAwk8Au4uu4g07u61eW9IPF)4hj8Z9rHxKcdtbmghg)oHcVffUhkSn6RNTBg8GysrTJdsH5OWlqbSb9suy74JonfEBkSpKMJIdExAJPwREuJcZ3oyJEwVMnLl9xb66xp(pd06TFEVGa)L8ORFIK20oypsxCqzju6Fqx)SnAZy4thk6BlE2w(mVGDW21SU(TKJ)M8z7evVJs)1ppoFUBROR(Ml4g41ioQDFqO0F(sHs)99hk9oHs3a)VncLU52dL(Ni(UHs3cX)12HVUAhCIQishUAjyAbCUTao7waNpxaN7iGZ3jGZBiGZMc48Xv7ek9MvlbxqaNVqaNqbC(gbC6iGJUaohsaN3taNVvaNptaNrQ2b3uweP)s1sqlbCueWXsaNMc4WeW5av7ek9wvlbFOaoFLaoFVao)Gao)OaoZiGZlxTd(E5QLGFsaNpvaNpqah)QDcL()QwcUy1o4Poer6vQwcoJaoxtaNDwTdE0OQLGfR2bpCv1sGiVu48c4qR2ju6)VAj4yv7GNmuejb2JfMxaNPeW5HeWrwaNjQ2bpaC1sWRkGZ7lGZNuTtO0FTAj45Q2bp7UisJvTeCtbCEsbCULaopTaoov7GxrPAj41eW5uc4CJQDcL(Bvlb3B1o4LRersseP7RAj4ffWrGzAGit0e42l4DiRwce5Om3JaoBRANqP3UAj4bR2bVcSishSAjyobCEbbCe5LNVKaoBVAh8M(vlbI0vVVQDcLeOhkYaVd)78Fx3DX2pV3SUxD9vCV6Cb(192yr)LMZlOUxRo39hv3TvDVMZ7XAVANgS9K)RNRrG3QnA3CPXuRFN4e(nTwcZ4ADORV0AbUr)sg3nBN(l3QDG3mTVY0jpt6JUSNh7xVw0VtuNRTlLnWs(KxL5JHBxkHs)B2qQ2Kdjp9XNV7V9)SUbx2RZup)YRVIFRU1q2Vqx5qY43gVhNjXSf)LABIf7kUnJZXqQQ9lKbrnKt4YgtvzdwK48ER61ju6)S(AjnLXuQJ9Iyx1gpf7N19NpQBaN1RtJ2lDxrvDmlDAx)Y7I86DRFTVKFNVKCuS04)ytBGpNlPKmwGb8DhAJf9A2(kDJ3vLUT)LwUJ34NQJ3kyxttSNzsz1jJALDRyYtihjmo)7tkRruW)HTyBLjlNMQssAPpt(X5pSggQXTvWhyPut(jKhpjq5nocMwpbL0NysYcPvuinJdzsGYjCemP(xn7xTmoIMkDdq3iwSo2nGK(xf7tnmoCKOWPNRcUCwYhbtOVvV(u7IJMUs3VMw5wol1JGWKYk16(pmD8X14l82()7p"
+)
+
+
+def test_decode_real_sample_metadata():
+    export = decode_group_export(REAL_SAMPLE)
+    assert export.group_name == "Player Housing - Decor || Craft"
+    assert len(export.items) == 300
+
+
+def test_decode_real_sample_items_are_parsed():
+    export = decode_group_export(REAL_SAMPLE)
+    for item in export.items:
+        assert isinstance(item.item_id, int) and item.item_id > 0
+        assert item.raw_item_string.startswith("i:")
+        # every item's path starts with the exported group's own name
+        assert item.group_path == export.group_name or item.group_path.startswith(
+            export.group_name + "/"
+        )
+
+
+def test_decode_real_sample_includes_a_nested_subgroup_path():
+    export = decode_group_export(REAL_SAMPLE)
+    nested = [i for i in export.items if "/" in i.group_path]
+    assert nested, "expected at least one item under a sub-category"
+    # confirms backtick-joined TSM paths were re-joined with "/", not left raw
+    assert not any("`" in i.group_path for i in export.items)
+
+
+def test_decode_real_sample_item_ids_are_plausible_wow_item_ids():
+    export = decode_group_export(REAL_SAMPLE)
+    ids = {i.item_id for i in export.items}
+    # sanity bound, not an exact-match assertion -- real WoW item ids are
+    # well under 1,000,000 as of retail TWW-era content
+    assert all(0 < item_id < 1_000_000 for item_id in ids)
+    assert len(ids) > 1  # a real crafting-materials group, not one item repeated
+
+
+def test_decode_empty_string_raises():
+    with pytest.raises(TsmImportError):
+        decode_group_export("")
+
+
+def test_decode_garbage_string_raises():
+    with pytest.raises(TsmImportError):
+        decode_group_export("not a real tsm export string at all")
+
+
+def test_decode_non_ascii_raises():
+    with pytest.raises(TsmImportError):
+        decode_group_export("héllo")

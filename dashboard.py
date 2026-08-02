@@ -38,6 +38,7 @@ import db
 import fetch_snapshot
 import forum
 import snipe_check
+import watchlist
 import wow_accounts
 from auth import (UserCreate, UserRead, auth_backend, current_active_user, current_subscribed_user,
                   fastapi_users, has_active_subscription)
@@ -203,6 +204,7 @@ app.include_router(billing.router)
 app.include_router(forum.router)
 app.include_router(forum.image_router)
 app.include_router(wow_accounts.router)
+app.include_router(watchlist.router)
 
 # Realm name/slug never changes -- cache in-process for the life of the
 # server rather than a file cache, to keep this dashboard-only concern out of

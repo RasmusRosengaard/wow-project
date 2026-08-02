@@ -13,3 +13,4 @@ aiosqlite>=0.20
 alembic>=1.13
 stripe>=9
 python-multipart>=0.0.9
+lupa>=2.8

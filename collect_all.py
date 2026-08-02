@@ -43,6 +43,7 @@ import fetch_snapshot
 import item_names
 import scan_region
 import tsm
+import watchlist
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -176,9 +177,22 @@ def collect_all() -> dict:
     except Exception:
         log.exception("collect_all: TSM sale-rate refresh failed")
 
+    # Watchlist trigger check (added 2026-08-02, human request -- see
+    # watchlist.py's module docstring) -- rides this existing ~10-min cycle
+    # rather than getting its own cadence, reading the region sweep that
+    # just ran above. Never lets a DB/Discord hiccup break realm collection,
+    # same "one subsystem's failure doesn't abort the rest" convention as
+    # every other block in this function.
+    watchlist_result = {}
+    try:
+        watchlist_result = watchlist.check_triggers()
+    except Exception:
+        log.exception("collect_all: watchlist trigger check failed")
+
     summary = {"realms": len(realm_ids), "polled": polled,
               "pruned_snapshots": pruned, "failed": failed,
-              "base_level_candidates": prewarmed, "tsm_refreshed": tsm_refreshed}
+              "base_level_candidates": prewarmed, "tsm_refreshed": tsm_refreshed,
+              "watchlist": watchlist_result}
     log.info("collect_all: %s", summary)
     return summary
 
