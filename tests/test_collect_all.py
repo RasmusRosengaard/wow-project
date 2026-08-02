@@ -14,6 +14,7 @@ import fetch_snapshot
 import item_names
 import scan_region
 import tsm
+import watchlist
 from fetch_snapshot import SCHEMA
 from scan_region import LISTING_SCHEMA
 
@@ -60,6 +61,14 @@ def env(tmp_path, monkeypatch):
     # stubbing this, every test using `env` would make a real HTTP call to
     # TSM's public data feed.
     monkeypatch.setattr(tsm, "_fetch_csv", lambda: {})
+    # collect_all() now also calls watchlist.check_triggers() every cycle
+    # (2026-08-02) -- that needs a real DB session (db.sessionmaker()),
+    # which this suite's tests never set up (unlike test_watchlist.py,
+    # which does exercise real DB-backed trigger checking). Stubbed here so
+    # every test using `env` doesn't need its own throwaway DB just to
+    # exercise unrelated collection-cycle mechanics -- same isolation
+    # precedent as the tsm._fetch_csv stub immediately above.
+    monkeypatch.setattr(watchlist, "check_triggers", lambda: {})
     return tmp_path
 
 
