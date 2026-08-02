@@ -141,20 +141,28 @@
 
   .wow-account-card {
     background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 6px;
-    padding: 1rem; display: flex; flex-direction: column; gap: 0.7rem;
+    padding: 1rem; display: flex; flex-direction: column; gap: 0.7rem; position: relative;
   }
+  /* Close-style remove control (2026-08-02, human request: "not one big
+     button, more like a browser x button in the top-right corner") --
+     subtle by default, only turns alert-red on hover, same restrained
+     convention as the realm-chip's own inline remove "x". */
+  .wow-account-card-close {
+    position: absolute; top: 0.55rem; right: 0.55rem; width: 20px; height: 20px;
+    padding: 0; background: transparent; border: none; color: var(--text-dim);
+    font-size: 1.05rem; line-height: 1; font-weight: 700; text-transform: none;
+    display: flex; align-items: center; justify-content: center; border-radius: 3px;
+    cursor: pointer;
+  }
+  .wow-account-card-close:hover { background: var(--alert-bg); color: var(--alert); }
   .wow-account-card-name-row input {
     width: 100%; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
-    border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.9rem; font-weight: 700; font-family: inherit;
+    border-radius: 3px; padding: 0.5rem 1.7rem 0.5rem 0.6rem; font-size: 0.9rem; font-weight: 700; font-family: inherit;
   }
   .wow-account-card-actions-row { display: flex; gap: 0.5rem; }
   .wow-account-card-actions-row button {
     flex: 1; width: auto; padding: 0.4rem 0.5rem; font-size: 0.7rem;
   }
-  .wow-account-card-actions-row button.danger {
-    background: transparent; border-color: var(--alert); color: var(--alert);
-  }
-  .wow-account-card-actions-row button.danger:hover { background: var(--alert-bg); border-color: var(--alert); }
 
   /* Realm chips: full names always shown, deliberately no truncation
      anywhere in this section (2026-08-02, human request) -- chips wrap
@@ -437,13 +445,13 @@ function renderWowAccounts() {
          </div>`;
     return `
       <div class="wow-account-card" data-account-id="${acct.id}">
+        <button class="wow-account-card-close" data-delete="${acct.id}" title="Remove account" aria-label="Remove account">&times;</button>
         <div class="wow-account-card-name-row">
           <input type="text" value="${escapeHtml(acct.label)}" maxlength="50" data-rename-input="${acct.id}">
         </div>
         <div class="cap-note">Press Save to save changes.</div>
         <div class="wow-account-card-actions-row">
           <button data-rename="${acct.id}">Save</button>
-          <button class="danger" data-delete="${acct.id}">Remove</button>
         </div>
         <div class="realm-chips">${chips}</div>
         ${searchBlock}
