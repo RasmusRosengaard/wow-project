@@ -178,6 +178,7 @@
     cursor: pointer;
   }
   .wow-account-card-close:hover { background: var(--alert-bg); color: var(--alert); }
+  .wow-account-card-name-row { margin-bottom: 0.3rem; }
   .wow-account-card-name-row input {
     width: 100%; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
     border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.9rem; font-weight: 700; font-family: inherit;
@@ -471,7 +472,7 @@ function renderWowAccounts() {
         <div class="wow-account-card-name-row">
           <input type="text" value="${escapeHtml(acct.label)}" maxlength="50" data-rename-input="${acct.id}">
         </div>
-        <div class="cap-note">Remember to click Save -- name and realm changes aren't saved until you do.</div>
+        <div class="cap-note">Press Save to save changes.</div>
         <div class="wow-account-card-actions-row">
           <button data-save-account="${acct.id}">Save</button>
         </div>
