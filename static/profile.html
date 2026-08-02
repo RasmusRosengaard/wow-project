@@ -158,7 +158,13 @@
 
   .wow-account-card {
     background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 6px;
-    padding: 1rem; display: flex; flex-direction: column; gap: 0.7rem; position: relative;
+    /* Extra top padding (2026-08-02, real bug found live: the default 1rem
+       top padding left the name input starting only 17px below the card's
+       edge, while the close "x" below occupies roughly 9px-29px in that
+       same frame -- a measured ~13px overlap between the button and the
+       input's own box, not just a close-text-run-in risk. 1.9rem clears
+       the button's full height before the input begins. */
+    padding: 1.9rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.7rem; position: relative;
   }
   /* Close-style remove control (2026-08-02, human request: "not one big
      button, more like a browser x button in the top-right corner") --
@@ -174,7 +180,7 @@
   .wow-account-card-close:hover { background: var(--alert-bg); color: var(--alert); }
   .wow-account-card-name-row input {
     width: 100%; background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
-    border-radius: 3px; padding: 0.5rem 1.7rem 0.5rem 0.6rem; font-size: 0.9rem; font-weight: 700; font-family: inherit;
+    border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.9rem; font-weight: 700; font-family: inherit;
   }
   .wow-account-card-actions-row { display: flex; gap: 0.5rem; }
   .wow-account-card-actions-row button {
