@@ -297,6 +297,12 @@
      reasoning that this is an item-identity note rather than a caution --
      superseded by direct human preference). */
   .sus-flag { color: var(--alert); margin-left: 0.3rem; cursor: help; }
+  /* price_suspect (see dashboard.py's price_suspect, added 2026-08-03) --
+     same alert palette as .sus-flag (both are "consider hiding this" red),
+     but its own class since it's about the sell-side *price* being an
+     outlier, not the item's identity -- kept in the sell-price cell rather
+     than the item-cell so it sits next to the number it's actually about. */
+  .price-flag { color: var(--alert); margin-left: 0.3rem; cursor: help; }
   /* Realm language tag (see dashboard.py's buy_realm_category) -- a quiet
      2-letter abbreviation, not a badge, since it's informational context
      about the realm, not a signal about the listing itself. */
@@ -559,7 +565,11 @@ const BATCH_TOP = 10000;
 // Bumped to 7 (2026-08-01): region_sale_rate/region_sold_per_day (TSM data)
 // were added to the row shape -- an old cache would have no sale-rate
 // field to filter/show at all until it happened to expire.
-const CACHE_VERSION = 7;
+// Bumped to 8 (2026-08-03): price_suspect was added to the row shape -- an
+// old cache would have no price-flag field, so "Hide flagged" wouldn't hide
+// suspect-priced rows and the new flag icon wouldn't show, until the cache
+// happened to expire or the sell realm/item filter changed.
+const CACHE_VERSION = 8;
 // Safety net, not the primary freshness signal: even if last_modified still
 // matches, force a real refetch once a cache is this old, in case the
 // status endpoint itself is stuck/wrong for some other reason. Comfortably
@@ -847,8 +857,13 @@ function applyFilters(rows) {
     // sus_item_suspect (see snipe_check.is_sus_item()) is non-authoritative
     // -- known blind spot for twink-valuable items, see that function's
     // comment -- so this checkbox is the only thing that can hide it, and
-    // only when the user asks for it.
-    if (hideSusItems && r.sus_item_suspect) return false;
+    // only when the user asks for it. price_suspect (added 2026-08-03,
+    // see snipe_check.PRICE_SUSPECT_MULTIPLE) rides the same checkbox --
+    // the sell realm's own reference price being >= 10x the region median
+    // is a different signal (a troll sell-side listing, not an item-
+    // identity guess) but the same "flag, let the user opt in to hiding
+    // it" convention, so one checkbox covers both.
+    if (hideSusItems && (r.sus_item_suspect || r.price_suspect)) return false;
     // No class checked = no class filtering (show everything); any checked
     // = row must match at least one.
     if (activeClasses.length && !activeClasses.some(c => c.test(r))) return false;
@@ -963,6 +978,9 @@ function showTooltip(row, x, y) {
     ${row.sus_item_suspect
       ? `<div class="tt-row"><span class="lbl">Note</span><span>Sus item, possibly obsolete (experimental)</span></div>`
       : ""}
+    ${row.price_suspect
+      ? `<div class="tt-row"><span class="lbl">Note</span><span>Suspect price -- sell realm's cheapest listing is 10x+ the EU median</span></div>`
+      : ""}
     ${ue ? `<hr><div class="tt-sub">Click the icon for Undermine Exchange &rarr;</div>` : ""}
     <div class="tt-sub">Click the item name to copy it</div>
   `;
@@ -1033,6 +1051,14 @@ function buildRowHtml(row, idx, group, isSub) {
   const susFlag = row.sus_item_suspect
     ? `<span class="sus-flag" title="Sus item -- an ancient neck/ring/trinket item or a class-starter armor piece. Experimental, non-authoritative: can't rule out a genuinely valuable twink item.">&#9888;</span>`
     : "";
+  // price_suspect (see snipe_check.PRICE_SUSPECT_MULTIPLE): the sell
+  // realm's own reference price is >= 10x the region median -- likely a
+  // troll/joke listing on the sell side inflating discount_pct, not a
+  // real market price. About the *price*, not the item, so it sits next
+  // to the sell-price number rather than in the item-cell.
+  const priceFlag = row.price_suspect
+    ? `<span class="price-flag" title="Suspect price -- this realm's own current cheapest listing is 10x+ the EU median, likely a troll/joke listing inflating the discount shown here.">&#9888;</span>`
+    : "";
   const accountLabels = userRealmAccounts.get(row.buy_realm);
   const yourAccount = accountLabels && accountLabels.length ? accountLabels.join(", ") : "--";
   return `
@@ -1041,7 +1067,7 @@ function buildRowHtml(row, idx, group, isSub) {
       <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${escapeHtml(row.name ?? row.item_id)}</span>${susFlag}${toggle}</div></td>
       <td class="mono" title="${escapeHtml(row.variant_raw ?? "")}">${escapeHtml(row.variant)}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
-      <td class="num">${formatMoney(row.sell_copper)}</td>
+      <td class="num">${formatMoney(row.sell_copper)}${priceFlag}</td>
       <td class="num">${formatMoney(row.region_median_copper)}</td>
       <td class="num">${formatSaleRate(row.region_sale_rate)}</td>
       <td class="num">${row.discount_pct.toFixed(1)}</td>

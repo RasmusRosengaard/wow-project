@@ -662,6 +662,53 @@ def test_find_snipes_region_median_uses_median_not_mean(tmp_path, monkeypatch):
     assert all(r["region_median_copper"] == 20_000 for r in rows)
 
 
+def test_find_snipes_price_suspect_flags_sell_price_over_10x_median(tmp_path, monkeypatch):
+    """price_suspect (human request, 2026-08-03): flags a row when the sell
+    realm's own reference price is >= PRICE_SUSPECT_MULTIPLE (10x) the
+    region median -- a likely troll/joke listing on the sell side, not the
+    buy side. Two items with an identical region median (1.5g, from the
+    same two other-realm listings) but different sell prices: one just over
+    the 10x line (suspect), one just under it (not suspect) -- proves the
+    flag is a real threshold check, not always-true/always-false."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    ITEM_SUSPECT = 910      # sell price >= 10x the region median
+    ITEM_NOT_SUSPECT = 911  # sell price just under 10x the region median
+
+    median_copper = 15_000  # median of 10_000 (1g) and 20_000 (2g) = 1.5g
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [
+        snap_row(9999, T1, item_id=103),
+        snap_row(1, T1, item_id=ITEM_SUSPECT, buyout=10 * median_copper),      # exactly 10x -> suspect
+        snap_row(2, T1, item_id=ITEM_NOT_SUSPECT, buyout=10 * median_copper - 1),  # just under -> not suspect
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    for item_id, suffix in ((ITEM_SUSPECT, "suspect"), (ITEM_NOT_SUSPECT, "not_suspect")):
+        pq.write_table(pa.Table.from_pylist([
+            listing_row(BUY_CR_A, item_id=item_id, buyout=10_000, auction_id=1000 + item_id),  # 1g
+            listing_row(BUY_CR_B, item_id=item_id, buyout=20_000, auction_id=2000 + item_id),  # 2g
+        ], schema=LISTING_SCHEMA), listings_dir / f"{BUY_CR_A}_{suffix}.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0)
+    by_item = {r["item_id"]: r for r in rows}
+
+    assert by_item[ITEM_SUSPECT]["region_median_g"] == pytest.approx(1.5)
+    assert by_item[ITEM_SUSPECT]["price_suspect"] is True
+    assert by_item[ITEM_NOT_SUSPECT]["region_median_g"] == pytest.approx(1.5)
+    assert by_item[ITEM_NOT_SUSPECT]["price_suspect"] is False
+
+
 def test_find_snipes_min_value_floor_keeps_row_if_either_price_clears_it(tmp_path, monkeypatch):
     """min_value_floor_g (human request, 2026-08-01): OR-to-keep, AND-to-drop
     -- a row survives if *either* the sell price or the region median clears

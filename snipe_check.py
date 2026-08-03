@@ -422,6 +422,28 @@ def _register_class_quota_maps(con: duckdb.DuckDBPyConnection, distinct_item_ids
 # original value -- a human-specified number, not agent-picked).
 MIN_VALUE_FLOOR_G = 2000
 
+# price_suspect (added 2026-08-03, human request): flags a row where the
+# sell realm's own reference price (sell_p_g) is >= this multiple of the
+# region median (region_median_g) -- a hub realm's cheapest listing being
+# an order of magnitude above the EU-wide typical price is far more likely
+# a troll/joke listing inflating every discount_pct computed against it
+# than a real market price, since the whole product thesis is hub realms
+# paying *somewhat* more, not 10x more. This is a recalibrated revival of
+# the 2026-07-27 sell_price_suspect flag removed 2026-07-31 (see
+# HISTORY.md's "sell_price_suspect removed" entry, traced live to Draenor
+# item 36519/Moonlit Katana) -- two things changed, both deliberately: (1)
+# compared against the *median* (region_median_g, already computed in
+# region_stats below for display) instead of the mean sell_price_suspect
+# used, since a mean is exactly the kind of statistic one outlier realm can
+# drag around, the same class of problem that likely produced that false
+# positive; (2) a much tighter 10x multiplier instead of 500x, since a
+# median is already outlier-resistant so a tight threshold on it doesn't
+# have the same blast radius a tight threshold on a mean would. Same house
+# convention as every other heuristic here: flag, never silently filter --
+# dashboard.html's "Hide flagged (sus items)" checkbox is what can hide it,
+# same as sus_item_suspect, not a server-side drop like MIN_VALUE_FLOOR_G.
+PRICE_SUSPECT_MULTIPLE = 10
+
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 items: list[int] | None = None, min_discount: float = 0.3,
@@ -725,7 +747,12 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                    round(100.0 * (n.cheapest_now * 0.95 - b.buy_unit_price)
                          / (n.cheapest_now * 0.95), 1)                 AS discount_pct,
                    round(rs.region_median_cheapest / 10000, 2)          AS region_median_g,
-                   round(rs.region_median_cheapest)::BIGINT             AS region_median_copper
+                   round(rs.region_median_cheapest)::BIGINT             AS region_median_copper,
+                   -- price_suspect (see PRICE_SUSPECT_MULTIPLE above): the
+                   -- sell-side reference price itself looks like a troll
+                   -- listing, not the buy-side row -- flag, don't drop.
+                   (n.cheapest_now >= {PRICE_SUSPECT_MULTIPLE} * rs.region_median_cheapest)
+                                                                         AS price_suspect
             FROM buy b
             JOIN sell_now n
               ON b.item_id = n.item_id

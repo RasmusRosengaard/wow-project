@@ -327,6 +327,15 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # or filter anything.
         "region_median_g": r["region_median_g"],
         "region_median_copper": r["region_median_copper"],
+        # price_suspect (added 2026-08-03, human request -- see
+        # snipe_check.PRICE_SUSPECT_MULTIPLE's docstring): the sell realm's
+        # own reference price is >= 10x the region median, a strong troll/
+        # joke-listing signal on the *sell* side. Unconditional, same as
+        # region_median_g above (pure SQL, no NameCache lookup needed) --
+        # unlike sus_item_suspect this isn't gated behind names=true.
+        # Never filters server-side -- dashboard.html's "Hide flagged (sus
+        # items)" checkbox ORs this in alongside sus_item_suspect.
+        "price_suspect": r["price_suspect"],
         # TSM EU region-wide sale rate/sold-per-day (added 2026-08-01, human
         # request -- see snipe_check.find_snipes()'s min_sale_rate docstring
         # and tsm.py). Both None if TSM has no data for this item (never

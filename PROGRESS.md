@@ -7,7 +7,18 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-08-02 — new feature, **Watchlist** (`watchlist.py`,
+Last updated: 2026-08-03 — new heuristic, **`price_suspect`**
+(`snipe_check.py`'s `PRICE_SUSPECT_MULTIPLE=10`): flags a row when the sell
+realm's own reference price is >= 10x the EU region median — a recalibrated
+revival of the `sell_price_suspect` flag removed 2026-07-31 (median instead
+of mean, 10x instead of 500x — see `CLAUDE.md`'s `snipe_check.py` row for
+the full reasoning). No new checkbox: rides the dashboard's existing "Hide
+flagged (sus items)" checkbox alongside `sus_item_suspect`, with its own
+`.price-flag` marker next to the sell-price number rather than the item
+name. Exposed unconditionally by `/api/snipes` (pure SQL, no `NameCache`
+lookup needed).
+
+2026-08-02 — new feature, **Watchlist** (`watchlist.py`,
 `tsm_import.py`, `static/watchlist.html`): a subscribed user tracks specific
 items region-wide (no sell realm), sets a plain gold trigger price per item,
 and gets a Discord webhook notification when any EU realm's current

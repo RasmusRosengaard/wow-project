@@ -895,6 +895,41 @@ def test_api_snipes_flags_sus_item_for_class_starter_armor_item_id(tmp_path, mon
     assert row["sus_item_suspect"] is True
 
 
+def test_api_snipes_carries_price_suspect_flag_unconditionally(tmp_path, monkeypatch):
+    """price_suspect (2026-08-03, human request -- see
+    snipe_check.PRICE_SUSPECT_MULTIPLE) rides along unconditionally, same as
+    region_median_g/region_sale_rate above -- present even without
+    names=true, since it's pure SQL with no NameCache lookup involved
+    (unlike sus_item_suspect, which needs base_level/inventory_type)."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)
+    ITEM = 920
+    median_copper = 15_000  # median of 1g/2g other-realm listings
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [snap_row(9999, T1, item_id=103),
+            snap_row(1, T1, item_id=ITEM, buyout=10 * median_copper)]  # 10x the median -> suspect
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([
+        listing_row(BUY_CR_A, item_id=ITEM, buyout=10_000, auction_id=100),  # 1g
+        listing_row(1234, item_id=ITEM, buyout=20_000, auction_id=200),      # 2g
+    ], schema=LISTING_SCHEMA), listings_dir / f"{BUY_CR_A}.parquet")
+
+    run_diff(monkeypatch)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0})
+    row = next(row for row in r.json()["rows"] if row["item_id"] == ITEM)
+    assert row["price_suspect"] is True
+    assert "sus_item_suspect" not in row  # still gated behind names=true, unaffected
+
+
 def test_api_snipes_variant_falls_back_without_names_resolved(tmp_path, monkeypatch):
     """Without names=true there's no base_level to check the claim against,
     so the smarter ilvl label is skipped entirely rather than shown unverified."""
