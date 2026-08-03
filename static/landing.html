@@ -266,8 +266,14 @@ applyThemeButtonState();
 // view their own marketing page. Instead, swap the sign-up CTAs for a
 // straight link into the tool once we know they're already logged in.
 // Silent/best-effort: a failed check just leaves the logged-out CTAs as is.
-fetch("/api/me").then(r => {
+fetch("/api/me").then(async r => {
   if (!r.ok) return;
+  // /api/me returns 200 for an anonymous visitor too (2026-08-03, see
+  // dashboard.py) -- .ok alone no longer means "logged in." Without this
+  // check every anonymous visitor would see "Go to dashboard" instead of
+  // the real sign-up CTA.
+  const data = await r.json();
+  if (data.is_anonymous) return;
   const toDashboard = (el, label) => { el.textContent = label; el.href = "/snipes"; };
   toDashboard(document.getElementById("nav-cta"), "Go to dashboard");
   document.getElementById("nav-login").remove();

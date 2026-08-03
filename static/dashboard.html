@@ -392,6 +392,7 @@
     <a href="/snipes" class="active">Dashboard</a>
     <a href="/watchlist">Watchlist</a>
     <a href="/snipe-board">Snipe Board</a>
+    <a href="/pricing" id="nav-pricing">Pricing</a>
     <a href="/profile" id="nav-profile" style="display:none;">Profile</a>
     <a href="/login" id="nav-login">Log in</a>
     <button id="nav-logout" style="display:none;">Log out</button>
@@ -1552,11 +1553,13 @@ function applyFreeTierRealmLock(lockedSellRealm) {
   const meData = me && me.ok ? await me.json() : { is_anonymous: true, is_superuser: false, subscription_status: null, locked_sell_realm: null };
   const isFreeTier = !meData.is_superuser && meData.subscription_status !== "active";
   // Nav swap (2026-08-03): default markup above is the logged-out state
-  // (Log in shown, Profile/Log out hidden) -- matches the convention
-  // already used by snipeboard.html/watchlist.html. Only swap to the
-  // logged-in nav for a real account; an anonymous session stays on the
-  // logged-out nav.
+  // (Pricing/Log in shown, Profile/Log out hidden) -- matches the
+  // convention already used by snipeboard.html/watchlist.html (this page
+  // never needed it before since it required login to reach at all).
+  // Only swap to the logged-in nav for a real account; an anonymous
+  // session stays on the logged-out nav.
   if (!meData.is_anonymous) {
+    $("nav-pricing").remove();
     $("nav-login").remove();
     $("nav-profile").style.display = "inline-block";
     $("nav-logout").style.display = "inline-block";

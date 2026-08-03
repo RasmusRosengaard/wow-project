@@ -359,18 +359,25 @@ $("post-submit").addEventListener("click", async () => {
 
 (async function init() {
   const me = await fetch("/api/me").catch(() => null);
+  // /api/me returns 200 for an anonymous visitor too (2026-08-03, see
+  // dashboard.py) -- me.ok alone no longer means "logged in," so
+  // meData.is_anonymous is checked below or an anonymous visitor would see
+  // the "+ Post a snipe" button and the logged-in nav (Profile/Log out)
+  // despite not actually being logged in.
   if (me && me.ok) {
     const meData = await me.json();
-    currentNickname = meData.nickname || null;
-    $("open-post").style.display = "inline-block";
-    $("login-to-post").style.display = "none";
-    // This page is public, so the default markup is the logged-out nav.
-    // Logged in, swap to the authenticated in-app nav dashboard.html uses:
-    // Pricing dropped, Profile + Log out added.
-    $("nav-login").remove();
-    $("nav-pricing").remove();
-    $("nav-profile").style.display = "inline-block";
-    $("nav-logout").style.display = "inline-block";
+    if (!meData.is_anonymous) {
+      currentNickname = meData.nickname || null;
+      $("open-post").style.display = "inline-block";
+      $("login-to-post").style.display = "none";
+      // This page is public, so the default markup is the logged-out nav.
+      // Logged in, swap to the authenticated in-app nav dashboard.html uses:
+      // Pricing dropped, Profile + Log out added.
+      $("nav-login").remove();
+      $("nav-pricing").remove();
+      $("nav-profile").style.display = "inline-block";
+      $("nav-logout").style.display = "inline-block";
+    }
   }
   await loadPosts();
 })();

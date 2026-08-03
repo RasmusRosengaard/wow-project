@@ -122,7 +122,12 @@
 // redirect on the result) rather than introducing a new pattern.
 (async function redirectIfAlreadyLoggedIn() {
   const me = await fetch("/api/me").catch(() => null);
-  if (me && me.ok) window.location.href = "/snipes";
+  if (!me || !me.ok) return;
+  // /api/me returns 200 for an anonymous visitor too (2026-08-03, see
+  // dashboard.py) -- .ok alone no longer means "logged in," it just means
+  // the request succeeded. is_anonymous is the real signal.
+  const data = await me.json();
+  if (!data.is_anonymous) window.location.href = "/snipes";
 })();
 
 document.getElementById("form").addEventListener("submit", async (e) => {

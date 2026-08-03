@@ -656,6 +656,10 @@ async function deleteAccount(accountId) {
   const me = await fetch("/api/me").catch(() => null);
   if (!me || !me.ok) { window.location.href = "/login"; return; }
   const data = await me.json();
+  // /api/me returns 200 for an anonymous visitor too (2026-08-03, see
+  // dashboard.py) -- this page needs a real account, so is_anonymous
+  // redirects the same way a failed fetch above already does.
+  if (data.is_anonymous) { window.location.href = "/login"; return; }
 
   $("email").textContent = data.email;
   $("nickname").value = data.nickname || "";

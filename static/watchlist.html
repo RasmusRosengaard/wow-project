@@ -527,6 +527,12 @@ $("save-changes-btn").addEventListener("click", saveChanges);
   const me = await fetch("/api/me").catch(() => null);
   if (!me || !me.ok) { showLoggedOut(); applyThemeButtonState(); return; }
   const data = await me.json();
+  // /api/me returns 200 for an anonymous visitor too (2026-08-03, see
+  // dashboard.py) -- .ok alone no longer means "logged in," so this needs
+  // its own check or an anonymous visitor gets the logged-in nav (Profile/
+  // Log out) and the subscribe-upsell view instead of the real logged-out
+  // page.
+  if (data.is_anonymous) { showLoggedOut(); applyThemeButtonState(); return; }
   $("nav-pricing").remove();
   $("nav-login").remove();
   $("nav-profile").style.display = "inline-block";
