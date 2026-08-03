@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession as SAAsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -374,9 +375,11 @@ def test_snipe_cap_by_tier():
     """dashboard._snipe_cap(): the free tier (2026-07-25) exists so a
     logged-in-but-unsubscribed user can preview real data, just capped much
     lower than a paying subscriber; superuser is generous founder/admin
-    headroom, not a real subscription concept."""
-    assert dashboard._snipe_cap(_user()) == 250
-    assert dashboard._snipe_cap(_user(subscription_status="past_due")) == 250
+    headroom, not a real subscription concept. Free tier raised 250 -> 500
+    2026-08-03 alongside adding anonymous (no-account) access at the old
+    250 number -- see dashboard.ANON_SNIPE_CAP."""
+    assert dashboard._snipe_cap(_user()) == 500
+    assert dashboard._snipe_cap(_user(subscription_status="past_due")) == 500
     assert dashboard._snipe_cap(_user(subscription_status="active")) == 2000
     assert dashboard._snipe_cap(_user(is_superuser=True)) == 10000
     # Superuser wins even with no/expired subscription -- matches
@@ -458,6 +461,15 @@ def test_class_quotas_by_tier_sum_to_the_tier_cap():
 
     assert dashboard._class_quotas(_user(is_superuser=True)) == dashboard.SUPERUSER_CLASS_QUOTAS
     assert sum(dashboard.SUPERUSER_CLASS_QUOTAS.values()) == dashboard.SNIPE_TIER_CAPS["superuser"]
+
+
+def test_anon_class_quotas_sum_to_anon_cap():
+    """Anonymous (no-account) tier (2026-08-03) is held to the same
+    sum-equals-cap invariant as every other tier above -- ANON_CLASS_QUOTAS
+    is the old FREE_CLASS_QUOTAS values, kept as their own constant now that
+    FREE_CLASS_QUOTAS has doubled (see dashboard.py's ANON_SNIPE_CAP
+    comment)."""
+    assert sum(dashboard.ANON_CLASS_QUOTAS.values()) == dashboard.ANON_SNIPE_CAP
 
 
 async def _free_tier_user_db(tmp_path, db_name="realm_lock.db"):
@@ -552,8 +564,80 @@ def test_enforce_realm_lock_concurrent_requests_only_one_wins(tmp_path):
     asyncio.run(run())
 
 
+async def _anon_session_db(tmp_path, token="t", db_name="anon_lock.db"):
+    """Real SQLite-backed AnonSession row, mirroring _free_tier_user_db above
+    but for the anonymous-visitor lock path (dashboard._enforce_anon_realm_lock).
+    Returns (engine, session_factory, token); caller disposes the engine."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / db_name}"
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        session.add(db.AnonSession(token=token))
+        await session.commit()
+    return engine, session_factory, token
+
+
+def test_enforce_anon_realm_lock_first_query_sets_lock(tmp_path):
+    async def run():
+        engine, session_factory, token = await _anon_session_db(tmp_path)
+        async with session_factory() as session:
+            await dashboard._enforce_anon_realm_lock(token, 100, session)
+            locked = (await session.execute(
+                select(db.AnonSession.locked_sell_realm).where(db.AnonSession.token == token)
+            )).scalar_one()
+            assert locked == 100
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_enforce_anon_realm_lock_same_realm_repeat_is_ok(tmp_path):
+    async def run():
+        engine, session_factory, token = await _anon_session_db(tmp_path)
+        async with session_factory() as session:
+            await dashboard._enforce_anon_realm_lock(token, 100, session)
+            await dashboard._enforce_anon_realm_lock(token, 100, session)  # no error, same realm
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_enforce_anon_realm_lock_different_realm_raises_403(tmp_path):
+    async def run():
+        engine, session_factory, token = await _anon_session_db(tmp_path)
+        async with session_factory() as session:
+            await dashboard._enforce_anon_realm_lock(token, 100, session)
+            with pytest.raises(HTTPException) as exc_info:
+                await dashboard._enforce_anon_realm_lock(token, 200, session)
+            assert exc_info.value.status_code == 403
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_atomic_lock_first_realm_concurrent_requests_only_one_wins(tmp_path):
+    """Anonymous-path analogue of test_enforce_realm_lock_concurrent_requests_only_one_wins
+    above, proving the shared _atomic_lock_first_realm core (extracted
+    2026-08-03) behaves identically for db.AnonSession as it does for User --
+    a bug in the shared core would break both suites simultaneously, which is
+    exactly the point of sharing it rather than hand-copying a second
+    UPDATE...WHERE...IS NULL."""
+    async def run():
+        engine, session_factory, token = await _anon_session_db(tmp_path)
+        async with session_factory() as session_a, session_factory() as session_b:
+            await dashboard._enforce_anon_realm_lock(token, 100, session_a)
+            with pytest.raises(HTTPException) as exc_info:
+                await dashboard._enforce_anon_realm_lock(token, 200, session_b)
+            assert exc_info.value.status_code == 403
+            locked = (await session_b.execute(
+                select(db.AnonSession.locked_sell_realm).where(db.AnonSession.token == token)
+            )).scalar_one()
+            assert locked == 100
+        await engine.dispose()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("is_superuser,subscription_status,expected_cap", [
-    (False, None, 250),
+    (False, None, 500),  # free tier: 250 -> 500 (2026-08-03)
     (False, "active", 2000),
     (True, None, 10000),
 ])

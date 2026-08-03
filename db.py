@@ -172,6 +172,28 @@ class WatchlistItem(Base):
     last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AnonSession(Base):
+    """First-party anonymous-visitor identity (2026-08-03) -- lets a visitor with no
+    account use /snipes, while still enforcing the same "locked to first sell realm
+    queried" rule a free-tier User gets (see User.locked_sell_realm), to bound how many
+    distinct expensive DuckDB queries one anonymous visitor can generate. Identified by
+    an opaque cookie value (ah_anon, see auth.py's resolve_or_create_anon_session()), NOT
+    IP (human decision: IPs are shared/NAT'd and change across sessions, which would
+    cause false locks/resets for unrelated visitors sharing a network). token is the
+    primary key directly -- generated the same way forum.py generates its opaque
+    filenames (uuid.uuid4().hex), just used as a PK here instead of a filename.
+
+    No cleanup/expiry mechanism (deliberately deferred) -- this app has no precedent for
+    reaping rows in any similar one-row-per-something table (e.g. ForumPost); unbounded
+    growth here is accepted the same way unless it becomes a real problem."""
+    __tablename__ = "anon_session"
+
+    token: Mapped[str] = mapped_column(String(32), primary_key=True)
+    locked_sell_realm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=lambda: datetime.now(timezone.utc))
+
+
 def _database_url() -> str:
     url = os.environ.get("DATABASE_URL")
     if not url:

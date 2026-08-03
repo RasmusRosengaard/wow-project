@@ -201,6 +201,31 @@ async def track_activity(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def ensure_anon_cookie(request: Request, call_next):
+    """Sets the ah_anon cookie on the genuinely final response (2026-08-03),
+    not a route-local injected `response: Response` parameter -- real bug
+    found while testing: FastAPI's exception handling builds an entirely
+    separate Response when a route raises HTTPException, and /api/snipes
+    routinely raises HTTPException for anonymous requests (400 for an
+    uncollected realm, 403 for a different-realm lock) -- the *common* case
+    for a first-time anonymous visitor, not an edge case, so a fix that only
+    covered the 200-success path would have left the cookie unset almost
+    every real time it mattered. auth.resolve_or_create_anon_session stashes
+    the resolved token on request.state.anon_token; middleware wraps the
+    whole request/response cycle, so call_next()'s returned response is the
+    real one about to be sent regardless of whether a route inside returned
+    normally or raised. Only sets the cookie when it's actually new/changed
+    (comparing against the incoming request cookie) so an already-valid
+    session doesn't get a redundant Set-Cookie on every single call."""
+    response = await call_next(request)
+    token = getattr(request.state, "anon_token", None)
+    if token is not None and request.cookies.get(auth.ANON_COOKIE_NAME) != token:
+        response.set_cookie(auth.ANON_COOKIE_NAME, token, max_age=auth.COOKIE_MAX_AGE_SECONDS,
+                            httponly=True, samesite="lax", secure=auth.COOKIE_SECURE)
+    return response
+
+
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
 app.include_router(billing.router)
@@ -354,26 +379,61 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
 
 
 @app.get("/api/me")
-async def api_me(user: User = Depends(current_active_user)) -> dict:
+async def api_me(request: Request, session: AsyncSession = Depends(get_async_session)) -> dict:
+    """No longer gated by Depends(current_active_user) (changed 2026-08-03,
+    alongside letting anonymous visitors use /snipes) -- it needs to return
+    200 for a visitor with no account too, not 401. Resolves the real user
+    manually via auth.resolve_user_from_request() (same helper api_snipes()
+    already uses), and falls back to an anonymous session
+    (auth.resolve_or_create_anon_session(), minting one on a first visit --
+    see that function's docstring and dashboard.ensure_anon_cookie for why
+    the cookie itself is set by middleware, not here) when there's no real
+    user. This route does no slow work, so (unlike api_snipes()) it's fine
+    to keep the pooled Depends(get_async_session) dependency here."""
+    user = await auth.resolve_user_from_request(request)
+    if user is not None:
+        return {
+            "email": user.email,
+            "subscription_status": user.subscription_status,
+            "subscription_current_period_end": (
+                user.subscription_current_period_end.isoformat()
+                if user.subscription_current_period_end else None
+            ),
+            "has_stripe_customer": user.stripe_customer_id is not None,
+            "is_superuser": user.is_superuser,
+            # Free tier only -- None for a subscriber/superuser (never enforced
+            # for them) and for a free account that hasn't queried /api/snipes
+            # yet. dashboard.html uses this to pre-select and lock the realm
+            # dropdown before the user can even attempt a request that would
+            # 403, rather than letting them find out by trying.
+            "locked_sell_realm": user.locked_sell_realm,
+            # Public display name for the Snipe Board (see forum.py) -- None
+            # until the user has set one. snipeboard.html prompts for it inline
+            # the first time this account tries to post.
+            "nickname": user.nickname,
+            "is_anonymous": False,
+        }
+    anon_token = await auth.resolve_or_create_anon_session(request, session)
+    locked = (await session.execute(
+        select(db.AnonSession.locked_sell_realm).where(db.AnonSession.token == anon_token)
+    )).scalar_one()
     return {
-        "email": user.email,
-        "subscription_status": user.subscription_status,
-        "subscription_current_period_end": (
-            user.subscription_current_period_end.isoformat()
-            if user.subscription_current_period_end else None
-        ),
-        "has_stripe_customer": user.stripe_customer_id is not None,
-        "is_superuser": user.is_superuser,
-        # Free tier only -- None for a subscriber/superuser (never enforced
-        # for them) and for a free account that hasn't queried /api/snipes
-        # yet. dashboard.html uses this to pre-select and lock the realm
-        # dropdown before the user can even attempt a request that would
-        # 403, rather than letting them find out by trying.
-        "locked_sell_realm": user.locked_sell_realm,
-        # Public display name for the Snipe Board (see forum.py) -- None
-        # until the user has set one. snipeboard.html prompts for it inline
-        # the first time this account tries to post.
-        "nickname": user.nickname,
+        "email": None,
+        "subscription_status": None,
+        "subscription_current_period_end": None,
+        "has_stripe_customer": False,
+        "is_superuser": False,
+        "locked_sell_realm": locked,
+        "nickname": None,
+        # Explicit boolean (matches this response's existing style, e.g.
+        # has_stripe_customer, over having the client infer anonymity from
+        # email being null) -- dashboard.html's nav-swap and nudge-banner
+        # logic both key off this directly.
+        "is_anonymous": True,
+        # Included so the nudge banner's copy reads these from the server
+        # instead of hardcoding a second, driftable copy of the numbers.
+        "anon_cap": ANON_SNIPE_CAP,
+        "free_cap": SNIPE_TIER_CAPS["free"],
     }
 
 
@@ -430,7 +490,21 @@ async def update_nickname(payload: NicknameUpdate, user: User = Depends(current_
 # headroom. The client always requests the same generous top (dashboard.html's
 # BATCH_TOP); the server is what actually enforces the real per-tier ceiling,
 # so the frontend doesn't need to know its own tier ahead of time.
-SNIPE_TIER_CAPS = {"free": 250, "subscribed": 2000, "superuser": 10000}
+#
+# free raised 250 -> 500 (2026-08-03, human decision, bundled with adding
+# anonymous/no-account access -- see ANON_SNIPE_CAP below): the old 250
+# number becomes the new "create a free account" incentive tier for a
+# visitor with no account at all, and a real account now gets meaningfully
+# more (500) as the actual reward for registering.
+SNIPE_TIER_CAPS = {"free": 500, "subscribed": 2000, "superuser": 10000}
+
+# Anonymous (no account at all) tier, added 2026-08-03 alongside the free-tier
+# bump above -- deliberately today's *old* free-tier number, now used as the
+# incentive to create a free account (see dashboard.html's anon nudge banner,
+# which shows both ANON_SNIPE_CAP and SNIPE_TIER_CAPS["free"] side by side).
+# A real, separately-named constant rather than an alias, since it no longer
+# equals SNIPE_TIER_CAPS["free"] and the two are free to diverge further.
+ANON_SNIPE_CAP = 250
 
 
 def _snipe_cap(user: User) -> int:
@@ -462,9 +536,14 @@ def _snipe_cap(user: User) -> int:
 # weapon's old 40%) -- one unit trimmed from weapon in both tiers, same as
 # the pre-existing rounding-remainder convention below, to keep each tier's
 # quotas summing to exactly its SNIPE_TIER_CAPS value.
+#
+# Doubled 2026-08-03 alongside SNIPE_TIER_CAPS["free"]'s 250 -> 500 bump --
+# every value here is exactly 2x its old number, so the ratios (20%/40%/16%/
+# 2%/2%/20%) SUBSCRIBED_CLASS_QUOTAS/SUPERUSER_CLASS_QUOTAS were derived from
+# are unchanged, and those two dicts below did NOT need to change at all.
 FREE_CLASS_QUOTAS = {
-    "weapon": 50, "armor": 100, "housing": 40, "mount": 5, "battlepet": 5,
-    "recipe": 50,
+    "weapon": 100, "armor": 200, "housing": 80, "mount": 10, "battlepet": 10,
+    "recipe": 100,
 }
 SUBSCRIBED_CLASS_QUOTAS = {
     "quest": 100, "profession": 100, "container": 20,
@@ -475,6 +554,17 @@ SUPERUSER_CLASS_QUOTAS = {
     "quest": 100, "profession": 100, "container": 20,
     "weapon": 1955, "armor": 3912, "housing": 1565, "mount": 196, "battlepet": 196,
     "recipe": 1956,
+}
+
+# Anonymous tier's class quotas (2026-08-03) -- the OLD FREE_CLASS_QUOTAS
+# values, unchanged, kept as their own named constant now that the two have
+# diverged (see ANON_SNIPE_CAP above). Sums to exactly ANON_SNIPE_CAP (250),
+# same invariant the other three tiers' dicts are held to (see
+# tests/test_dashboard.py::test_class_quotas_by_tier_sum_to_the_tier_cap and
+# its anon-tier counterpart).
+ANON_CLASS_QUOTAS = {
+    "weapon": 50, "armor": 100, "housing": 40, "mount": 5, "battlepet": 5,
+    "recipe": 50,
 }
 
 
@@ -522,25 +612,16 @@ async def _enforce_realm_lock(user: User, sell: int, session: AsyncSession) -> N
     synchronization step even when the real UPDATE matched zero rows
     (correctly, since the DB's actual value was already locked to something
     else) -- the in-memory object would disagree with the database. Disabled
-    so `result.rowcount` (checked below) is the only source of truth."""
+    so `result.rowcount` (checked below) is the only source of truth.
+
+    The atomic mechanism itself is factored out into _atomic_lock_first_realm
+    (2026-08-03, added alongside the anonymous-visitor equivalent below,
+    _enforce_anon_realm_lock) so both policies share one tested primitive
+    instead of a second hand-copied UPDATE."""
     if has_active_subscription(user):
         return
-    result = await session.execute(
-        update(User).where(User.id == user.id, User.locked_sell_realm.is_(None))
-        .values(locked_sell_realm=sell)
-        .execution_options(synchronize_session=False)
-    )
-    await session.commit()
-    if result.rowcount:
-        user.locked_sell_realm = sell  # keep the in-memory object consistent too
-        return  # this request was the one that set the lock (to `sell`)
-    # locked_sell_realm was already non-NULL -- could be from a concurrent
-    # request, or an earlier request by this same account -- look up the
-    # real current value directly rather than trusting `user`, which may be
-    # stale.
-    locked_to = (await session.execute(
-        select(User.locked_sell_realm).where(User.id == user.id)
-    )).scalar_one()
+    locked_to = await _atomic_lock_first_realm(
+        session, User, User.id, user.id, User.locked_sell_realm, sell)
     user.locked_sell_realm = locked_to  # keep the in-memory object consistent too
     if locked_to != sell:
         raise HTTPException(
@@ -550,8 +631,52 @@ async def _enforce_realm_lock(user: User, sell: int, session: AsyncSession) -> N
         )
 
 
+async def _atomic_lock_first_realm(session: AsyncSession, model, pk_column, pk_value,
+                                   lock_column, sell: int) -> int:
+    """Core of the free-tier/anonymous realm lock (extracted 2026-08-03 from
+    _enforce_realm_lock, whose original docstring above has the full
+    reasoning for why this must be one atomic UPDATE...WHERE...IS NULL rather
+    than read-then-write, and why synchronize_session=False is required):
+    atomically claims `sell` as pk_value's locked realm if this is the
+    first-ever request for this identity, otherwise returns whatever realm
+    already won -- shared verbatim by _enforce_realm_lock (User) and
+    _enforce_anon_realm_lock (db.AnonSession) so the two policies can never
+    drift apart on the one part that actually has to be correct under
+    concurrency."""
+    result = await session.execute(
+        update(model).where(pk_column == pk_value, lock_column.is_(None))
+        .values({lock_column.key: sell})
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    if result.rowcount:
+        return sell
+    return (await session.execute(select(lock_column).where(pk_column == pk_value))).scalar_one()
+
+
+async def _enforce_anon_realm_lock(anon_token: str, sell: int, session: AsyncSession) -> None:
+    """Anonymous-visitor equivalent of _enforce_realm_lock, added 2026-08-03
+    to let a visitor with no account use /snipes while still bounding how
+    many distinct expensive DuckDB queries one anonymous visitor can
+    generate. No subscription bypass here (unlike _enforce_realm_lock) --
+    there is no such thing as a subscribed anonymous session; subscribing
+    means registering an account, which moves a visitor onto the User-based
+    path entirely. Deliberately doesn't mention cookies anywhere in the error
+    message (human decision -- don't hint that clearing cookies resets the
+    lock)."""
+    locked_to = await _atomic_lock_first_realm(
+        session, db.AnonSession, db.AnonSession.token, anon_token, db.AnonSession.locked_sell_realm, sell)
+    if locked_to != sell:
+        raise HTTPException(
+            403,
+            f"Anonymous browsing is locked to sell realm {locked_to} -- "
+            "log in or subscribe to query any realm",
+        )
+
+
 @app.get("/api/snipes")
-async def api_snipes(request: Request, sell: int, items: str | None = None, min_discount: float = 0.3,
+async def api_snipes(request: Request, sell: int, items: str | None = None,
+                min_discount: float = 0.3,
                 min_gold: float | None = None, max_gold: float | None = None,
                 min_sell_now: float | None = None,
                 max_appearance_sources: int | None = None,
@@ -568,29 +693,43 @@ async def api_snipes(request: Request, sell: int, items: str | None = None, min_
     # reasoning and how it stays behaviorally identical to
     # current_active_user (only the `active` check applies -- this app
     # never uses verified=True/superuser=True).
+    #
+    # A None result (no cookie, an invalid/garbage cookie, or an inactive
+    # account) no longer 401s (changed 2026-08-03, alongside letting
+    # anonymous visitors use /snipes) -- it now falls through to the
+    # anonymous path below instead. This is a deliberate widening: a stale
+    # cookie degrading gracefully to anonymous browsing is better UX than a
+    # hard failure, and there's no meaningful security boundary being
+    # loosened -- both paths are already unauthenticated as far as this
+    # route is concerned.
     user = await auth.resolve_user_from_request(request)
-    if user is None:
-        raise HTTPException(401)
-    top = min(top, _snipe_cap(user))
     # Realm lock enforced *before* data-readiness/sort validation --
     # deliberate (see test_auth.py::test_free_tier_locks_to_first_sell_realm,
-    # which asserts exactly this order): a free-tier account commits its one
-    # realm choice by asking about that realm at all, whether or not this
-    # particular query turns out ready. (A bug audit initially flagged this
-    # ordering as a bug and reversed it, but that missed this existing,
-    # already-tested, deliberate behavior -- reverted 2026-07-31 once the
-    # conflict was caught by the full test suite.)
+    # which asserts exactly this order): an account (or anonymous visitor)
+    # commits its one realm choice by asking about that realm at all,
+    # whether or not this particular query turns out ready. (A bug audit
+    # initially flagged this ordering as a bug and reversed it, but that
+    # missed this existing, already-tested, deliberate behavior -- reverted
+    # 2026-07-31 once the conflict was caught by the full test suite.)
     #
     # _enforce_realm_lock()'s own signature/behavior is unchanged (still
     # takes an explicit session -- its existing test_dashboard.py coverage,
     # including a real two-session TOCTOU race regression test, depends on
     # controlling that session precisely and would be awkward to preserve
     # otherwise). Only what changed is *where* the session comes from: a
-    # short-lived one opened just for this call, not the route-level
-    # Depends(get_async_session) session that used to stay open for the
-    # rest of this function's slow work too.
+    # short-lived one opened just for this call, not a route-level
+    # Depends(get_async_session) session that would stay open for the rest
+    # of this function's slow work too. The anonymous branch below follows
+    # the exact same short-lived-session discipline.
     async with db.sessionmaker()() as session:
-        await _enforce_realm_lock(user, sell, session)
+        if user is not None:
+            await _enforce_realm_lock(user, sell, session)
+            cap, quotas = _snipe_cap(user), _class_quotas(user)
+        else:
+            anon_token = await auth.resolve_or_create_anon_session(request, session)
+            await _enforce_anon_realm_lock(anon_token, sell, session)
+            cap, quotas = ANON_SNIPE_CAP, ANON_CLASS_QUOTAS
+    top = min(top, cap)
     not_ready = snipe_check.check_data_ready(sell)
     if not_ready:
         raise HTTPException(400, not_ready)
@@ -618,7 +757,7 @@ async def api_snipes(request: Request, sell: int, items: str | None = None, min_
                                            min_gold=min_gold, max_gold=max_gold, min_sell_now=min_sell_now,
                                            max_appearance_sources=max_appearance_sources,
                                            max_per_item=max_per_item,
-                                           class_quotas=_class_quotas(user),
+                                           class_quotas=quotas,
                                            # Junk/decoy pre-filter (2026-08-01, human
                                            # request), always on for the live API --
                                            # see snipe_check.MIN_VALUE_FLOOR_G's
@@ -700,10 +839,13 @@ def _realms_payload(cr_ids: list[int]) -> list[dict]:
 
 
 @app.get("/api/realms")
-def api_realms(user: User = Depends(current_active_user)) -> dict:
-    # current_active_user, not current_subscribed_user -- the free tier
-    # (see /api/snipes' SNIPE_TIER_CAPS) still needs the realm picker to
-    # pick a sell realm at all, it's just capped on row count once it fetches.
+def api_realms() -> dict:
+    # No auth dependency (dropped 2026-08-03, alongside letting anonymous
+    # visitors use /snipes) -- this route returns zero per-user data
+    # (_realms_payload(_list_snapshotted_realms()) is the same for every
+    # caller), so its previous Depends(current_active_user) gate was only
+    # ever a "must be logged in" checkpoint, not a real data-sensitivity or
+    # cost boundary. Now open to anonymous visitors too, same as /api/config.
     return {"realms": _realms_payload(_list_snapshotted_realms())}
 
 
@@ -787,8 +929,11 @@ def _list_snapshotted_realms() -> list[int]:
 
 
 @app.get("/api/status")
-def api_status(sell: int, user: User = Depends(current_active_user)) -> dict:
-    # current_active_user -- same free-tier reasoning as /api/realms above.
+def api_status(sell: int) -> dict:
+    # No auth dependency (dropped 2026-08-03) -- same reasoning as
+    # /api/realms above: this returns zero per-user data (purely
+    # file-mtime-derived), so the previous gate was only "must be logged
+    # in," not a real data-sensitivity or cost boundary.
     state_path = DATA / "state" / f"{sell}.json"
     last_modified = None
     if state_path.exists():

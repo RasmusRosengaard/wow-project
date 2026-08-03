@@ -70,8 +70,14 @@ several entries around it, all dated 2026-08-01.
 - Register / log in / log out; subscribe/cancel/status on the profile page.
 - Subscribe via Stripe (live mode, real payments) → dashboard access
   unlocks via webhook. **Free tier**: any logged-in account can use the
-  dashboard with capped, real data (250 rows, locked to one sell realm) —
-  no hard paywall before seeing anything.
+  dashboard with capped, real data (500 rows, raised from 250 2026-08-03,
+  locked to one sell realm) — no hard paywall before seeing anything.
+  **Anonymous access** (added 2026-08-03): a visitor with no account at all
+  can now use `/snipes` too, capped at 250 rows (today's old free-tier
+  number, now the incentive to register) and locked to the first sell realm
+  it queries the same way the free tier is — identity is a first-party
+  `ah_anon` cookie (`db.AnonSession`), not IP, so unrelated visitors sharing
+  a network never get merged into one lock.
 - Server-side data collection every ~10 minutes for FULL/HIGH-pop EU
   realms, no human machine required. Only the latest snapshot per realm is
   kept (pricing never needed history) — disk usage is flat by construction,
@@ -197,11 +203,13 @@ several entries around it, all dated 2026-08-01.
      param (see `CLAUDE.md`'s `snipe_check.py` row) caps each item-class
      bucket independently instead of one flat top-N by discount% —
      `dashboard.py`'s `_class_quotas(user)` supplies human-specified,
-     per-tier numbers (free: weapon 50/armor 100/housing 40/mount 5/
-     battlepet 5/recipe 50, summing to exactly its 250 cap, deliberately zero
-     quest/profession/container; subscribed/superuser add fixed floors for
-     those three plus the free tier's own ratios scaled up — see `CLAUDE.md`
-     for the exact numbers). **`recipe` bucket added 2026-07-28** (item_class
+     per-tier numbers (free at the time: weapon 50/armor 100/housing 40/
+     mount 5/battlepet 5/recipe 50, summing to exactly its then-250 cap,
+     deliberately zero quest/profession/container; subscribed/superuser add
+     fixed floors for those three plus the free tier's own ratios scaled up
+     — see `CLAUDE.md` for the exact current numbers, doubled 2026-08-03
+     alongside the free tier's cap rising 250→500, same ratios throughout).
+     **`recipe` bucket added 2026-07-28** (item_class
      9, confirmed live, distinct from Profession's 19 — recipes had no
      bucket at all before this): free tier's `weapon` quota was halved from
      100 to fund an equal 50 `recipe`, and every other tier's weapon/recipe
@@ -439,6 +447,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | TSM region-wide sale-rate cache | `tsm.py` (added 2026-08-01) |
 | Multi-WoW-account registration | `wow_accounts.py`, `static/profile.html` (added 2026-08-02) |
 | Watchlist (region-wide item tracking + Discord alerts) | `watchlist.py`, `tsm_import.py`, `static/watchlist.html`, `vendor/tsm_lua/` (added 2026-08-02) |
+| Anonymous (no-account) dashboard access | `db.AnonSession`, `auth.resolve_or_create_anon_session()`, `dashboard.ensure_anon_cookie`/`_enforce_anon_realm_lock` (added 2026-08-03) |
 | Public pricing page | `static/pricing.html`, `GET /pricing` in `dashboard.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
 | Tests | `tests/` (`pytest -q`; run `env -u DATABASE_URL pytest -q` too before pushing), no external services needed |

@@ -106,9 +106,18 @@ def test_login_wrong_password_rejected(client):
     assert r.json()["detail"] == "LOGIN_BAD_CREDENTIALS"
 
 
-def test_unauthenticated_request_returns_401(client):
+def test_unauthenticated_request_to_api_me_returns_anonymous_session(client):
+    """/api/me no longer 401s with no cookie at all (changed 2026-08-03,
+    letting anonymous visitors use /snipes) -- it mints an anonymous session
+    (db.AnonSession) and returns 200 with an anonymous-shaped response
+    instead."""
     r = client.get("/api/me")
-    assert r.status_code == 401
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_anonymous"] is True
+    assert body["email"] is None
+    assert body["locked_sell_realm"] is None
+    assert "ah_anon" in r.cookies
 
 
 def test_logout_revokes_access(client):
@@ -118,26 +127,44 @@ def test_logout_revokes_access(client):
 
     r = client.post("/auth/logout")
     assert r.status_code == 204
-    assert client.get("/api/me").status_code == 401
+    # No longer 401 (changed 2026-08-03, see
+    # test_unauthenticated_request_to_api_me_returns_anonymous_session) --
+    # a logged-out request now falls through to an anonymous session
+    # instead of erroring, same as any other request with no valid ah_auth
+    # cookie. The real thing this test needs to prove is that the *account*
+    # is genuinely logged out (no longer the real user), not that /api/me
+    # errors.
+    me = client.get("/api/me")
+    assert me.status_code == 200
+    assert me.json()["is_anonymous"] is True
+    assert me.json()["email"] is None
 
 
-def test_dashboard_api_routes_require_login(client):
-    """/api/snipes and /api/status are gated the same way as /api/me --
-    the security boundary is server-side, not just the frontend redirect.
-    Login alone (current_active_user) is the actual gate now -- a free tier
-    (2026-07-25 human decision) means logged-in-but-unsubscribed reaches the
-    same business logic a subscriber does, just capped on row count
-    downstream (see test_dashboard.py's _snipe_cap tests), not turned away
-    with a 402 like before."""
+def test_unauthenticated_dashboard_routes_reach_anonymous_business_logic(client):
+    """/api/snipes and /api/status no longer require login at all (changed
+    2026-08-03, letting anonymous visitors use /snipes -- this inverts the
+    premise this test used to assert, "these routes 401 with no cookie").
+    /api/status never carried per-user data, so it's simply open now.
+    /api/snipes goes down the new anonymous realm-lock path
+    (dashboard._enforce_anon_realm_lock) instead of the User-based one, but
+    reaches the exact same "400 for an uncollected realm" business logic a
+    logged-in account would (see test_dashboard_api_routes_reachable_when_logged_in
+    below) -- the security boundary these routes used to have (login
+    required) is gone by design, not a regression."""
     UNCOLLECTED_REALM = 424242  # no snapshot ever collected -- guaranteed not to exist
-    assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 401
-    assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 401
+    assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
+    assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 200
 
+
+def test_dashboard_api_routes_reachable_when_logged_in(client):
+    """A real account (logged in, not subscribed) reaches the same business
+    logic an anonymous visitor does above -- login changes which cap/lock
+    applies downstream (see test_dashboard.py's _snipe_cap tests and
+    test_free_tier_locks_to_first_sell_realm below), not whether the route
+    is reachable at all."""
+    UNCOLLECTED_REALM = 424242
     register(client)
     login(client)
-    # Logged in but not subscribed -- reaches real business logic now (400
-    # for an uncollected realm), same as a subscriber would, proving login
-    # alone is sufficient to pass the gate.
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
     assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 200
 
@@ -229,28 +256,38 @@ def test_superuser_is_never_realm_locked(client):
 # auth.resolve_user_from_request() (2026-08-01) replaced /api/snipes'
 # Depends(current_active_user) with a manually-resolved user -- these tests
 # exercise the real path directly (not test_dashboard.py's bypass), the same
-# way test_dashboard_api_routes_require_login above already covers "no
-# cookie -> 401" and "valid cookie -> real business logic reached". This
-# fills in the cases that test wasn't designed to cover: a cookie that
-# doesn't decode to a real session, and an otherwise-valid session for a
-# deactivated account.
+# way test_unauthenticated_dashboard_routes_reach_anonymous_business_logic
+# above already covers "no cookie at all". This fills in the cases that test
+# wasn't designed to cover: a cookie that doesn't decode to a real session,
+# and an otherwise-valid session for a deactivated account. Both used to
+# 401; since 2026-08-03 (letting anonymous visitors use /snipes) both now
+# fall through to the anonymous path instead -- resolve_user_from_request()
+# returning None no longer means "reject the request," it means "no real
+# account, try anonymous."
 
-def test_api_snipes_invalid_cookie_returns_401(client):
+def test_api_snipes_invalid_cookie_falls_back_to_anonymous(client):
     """A garbage/malformed cookie value must resolve to "no user", the same
     as no cookie at all -- not raise or 500. Mirrors
     JWTStrategy.read_token()'s own contract (returns None on any
     jwt.PyJWTError, never raises) that resolve_user_from_request() relies
-    on rather than reimplementing its own try/except."""
+    on rather than reimplementing its own try/except. Since 2026-08-03 this
+    is the *correct*, intended behavior -- a stale/garbage cookie degrades
+    gracefully to anonymous browsing rather than hard-failing."""
     client.cookies.set("ah_auth", "not-a-real-jwt")
-    assert client.get("/api/snipes", params={"sell": 424242}).status_code == 401
+    r = client.get("/api/snipes", params={"sell": 424242})
+    assert r.status_code == 400  # uncollected realm, same as a fresh anonymous visitor
+    assert "ah_anon" in r.cookies  # a real anonymous session was minted for this request
 
 
-def test_api_snipes_inactive_user_returns_401(client):
+def test_api_snipes_inactive_user_falls_back_to_anonymous(client):
     """A valid, correctly-signed cookie for an account that's since been
-    deactivated must still be rejected -- proves resolve_user_from_request()
-    actually checks is_active (mirroring
-    fastapi_users.current_user(active=True)'s own behavior) rather than
-    just trusting that the token decoded to *some* real user."""
+    deactivated resolves to no user (proves resolve_user_from_request()
+    actually checks is_active, mirroring
+    fastapi_users.current_user(active=True)'s own behavior, rather than just
+    trusting that the token decoded to *some* real user) -- and, since
+    2026-08-03, falls through to the anonymous path instead of 401ing. The
+    deactivated account loses its real-account tier/lock, but can still
+    browse anonymously like anyone else with no cookie at all."""
     register(client)
     login(client)
     assert client.get("/api/me").status_code == 200  # sanity: really logged in first
@@ -262,6 +299,57 @@ def test_api_snipes_inactive_user_returns_401(client):
             await session.commit()
     asyncio.run(_deactivate(client.session_factory, EMAIL))
 
-    assert client.get("/api/snipes", params={"sell": 424242}).status_code == 401
+    assert client.get("/api/snipes", params={"sell": 424242}).status_code == 400
+
+
+# Anonymous-visitor tests (2026-08-03) -- real cookie-flow coverage of
+# db.AnonSession/auth.resolve_or_create_anon_session/
+# dashboard._enforce_anon_realm_lock, mirroring the equivalent User-based
+# tests above (test_free_tier_locks_to_first_sell_realm in particular) line
+# for line, so the two policies are proven to behave identically.
+
+def test_anonymous_visitor_can_reach_api_me(client):
+    r = client.get("/api/me")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_anonymous"] is True
+    assert body["email"] is None
+    assert body["locked_sell_realm"] is None
+    assert body["anon_cap"] == 250
+    assert body["free_cap"] == 500
+    assert "ah_anon" in r.cookies
+
+
+def test_anonymous_visitor_locks_to_first_sell_realm(client):
+    """Mirrors test_free_tier_locks_to_first_sell_realm exactly, but with no
+    account at all -- proves the anonymous path enforces the identical
+    realm-lock policy via dashboard._enforce_anon_realm_lock /
+    _atomic_lock_first_realm, the same shared core the User-based lock uses."""
+    REALM_A, REALM_B = 111111, 222222
+
+    r = client.get("/api/snipes", params={"sell": REALM_A})
+    assert r.status_code == 400  # uncollected, but past the lock -- proves it was set
+    assert client.get("/api/me").json()["locked_sell_realm"] == REALM_A
+
+    r = client.get("/api/snipes", params={"sell": REALM_B})
+    assert r.status_code == 403
+    assert "locked" in r.json()["detail"].lower()
+
+    # The locked realm itself is still always reachable.
+    assert client.get("/api/snipes", params={"sell": REALM_A}).status_code == 400
+
+
+def test_anonymous_session_persists_across_requests_via_cookie(client):
+    """A visitor's ah_anon token is reused across requests (not reissued
+    every time once it's already valid), and correctly hits the same locked
+    row on a later request."""
+    first = client.get("/api/me")
+    assert "ah_anon" in first.cookies
+
+    second = client.get("/api/me")
+    assert "ah_anon" not in second.cookies  # not reissued -- the existing token was already valid
+
+    client.get("/api/snipes", params={"sell": 111111})
+    assert client.get("/api/me").json()["locked_sell_realm"] == 111111
 
 

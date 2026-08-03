@@ -137,6 +137,17 @@
     font-size: 0.72rem; color: var(--text-dim); line-height: 1.4; margin-top: -0.5rem;
   }
   .realm-lock-hint a { color: var(--bullion); }
+  /* Anonymous-visitor nudge banner (2026-08-03) -- same typography as
+     .realm-lock-hint, but its own class rather than reusing that one
+     outright: it sits above the ticker/sell-realm picker, not directly
+     under the <select>, so the same negative margin-top would overlap the
+     ticker above it instead of pulling snugly against a sibling element. */
+  .anon-banner {
+    font-size: 0.72rem; color: var(--text-dim); line-height: 1.4; margin-bottom: 0.6rem;
+  }
+  .anon-banner a { color: var(--bullion); }
+  .anon-banner ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+  .anon-banner li { margin-top: 0.15rem; }
   .filters select:disabled { opacity: 0.65; cursor: not-allowed; }
   /* 2-column grid, not a stacked list -- halves the vertical space these
      checkbox groups take (added 2026-07-26 to fit the whole rail on one
@@ -381,14 +392,16 @@
     <a href="/snipes" class="active">Dashboard</a>
     <a href="/watchlist">Watchlist</a>
     <a href="/snipe-board">Snipe Board</a>
-    <a href="/profile">Profile</a>
-    <button id="logout">Log out</button>
+    <a href="/profile" id="nav-profile" style="display:none;">Profile</a>
+    <a href="/login" id="nav-login">Log in</a>
+    <button id="nav-logout" style="display:none;">Log out</button>
   </div>
 </div>
 
 <div class="shell">
   <aside class="filters">
     <div class="ticker" id="ticker"></div>
+    <div id="anon-banner" class="anon-banner" style="display:none;"></div>
     <label>Sell realm <select id="sell"></select></label>
     <div id="realm-lock-hint" class="realm-lock-hint" style="display:none;"></div>
     <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
@@ -1420,7 +1433,7 @@ QUALITY_FILTERS.forEach(q => $(`quality_${q.key}`).addEventListener("change", ()
   renderTable();
 }));
 
-$("logout").addEventListener("click", async () => {
+$("nav-logout").addEventListener("click", async () => {
   await fetch("/auth/logout", { method: "POST" }).catch(() => {});
   // localStorage is origin-scoped, not per-account -- clear the cached
   // batches so a different user logging in on this browser never gets an
@@ -1528,18 +1541,39 @@ function applyFreeTierRealmLock(lockedSellRealm) {
 }
 
 (async function init() {
-  // Login alone is the gate now (2026-07-25, free tier) -- no more
-  // redirect-to-/subscribe for a logged-in-but-unsubscribed user. The
-  // backend (dashboard.py's SNIPE_TIER_CAPS) is what actually enforces the
-  // real difference between tiers, by capping row count, not by blocking
-  // access outright.
+  // Login is no longer required at all (changed 2026-08-03, alongside
+  // letting anonymous visitors use the dashboard) -- /api/me now always
+  // returns 200, either a real-account shape or an anonymous-session shape
+  // (meData.is_anonymous), so there's nothing to redirect on anymore. The
+  // backend (dashboard.py's SNIPE_TIER_CAPS/ANON_SNIPE_CAP) is what actually
+  // enforces the real difference between tiers, by capping row count, not
+  // by blocking access outright.
   const me = await fetch("/api/me").catch(() => null);
-  if (!me || !me.ok) {
-    window.location.href = "/login";
-    return;
-  }
-  const meData = await me.json();
+  const meData = me && me.ok ? await me.json() : { is_anonymous: true, is_superuser: false, subscription_status: null, locked_sell_realm: null };
   const isFreeTier = !meData.is_superuser && meData.subscription_status !== "active";
+  // Nav swap (2026-08-03): default markup above is the logged-out state
+  // (Log in shown, Profile/Log out hidden) -- matches the convention
+  // already used by snipeboard.html/watchlist.html. Only swap to the
+  // logged-in nav for a real account; an anonymous session stays on the
+  // logged-out nav.
+  if (!meData.is_anonymous) {
+    $("nav-login").remove();
+    $("nav-profile").style.display = "inline-block";
+    $("nav-logout").style.display = "inline-block";
+  }
+  // Anonymous nudge banner (2026-08-03) -- reads the cap numbers from the
+  // server response rather than hardcoding a second, driftable copy of
+  // them. Deliberately says nothing about cookies/resetting the lock (human
+  // decision -- don't hint at the cookie-clearing workaround).
+  if (meData.is_anonymous) {
+    const banner = $("anon-banner");
+    banner.style.display = "block";
+    banner.innerHTML = `Browsing anonymously` +
+      `<ul>` +
+      `<li>Capped at ${meData.anon_cap} items</li>` +
+      `<li><a href="/register">Create a free account</a> to raise your cap to ${meData.free_cap}</li>` +
+      `</ul>`;
+  }
   // Skipped entirely for free-tier accounts -- they'd only ever get a 402
   // from /api/wow-accounts (see wow_accounts.py, current_subscribed_user),
   // no point spending the round trip. Must resolve before the first

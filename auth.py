@@ -10,6 +10,8 @@ from fastapi import Depends, HTTPException, Request
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyUserDatabase
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import db
 from db import User, get_user_db
@@ -106,6 +108,57 @@ async def resolve_user_from_request(request: Request) -> User | None:
     if user is None or not user.is_active:
         return None
     return user
+
+
+# Anonymous-visitor session cookie (2026-08-03, see db.AnonSession) --
+# deliberately a DIFFERENT name than ah_auth's cookie_transport.cookie_name:
+# CookieTransport/JWTStrategy would otherwise try to JWT-decode this value as
+# if it were a real auth token. httponly/samesite/secure explicitly match
+# what CookieTransport applies by default for ah_auth, so the two cookies
+# behave consistently even though this one is hand-rolled via
+# response.set_cookie() rather than going through fastapi-users at all.
+ANON_COOKIE_NAME = "ah_anon"
+
+
+async def resolve_or_create_anon_session(request: Request, session: AsyncSession) -> str:
+    """Returns the anonymous-visitor token for this request, minting one on a
+    visitor's first-ever request. Used by dashboard.py's
+    api_me()/api_snipes() -- both call this only once
+    resolve_user_from_request() has already returned None, i.e. this is the
+    "no real account" fallback path, never a replacement for real auth.
+
+    Does NOT set the ah_anon cookie directly (that used to be a `response:
+    Response` parameter here, removed 2026-08-03 -- a real bug found while
+    testing: FastAPI's exception handling builds an entirely separate
+    Response when a route raises HTTPException, which never sees mutations
+    made to a route-local injected Response parameter -- and /api/snipes
+    routinely raises HTTPException for anonymous requests, 400 for an
+    uncollected realm or 403 for a different-realm lock, which is the
+    *common* case here, not an edge case). Instead this stashes the resolved
+    token on `request.state.anon_token`; dashboard.py's ensure_anon_cookie
+    middleware reads it after call_next() and sets the cookie on the
+    genuinely final response, which is unaffected by exception handling
+    since middleware wraps the whole request/response cycle.
+
+    The defensive re-SELECT when a cookie value is already present guards
+    against a stale/garbage cookie (e.g. a manually-edited dev cookie, or a
+    row that was somehow removed) not matching any real row -- in that case
+    a fresh token is minted rather than trusting the client-supplied value
+    blindly, same "never trust client input, degrade gracefully" posture
+    resolve_user_from_request() already has for a bad ah_auth cookie."""
+    token = request.cookies.get(ANON_COOKIE_NAME)
+    if token is not None:
+        existing = (await session.execute(
+            select(db.AnonSession.token).where(db.AnonSession.token == token)
+        )).scalar_one_or_none()
+        if existing is not None:
+            request.state.anon_token = token
+            return token
+    token = uuid.uuid4().hex
+    session.add(db.AnonSession(token=token))
+    await session.commit()
+    request.state.anon_token = token
+    return token
 
 
 def has_active_subscription(user: User) -> bool:
