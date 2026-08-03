@@ -207,7 +207,11 @@
      that can run long needs an explicit truncation rule instead of silently
      overflowing into the next column -- the existing hover tooltip (see
      showTooltip()) already surfaces the untruncated realm/item name, so
-     truncating here doesn't lose information, just display width. */
+     truncating here doesn't lose information, just display width.
+     Item name itself (td:nth-child(2)) is deliberately excluded from this
+     list (2026-08-03, human request: "display the full names of the items")
+     -- see .item-name below, which wraps instead of truncating so the whole
+     name is always visible without a hover. */
   td:nth-child(1), td:nth-child(3), td:nth-child(9) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { white-space: nowrap; overflow: hidden; }
   th {
@@ -233,9 +237,25 @@
   .item-cell { display: flex; align-items: center; gap: 0.5rem; cursor: default; min-width: 0; }
   .item-cell a { display: flex; line-height: 0; }
   /* A flex item's default min-width is auto (its content size), which would
-     stop this from ever shrinking below the full item name and defeat the
-     fixed-width column's truncation above -- min-width: 0 opts back in. */
-  .item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+     stop this from wrapping within the fixed-width column at all --
+     min-width: 0 opts back in. Wraps onto multiple lines rather than
+     truncating (2026-08-03, human request: show the full item name, not an
+     ellipsis + hover-only tooltip) -- same "let it wrap instead of forcing
+     an overflow" approach already used for th labels above, just applied to
+     this cell instead of being hidden behind :hover. Row height simply
+     grows for a long name; nothing else in the row depends on a fixed
+     single-line height. */
+  .item-name {
+    white-space: normal; word-break: break-word; min-width: 0;
+    cursor: pointer;
+  }
+  .item-name:hover { text-decoration: underline dotted; text-underline-offset: 2px; }
+  /* Brief inline confirmation after a click-to-copy (see copyItemName()) --
+     swapped back to the real name after COPY_FEEDBACK_MS regardless of
+     whether the copy actually reached the clipboard (Clipboard API write
+     failures are rare and silent by design elsewhere in this file too, e.g.
+     saveCache()'s fail-soft catch). */
+  .item-name.copied { color: var(--bullion); text-decoration: none; }
   /* Rarity as a colored frame around the icon art (like WoW's own UI),
      not the name's text color -- Blizzard's quality palette (near-white
      for Common, saturated green/cyan for others) was built for dark panels
@@ -930,6 +950,7 @@ function showTooltip(row, x, y) {
       ? `<div class="tt-row"><span class="lbl">Note</span><span>Sus item, possibly obsolete (experimental)</span></div>`
       : ""}
     ${ue ? `<hr><div class="tt-sub">Click the icon for Undermine Exchange &rarr;</div>` : ""}
+    <div class="tt-sub">Click the item name to copy it</div>
   `;
   tt.style.display = "block";
   positionTooltip(x, y);
@@ -1259,6 +1280,13 @@ document.getElementById("rows").addEventListener("mouseout", (e) => {
   if (e.target.closest(".item-cell") && !e.relatedTarget?.closest(".item-cell")) hideTooltip();
 });
 document.getElementById("rows").addEventListener("click", (e) => {
+  const nameEl = e.target.closest(".item-name");
+  if (nameEl) {
+    const cell = nameEl.closest(".item-cell");
+    const row = cell && displayRows[Number(cell.dataset.row)];
+    if (row) copyItemName(row.name ?? String(row.item_id), nameEl);
+    return;
+  }
   const btn = e.target.closest(".group-toggle");
   if (!btn) return;
   const key = btn.dataset.group;
@@ -1266,6 +1294,47 @@ document.getElementById("rows").addEventListener("click", (e) => {
   hideTooltip();
   renderTable(false);  // expanding/collapsing a group already on screen shouldn't reset the page
 });
+
+// Click-to-copy on the item name (2026-08-03, human request). Falls back to
+// document.execCommand("copy") for a context where navigator.clipboard isn't
+// available (non-secure origin, older browser) -- same "never let a display
+// convenience throw" convention as the rest of this file's fail-soft catches
+// (saveCache(), loadStatus(), etc.). COPY_FEEDBACK_MS is brief enough not to
+// desync from a real filter/sort re-render (renderTable() just overwrites the
+// element sooner in that case, which is fine -- there's nothing to roll back).
+const COPY_FEEDBACK_MS = 900;
+function copyItemName(name, el) {
+  const flash = () => {
+    const original = el.textContent;
+    el.classList.add("copied");
+    el.textContent = "Copied!";
+    setTimeout(() => {
+      el.classList.remove("copied");
+      el.textContent = original;
+    }, COPY_FEEDBACK_MS);
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(name).then(flash).catch(() => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = name; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        flash();
+      } catch (e) { /* clipboard unavailable -- nothing to fall back to */ }
+    });
+  } else {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = name; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      flash();
+    } catch (e) { /* clipboard unavailable -- nothing to fall back to */ }
+  }
+}
 
 document.querySelectorAll("th[data-sort]").forEach(th => {
   th.addEventListener("click", () => {

@@ -456,11 +456,14 @@ function renderWowAccounts() {
   const cards = currentAccounts.map(acct => {
     const excludeIds = new Set(acct.realms);
     const chips = acct.realms.map(id => {
-      // Prefer the specific name stored for this account (2026-08-02) over
-      // the generic "every member name joined" fallback -- a registration
-      // made before realm_names existed (or one added a different way)
-      // still falls back to the old join-all-names display.
-      const name = (acct.realm_names && acct.realm_names[id]) || realmNameById.get(id) || String(id);
+      // Prefer the "every member name joined" display (2026-08-02 fix,
+      // see loadEuRealms()) over the single specific name stored at
+      // add-time -- showing only the picked name (e.g. "Dun Morogh") hid
+      // that adding it also covers "Norgannon", the exact confusion the
+      // join-fix was meant to prevent. acct.realm_names[id] is only a
+      // fallback for when the EU realm list didn't load (e.g. a lapsed
+      // subscription) and the joined name isn't available at all.
+      const name = realmNameById.get(id) || (acct.realm_names && acct.realm_names[id]) || String(id);
       return `<span class="realm-chip">${escapeHtml(name)}<button data-remove-realm="${id}" data-account="${acct.id}" title="Remove realm">&times;</button></span>`;
     }).join("") || `<span class="cap-note">No realms added yet.</span>`;
     const atRealmCap = acct.realms.length >= 50;
