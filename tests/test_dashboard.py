@@ -305,12 +305,28 @@ def test_api_snipes_carries_tsm_sale_rate(data_dir, monkeypatch):
     assert row["region_sold_per_day"] == 0.8
 
 
+def test_api_snipes_carries_tsm_sale_avg(data_dir, monkeypatch):
+    """region_sale_avg_copper (2026-08-03, human request -- "region sale avg
+    from tsm, if it exist") rides along unconditionally, same as
+    region_sale_rate/region_median_g above."""
+    run_diff(monkeypatch)
+    tsm.CACHE_PATH.write_text(json.dumps({
+        "fetched_at": 1_700_000_000,
+        "items": {"101": {"sale_rate": 0.33, "sold_per_day": 0.8, "avg_sale_price": 18_500.0}},
+    }))
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
+    assert r.status_code == 200
+    row = r.json()["rows"][0]
+    assert row["region_sale_avg_copper"] == 18_500.0
+
+
 def test_api_snipes_sale_rate_none_when_tsm_has_no_data(data_dir, monkeypatch):
     run_diff(monkeypatch)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3})
     row = r.json()["rows"][0]
     assert row["region_sale_rate"] is None
     assert row["region_sold_per_day"] is None
+    assert row["region_sale_avg_copper"] is None
 
 
 def test_api_snipes_closes_the_realm_lock_session_before_slow_work(data_dir, monkeypatch):

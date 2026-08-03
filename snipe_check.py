@@ -855,22 +855,32 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
 
 
 def _filter_by_sale_rate(rows: list[dict], min_sale_rate: float | None) -> list[dict]:
-    """Annotates every row with `region_sale_rate`/`region_sold_per_day`
-    (both None if TSM has no data for that item -- see tsm.py's docstring
-    for why: never tracked, a caged pet, or a cache that hasn't been
-    refreshed yet) regardless of whether filtering is active, so callers
-    can always display it -- same convention as `_filter_by_appearance()`'s
-    `appearance_sources`. When min_sale_rate is set, filters to items whose
-    EU region-wide sale rate is at least that value. Read-only against
-    tsm.SaleRateCache -- the cache is only ever written by collect_all.py's
-    background loop (single-writer design, see tsm.py's own docstring for
-    why that avoids item_names.NameCache's 2026-08-01 lost-update race
-    entirely rather than needing the same merge-on-save fix)."""
+    """Annotates every row with `region_sale_rate`/`region_sold_per_day`/
+    `region_sale_avg_copper` (all None if TSM has no data for that item --
+    see tsm.py's docstring for why: never tracked, a caged pet, or a cache
+    that hasn't been refreshed yet) regardless of whether filtering is
+    active, so callers can always display it -- same convention as
+    `_filter_by_appearance()`'s `appearance_sources`. `region_sale_avg_copper`
+    (added 2026-08-03, human request -- "region sale avg from tsm, if it
+    exist") is TSM's `avgSalePrice`, already in copper (confirmed live) --
+    purely informational, unlike sale_rate it gates nothing, same
+    non-filtering role `region_median_g` already has. When min_sale_rate is
+    set, filters to items whose EU region-wide sale rate is at least that
+    value. Read-only against tsm.SaleRateCache -- the cache is only ever
+    written by collect_all.py's background loop (single-writer design, see
+    tsm.py's own docstring for why that avoids item_names.NameCache's
+    2026-08-01 lost-update race entirely rather than needing the same
+    merge-on-save fix)."""
     cache = tsm.SaleRateCache()
     for r in rows:
         entry = cache.get(r["item_id"])
         r["region_sale_rate"] = entry["sale_rate"] if entry else None
         r["region_sold_per_day"] = entry["sold_per_day"] if entry else None
+        # .get(), not entry["avg_sale_price"] -- self-heals against a cache
+        # file written before this field existed (same convention
+        # item_names.NameCache's backfill-onto-older-entries logic uses),
+        # rather than a KeyError on an otherwise-valid, just-older entry.
+        r["region_sale_avg_copper"] = entry.get("avg_sale_price") if entry else None
     if min_sale_rate is None:
         return rows
     return [r for r in rows

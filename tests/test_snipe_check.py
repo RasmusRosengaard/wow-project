@@ -1167,6 +1167,46 @@ def test_find_snipes_reports_sale_rate_without_filtering(data_dir, monkeypatch):
     assert rows[0]["region_sold_per_day"] == 1.5
 
 
+def test_find_snipes_reports_region_sale_avg_without_filtering(data_dir, monkeypatch):
+    """region_sale_avg_copper (human request, 2026-08-03 -- "region sale avg
+    from tsm, if it exist") rides along the same way region_sale_rate does:
+    attached to every row for display, gates nothing, None for an item TSM
+    has no data for. Written directly (not via write_tsm_cache(), whose
+    2-tuple shape predates this field) to control avg_sale_price precisely."""
+    run_diff(monkeypatch)
+    tsm.CACHE_PATH.write_text(json.dumps({
+        "fetched_at": 1_700_000_000,
+        "items": {"101": {"sale_rate": 0.42, "sold_per_day": 1.5, "avg_sale_price": 18_500.0}},
+    }))
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
+    assert len(rows) == 1
+    assert rows[0]["region_sale_avg_copper"] == 18_500.0
+
+
+def test_find_snipes_region_sale_avg_none_when_tsm_has_no_data(data_dir, monkeypatch):
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
+    assert len(rows) == 1
+    assert rows[0]["region_sale_avg_copper"] is None
+
+
+def test_find_snipes_region_sale_avg_none_for_cache_entry_missing_the_field(data_dir, monkeypatch):
+    """A cache file written before avg_sale_price existed (or any other
+    entry missing the key) must not crash find_snipes() -- self-heals to
+    None, same convention as item_names.NameCache's backfill logic."""
+    run_diff(monkeypatch)
+    tsm.CACHE_PATH.write_text(json.dumps({
+        "fetched_at": 1_700_000_000,
+        "items": {"101": {"sale_rate": 0.42, "sold_per_day": 1.5}},  # no avg_sale_price
+    }))
+    con = analyze.connect(SELL_CR)
+    rows = snipe_check.find_snipes(con, SELL_CR, min_discount=0.3)
+    assert len(rows) == 1
+    assert rows[0]["region_sale_avg_copper"] is None
+
+
 def test_find_snipes_min_sale_rate_filters_illiquid_items(data_dir, monkeypatch):
     """Item 101 sells 10% of days -- --min-sale-rate 0.5 should drop it;
     lowering the bar to 0.1 lets it back through."""

@@ -197,23 +197,26 @@
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
   /* Column widths (sums to 100%) -- order matches the <thead> in the markup:
      Buy realm / Item / Variant / Buy / Sell price / EU median / Sale rate % /
-     Discount % / Your account. Item gets the lion's share since it carries
-     an icon + the longest text; the three money columns match each other so
-     their coin icons/figures line up down the column. Your account (added
-     2026-08-02, human request -- see loadUserRealmAccounts()'s comment)
-     took its width mostly out of Item (26%->18%, can afford it -- icon +
-     name still fit) plus 1% off each money column; Buy realm/Variant left
-     untouched, already tight (see Sale rate %'s own 2026-08-01 comment,
-     since folded into this one). */
+     Sale avg / Discount % / Your account. Item gets the lion's share since
+     it carries an icon + the longest text; the four money columns match
+     each other so their coin icons/figures line up down the column. Sale
+     avg (added 2026-08-03, human request -- "region sale avg from tsm")
+     took its 9% out of Item (18%->15%) plus 1% off every other column
+     except Buy realm/Variant (already tight, see Sale rate %'s own
+     2026-08-01 comment). Your account (added 2026-08-02, human request --
+     see loadUserRealmAccounts()'s comment) took its width mostly out of
+     Item (26%->18%, before this same-story trim) plus 1% off each money
+     column; Buy realm/Variant left untouched both times. */
   th:nth-child(1), td:nth-child(1) { width: 11%; }
-  th:nth-child(2), td:nth-child(2) { width: 18%; }
+  th:nth-child(2), td:nth-child(2) { width: 15%; }
   th:nth-child(3), td:nth-child(3) { width: 9%; }
-  th:nth-child(4), td:nth-child(4) { width: 11%; }
-  th:nth-child(5), td:nth-child(5) { width: 11%; }
-  th:nth-child(6), td:nth-child(6) { width: 11%; }
-  th:nth-child(7), td:nth-child(7) { width: 11%; }
-  th:nth-child(8), td:nth-child(8) { width: 10%; }
-  th:nth-child(9), td:nth-child(9) { width: 8%; }
+  th:nth-child(4), td:nth-child(4) { width: 10%; }
+  th:nth-child(5), td:nth-child(5) { width: 10%; }
+  th:nth-child(6), td:nth-child(6) { width: 10%; }
+  th:nth-child(7), td:nth-child(7) { width: 10%; }
+  th:nth-child(8), td:nth-child(8) { width: 9%; }
+  th:nth-child(9), td:nth-child(9) { width: 9%; }
+  th:nth-child(10), td:nth-child(10) { width: 7%; }
   /* Fixed layout no longer lets a cell grow to fit its content, so anything
      that can run long needs an explicit truncation rule instead of silently
      overflowing into the next column -- the existing hover tooltip (see
@@ -223,8 +226,8 @@
      list (2026-08-03, human request: "display the full names of the items")
      -- see .item-name below, which wraps instead of truncating so the whole
      name is always visible without a hover. */
-  td:nth-child(1), td:nth-child(3), td:nth-child(9) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { white-space: nowrap; overflow: hidden; }
+  td:nth-child(1), td:nth-child(3), td:nth-child(10) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7), td:nth-child(8) { white-space: nowrap; overflow: hidden; }
   th {
     cursor: pointer; user-select: none; color: var(--text-dim); font-weight: 700;
     /* Wraps onto two lines rather than forcing the table wider than its
@@ -299,9 +302,11 @@
   .sus-flag { color: var(--alert); margin-left: 0.3rem; cursor: help; }
   /* price_suspect (see dashboard.py's price_suspect, added 2026-08-03) --
      same alert palette as .sus-flag (both are "consider hiding this" red),
-     but its own class since it's about the sell-side *price* being an
-     outlier, not the item's identity -- kept in the sell-price cell rather
-     than the item-cell so it sits next to the number it's actually about. */
+     own class so a row's title text can differ from .sus-flag's. Originally
+     placed in the sell-price cell (next to the number it's actually about),
+     moved into the item-cell alongside .sus-flag the same day (human
+     report: sitting apart from the other flag read as misplaced) -- both
+     warnings now live in one spot, distinguished on hover. */
   .price-flag { color: var(--alert); margin-left: 0.3rem; cursor: help; }
   /* Realm language tag (see dashboard.py's buy_realm_category) -- a quiet
      2-letter abbreviation, not a badge, since it's informational context
@@ -469,6 +474,7 @@
           <th data-sort="gold">Sell price <span class="dir"></span></th>
           <th data-sort="eu_median">EU median <span class="dir"></span></th>
           <th data-sort="sale_rate" title="EU region-wide TSM sale rate -- roughly what fraction of days this item sells at least once, region-wide. Shown as a percentage with full precision since real rates for niche items are often well under 1%.">Sale rate % <span class="dir"></span></th>
+          <th data-sort="sale_avg" title="EU region-wide TSM average sale price -- not specific to your sell realm, purely informational. Dash if TSM has no data for the item.">Sale avg <span class="dir"></span></th>
           <th data-sort="discount">Discount % <span class="dir"></span></th>
           <th data-sort="your_account" title="Which of your registered WoW accounts has a character on this buy-side realm">Your account <span class="dir"></span></th>
         </tr>
@@ -569,7 +575,12 @@ const BATCH_TOP = 10000;
 // old cache would have no price-flag field, so "Hide flagged" wouldn't hide
 // suspect-priced rows and the new flag icon wouldn't show, until the cache
 // happened to expire or the sell realm/item filter changed.
-const CACHE_VERSION = 8;
+// Bumped to 9 (2026-08-03, same day): region_sale_avg_copper was added to
+// the row shape -- an old cache would show "-" in the new Sale avg column
+// (formatMoneyOrDash() reads a missing field as null) until the cache
+// happened to expire or the sell realm/item filter changed, same reasoning
+// as every prior bump.
+const CACHE_VERSION = 9;
 // Safety net, not the primary freshness signal: even if last_modified still
 // matches, force a real refetch once a cache is this old, in case the
 // status endpoint itself is stuck/wrong for some other reason. Comfortably
@@ -697,7 +708,7 @@ const QUALITY_FILTERS = [
   { key: "legendary", label: "Legendary", test: r => r.quality === "LEGENDARY" },
 ];
 
-const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "eu_median", "sale_rate", "discount"]);
+const NUMERIC_SORT_KEYS = new Set(["buy", "gold", "eu_median", "sale_rate", "sale_avg", "discount"]);
 const SORT_VALUE = {
   buy_realm: r => (r.buy_realm_name || "").toLowerCase(),
   item: r => (r.name || String(r.item_id)).toLowerCase(),
@@ -709,6 +720,10 @@ const SORT_VALUE = {
   // same as every other nullable numeric column -- see compareRows()'s
   // null-handling comment.
   sale_rate: r => r.region_sale_rate,
+  // region_sale_avg_copper (added 2026-08-03, human request -- "region sale
+  // avg from tsm"): same null-sorts-last convention as sale_rate above,
+  // same reason (TSM has no data for the item at all).
+  sale_avg: r => r.region_sale_avg_copper,
   discount: r => r.discount_pct,
   // Not in NUMERIC_SORT_KEYS -- a string column like buy_realm/item/variant,
   // should default ascending on first click, not descending. null (no
@@ -913,6 +928,17 @@ function escapeHtml(s) {
 
 // WoW-style gold/silver/copper coin display, formatted only here at the
 // display boundary -- the API sends raw copper end to end.
+// TSM has no data for plenty of items (never tracked, a caged pet, a cold
+// cache -- see tsm.py's docstring), and unlike every other money column
+// here (buy/sell/EU median), region_sale_avg_copper can genuinely be null
+// -- formatMoney() itself has no null guard (Math.round(null) is 0, which
+// would silently render "0c" instead of showing nothing), so this wraps it
+// with the same "-" convention formatSaleRate()/the variant column already
+// use for "nothing to show."
+function formatMoneyOrDash(copper) {
+  return copper == null ? "-" : formatMoney(copper);
+}
+
 function formatMoney(copper) {
   copper = Math.round(copper);
   const gold = Math.floor(copper / 10000);
@@ -970,6 +996,9 @@ function showTooltip(row, x, y) {
     <div class="tt-row"><span class="lbl">EU median</span>${formatMoney(row.region_median_copper)}</div>
     ${row.region_sale_rate != null
       ? `<div class="tt-row"><span class="lbl">Sale rate</span><span>${formatSaleRate(row.region_sale_rate)}%${row.region_sold_per_day != null ? ` &middot; ${row.region_sold_per_day.toFixed(1)}/day` : ""}</span></div>`
+      : ""}
+    ${row.region_sale_avg_copper != null
+      ? `<div class="tt-row"><span class="lbl">Sale avg</span>${formatMoney(row.region_sale_avg_copper)}</div>`
       : ""}
     <div class="tt-row"><span class="lbl">Discount</span><span>${row.discount_pct.toFixed(1)}%</span></div>
     ${row.appearance_sources != null
@@ -1054,8 +1083,11 @@ function buildRowHtml(row, idx, group, isSub) {
   // price_suspect (see snipe_check.PRICE_SUSPECT_MULTIPLE): the sell
   // realm's own reference price is >= 10x the region median -- likely a
   // troll/joke listing on the sell side inflating discount_pct, not a
-  // real market price. About the *price*, not the item, so it sits next
-  // to the sell-price number rather than in the item-cell.
+  // real market price. Moved into the item-cell next to susFlag (2026-08-03,
+  // human report: sitting out by the sell-price number instead of next to
+  // the name read as misplaced/inconsistent next to the other flag) --
+  // both warnings now live in one spot, distinguished by their own tooltip
+  // text on hover, rather than being split across two different columns.
   const priceFlag = row.price_suspect
     ? `<span class="price-flag" title="Suspect price -- this realm's own current cheapest listing is 10x+ the EU median, likely a troll/joke listing inflating the discount shown here.">&#9888;</span>`
     : "";
@@ -1064,12 +1096,13 @@ function buildRowHtml(row, idx, group, isSub) {
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}${row.buy_realm_category ? " &middot; " + escapeHtml(row.buy_realm_category) : ""}">${escapeHtml(row.buy_realm_name)}${row.buy_realm_category ? ` <span class="realm-lang">${escapeHtml(realmLangTag(row.buy_realm_category))}</span>` : ""}</td>
-      <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${escapeHtml(row.name ?? row.item_id)}</span>${susFlag}${toggle}</div></td>
+      <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${escapeHtml(row.name ?? row.item_id)}</span>${susFlag}${priceFlag}${toggle}</div></td>
       <td class="mono" title="${escapeHtml(row.variant_raw ?? "")}">${escapeHtml(row.variant)}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
-      <td class="num">${formatMoney(row.sell_copper)}${priceFlag}</td>
+      <td class="num">${formatMoney(row.sell_copper)}</td>
       <td class="num">${formatMoney(row.region_median_copper)}</td>
       <td class="num">${formatSaleRate(row.region_sale_rate)}</td>
+      <td class="num">${formatMoneyOrDash(row.region_sale_avg_copper)}</td>
       <td class="num">${row.discount_pct.toFixed(1)}</td>
       <td title="${escapeHtml(yourAccount)}">${escapeHtml(yourAccount)}</td>
     </tr>`;

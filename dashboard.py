@@ -346,6 +346,13 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # in dashboard.html) -- not passed as a server query param here.
         "region_sale_rate": r["region_sale_rate"],
         "region_sold_per_day": r["region_sold_per_day"],
+        # TSM EU region-wide average sale price (added 2026-08-03, human
+        # request -- "region sale avg from tsm, if it exist"), already in
+        # copper -- same None-if-untracked convention as region_sale_rate
+        # above (see snipe_check._filter_by_sale_rate()/tsm.py). Purely
+        # informational, gates nothing -- same role region_median_copper
+        # already has.
+        "region_sale_avg_copper": r["region_sale_avg_copper"],
     }
     if names is not None:
         out["name"] = names.get(r["item_id"], r["pet_species_id"])

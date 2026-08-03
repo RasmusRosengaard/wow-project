@@ -13,10 +13,16 @@ realm's own reference price is >= 10x the EU region median — a recalibrated
 revival of the `sell_price_suspect` flag removed 2026-07-31 (median instead
 of mean, 10x instead of 500x — see `CLAUDE.md`'s `snipe_check.py` row for
 the full reasoning). No new checkbox: rides the dashboard's existing "Hide
-flagged (sus items)" checkbox alongside `sus_item_suspect`, with its own
-`.price-flag` marker next to the sell-price number rather than the item
-name. Exposed unconditionally by `/api/snipes` (pure SQL, no `NameCache`
-lookup needed).
+flagged (sus items)" checkbox alongside `sus_item_suspect`. Its `.price-flag`
+marker originally sat next to the sell-price number, moved into the item-cell
+alongside the sus-item flag the same day (human report comparing two real
+rows: sitting in a different column read as inconsistent) — both warnings
+now live in one spot next to the item name. Also same day: a new **Sale
+avg** column shows TSM's EU-region-wide average sale price
+(`region_sale_avg_copper`, human request — "region sale avg from tsm, if it
+exist"), sortable, dash when TSM has no data for the item. All exposed
+unconditionally by `/api/snipes` (pure SQL/cache lookups, no `NameCache`
+cost).
 
 2026-08-02 — new feature, **Watchlist** (`watchlist.py`,
 `tsm_import.py`, `static/watchlist.html`): a subscribed user tracks specific

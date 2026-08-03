@@ -89,6 +89,16 @@ def _fetch_csv() -> dict[int, dict]:
             out[item_id] = {
                 "sale_rate": float(row["saleRate"]),
                 "sold_per_day": float(row["soldPerDay"]),
+                # avgSalePrice (added 2026-08-03, human request -- "region
+                # sale avg"): TSM's region-wide average sale price, already
+                # in copper (confirmed live -- item 2624/Thinking Cap:
+                # avgSalePrice 28,500,000 = 2850g, in line with its
+                # marketValue being six figures too). Same column as
+                # saleRate/soldPerDay, so it shares their availability --
+                # nothing special needed to handle "if it exists": a missing
+                # entry in this dict already means "no TSM data for this
+                # item" for every field at once, same as today.
+                "avg_sale_price": float(row["avgSalePrice"]),
             }
         except (KeyError, ValueError):
             continue  # malformed row -- skip it, don't fail the whole batch
@@ -137,9 +147,9 @@ class SaleRateCache:
         }))
 
     def get(self, item_id: int) -> dict | None:
-        """{"sale_rate": float, "sold_per_day": float}, or None if TSM has
-        no data for this item (never tracked, or a cache that hasn't been
-        refreshed yet)."""
+        """{"sale_rate": float, "sold_per_day": float, "avg_sale_price":
+        float (copper)}, or None if TSM has no data for this item (never
+        tracked, or a cache that hasn't been refreshed yet)."""
         return self._items.get(item_id)
 
 
