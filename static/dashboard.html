@@ -437,6 +437,9 @@
     <label class="auto-label" title="Old, likely-obsolete gear: neck/ring/trinket items below ilvl 150 from long-superseded expansions (no transmog value, usually no real market), plus the 52 confirmed class-starter armor pieces (e.g. Paladin's Girdle) every new character gets. Can't tell a dead item apart from a genuinely valuable twink item, so this is never filtered server-side -- toggle to judge for yourself.">
       <input id="hide_sus_items" type="checkbox"> Hide flagged (sniper filter)
     </label>
+    <label class="auto-label" title="Only show rows where the buy price is below TSM's EU region-wide average sale price (the 'Sale avg' column). Items TSM has no average-sale-price data for are excluded when this is set.">
+      <input id="below_sale_avg" type="checkbox"> Buy below sale avg
+    </label>
     <div>
       <div class="filters-heading">Item class</div>
       <div class="item-class-filters">
@@ -855,6 +858,7 @@ function applyFilters(rows) {
   const minSaleRate = minSaleRatePctRaw ? Number(minSaleRatePctRaw) / 100 : null;
   const uniqueOnly = $("unique_appearance").checked;
   const hideSusItems = $("hide_sus_items").checked;
+  const belowSaleAvg = $("below_sale_avg").checked;
   const activeClasses = ITEM_CLASS_FILTERS.filter(c => $(`class_${c.key}`).checked);
   const activeQualities = QUALITY_FILTERS.filter(q => $(`quality_${q.key}`).checked);
 
@@ -873,6 +877,10 @@ function applyFilters(rows) {
     // is actually set, matching snipe_check._filter_by_sale_rate()'s
     // server-side (CLI/API) behavior.
     if (minSaleRate != null && (r.region_sale_rate == null || r.region_sale_rate < minSaleRate)) return false;
+    // region_sale_avg_copper is null for anything TSM has no average-sale-
+    // price data for -- same "unknown doesn't count as passing" convention
+    // as minSaleRate above, not "let it through since we can't tell."
+    if (belowSaleAvg && (r.region_sale_avg_copper == null || r.buy_copper >= r.region_sale_avg_copper)) return false;
     // "Unique" means no other item grants the same transmog look, excluding
     // profession tool/accessory slots (is_profession_item, see dashboard.py)
     // which aren't part of the visible paperdoll model at all -- mirrors
@@ -1504,6 +1512,10 @@ $("unique_appearance").addEventListener("change", () => {
   renderTable();
 });
 $("hide_sus_items").addEventListener("change", () => {
+  hideTooltip();
+  renderTable();
+});
+$("below_sale_avg").addEventListener("change", () => {
   hideTooltip();
   renderTable();
 });
