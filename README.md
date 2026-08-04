@@ -62,7 +62,8 @@ above.
 - **Relational data**: Postgres, via async SQLAlchemy (`db.py`) — users,
   sessions, subscription state, visitor activity.
 - **Admin** (`admin.py`): superuser-only `/admin` page — who's on the site
-  now, plus the history of every client IP that has hit `/api/*`. One
+  now, the history of every client IP that has hit `/api/*`, and the list of
+  registered accounts with email and signup date. One
   process, not a separate service: the middleware that records traffic has
   to run where the traffic is served. Requests only touch an in-memory
   buffer; a background task flushes it to Postgres once a minute, because a

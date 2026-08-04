@@ -34,7 +34,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import db
@@ -61,6 +61,9 @@ MAX_IP_LEN = 45
 # relative to a table that only grows by distinct visitor, but bounded so
 # the endpoint can't degrade into an unbounded scan years from now.
 VISITOR_HISTORY_LIMIT = 500
+# Same bounding rationale for the signup list. Far above any plausible near-
+# term account count, so in practice the page shows everyone.
+SIGNUP_LIST_LIMIT = 500
 
 # ip -> last-seen unix timestamp. Live "who's here now" buffer.
 _recent_activity: dict[str, float] = {}
@@ -257,4 +260,57 @@ async def api_admin_visitors(user: User = Depends(current_superuser),
             {**_row(r, now), "is_active": _as_utc(r.last_seen) >= active_cutoff}
             for r in rows
         ],
+    }
+
+
+@router.get("/signups")
+async def api_admin_signups(user: User = Depends(current_superuser),
+                            session: AsyncSession = Depends(get_async_session)) -> dict:
+    """Registered accounts, newest signup first (2026-08-04 human request:
+    "new users actual signups also with mail").
+
+    Distinct from /visitors, which counts anonymous traffic by IP -- this is
+    the real account list, so the two answer different questions and neither
+    subsumes the other.
+
+    Fields are an explicit allowlist, not the whole row: a User also carries
+    hashed_password and the Stripe customer/subscription ids, and none of
+    those belong in a JSON response, even a superuser-only one. Email is
+    included because it *is* the request -- and it's the only durable
+    identifier an account has, since nickname stays NULL until a first forum
+    post.
+
+    created_at is NULL for every account predating the column (see db.User)
+    -- reported as null rather than guessed at; the page shows "before
+    tracking".
+
+    Ordered created_at DESC NULLS LAST so real recent signups sort to the top
+    and undated legacy accounts sink to the bottom -- Postgres defaults to
+    NULLS FIRST on DESC, which would bury exactly what's being looked for."""
+    now = datetime.now(timezone.utc)
+    rows = (await session.execute(
+        select(User).order_by(User.created_at.desc().nullslast()).limit(SIGNUP_LIST_LIMIT)
+    )).scalars().all()
+    total = (await session.execute(select(func.count()).select_from(User))).scalar() or 0
+
+    signups = []
+    for u in rows:
+        created = _as_utc(u.created_at) if u.created_at is not None else None
+        signups.append({
+            "email": u.email,
+            "nickname": u.nickname,
+            "created_at": created.isoformat() if created else None,
+            "signed_up_seconds_ago": (max(0, round((now - created).total_seconds()))
+                                      if created else None),
+            # Straight from billing.py's Stripe webhook; None = never subscribed.
+            "subscription_status": u.subscription_status,
+            "is_verified": u.is_verified,
+            "is_active": u.is_active,
+            "is_superuser": u.is_superuser,
+        })
+    return {
+        "count": len(signups),
+        "total": total,
+        "limit": SIGNUP_LIST_LIMIT,
+        "signups": signups,
     }

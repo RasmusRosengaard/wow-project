@@ -56,6 +56,20 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # pastes in themselves (no OAuth) -- NULL means Watchlist triggers are
     # tracked but never delivered anywhere for this account.
     discord_webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Signup timestamp (added 2026-08-04 for the admin page's signup list --
+    # FastAPI-Users' base table has no such column, and uuid4 ids carry no
+    # embedded time, so there was no way to order accounts by age).
+    # Deliberately NULLABLE with no backfill: accounts that existed before
+    # this shipped have no recoverable signup date, and stamping them all
+    # with the migration's own timestamp would invent one -- every
+    # pre-existing account would read as "signed up the day this deployed",
+    # which is worse than admitting we don't know. The admin page renders
+    # NULL as "before tracking". New registrations get it from this default
+    # automatically (SQLAlchemy applies it on insert, so auth.py's
+    # UserManager needs no change).
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        default=lambda: datetime.now(timezone.utc))
 
 
 class ForumPost(Base):

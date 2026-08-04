@@ -138,8 +138,14 @@ several entries around it, all dated 2026-08-01.
   indefinitely. A superuser-only `GET /api/admin/active-users` shows who's
   currently on the site.
 - **Admin activity page** (2026-08-04, human request): `/admin`, superuser
-  only, showing who's on the site now and the full history of every client
-  IP that has ever hit `/api/*` (first/last seen, lifetime hit count).
+  only, showing who's on the site now, the full history of every client
+  IP that has ever hit `/api/*` (first/last seen, lifetime hit count), and
+  a **signups list** — every registered account with its email, nickname,
+  signup date and subscription/verification status. The two answer
+  different questions (anonymous traffic vs real accounts) and neither
+  subsumes the other. Signup dates come from `User.created_at`, added the
+  same day; accounts predating it read "before tracking" rather than being
+  backfilled with a fabricated date.
   Lives in `admin.py` + `db.VisitorIP`, not a separate Railway service —
   the middleware has to run in the process it observes. Requests stay
   memory-only; a background loop flushes to Postgres once a minute.

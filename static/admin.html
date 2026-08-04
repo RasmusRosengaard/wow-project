@@ -109,6 +109,16 @@
     background: var(--verified); margin-right: 0.45rem; vertical-align: middle;
   }
   .dot.off { background: var(--hairline-strong); }
+  .badge {
+    display: inline-block; font-size: 0.6rem; text-transform: uppercase;
+    letter-spacing: 0.05em; font-weight: 700; border-radius: 3px;
+    padding: 0.12rem 0.35rem; border: 1px solid currentColor; margin-right: 0.3rem;
+  }
+  .badge.sub { color: var(--verified); }
+  .badge.none { color: var(--text-dim); }
+  .badge.warn { color: var(--alert); }
+  .badge.admin { color: var(--bullion); }
+  .dim { color: var(--text-dim); }
   .empty, .note { padding: 1.1rem; color: var(--text-dim); font-size: 0.82rem; }
   .note { padding-top: 0; }
   .denied {
@@ -158,9 +168,24 @@
   <div id="content" hidden>
     <div class="stats">
       <div class="stat"><div class="n" id="stat-active">&mdash;</div><div class="k">Active now</div></div>
+      <div class="stat"><div class="n" id="stat-signups">&mdash;</div><div class="k">Registered users</div></div>
       <div class="stat"><div class="n" id="stat-total">&mdash;</div><div class="k">Visitors all time</div></div>
       <div class="stat"><div class="n" id="stat-hits">&mdash;</div><div class="k">API hits all time</div></div>
     </div>
+
+    <section>
+      <h2>Signups</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>Email</th><th>Nickname</th><th>Signed up</th><th>Status</th>
+          </tr></thead>
+          <tbody id="signup-body"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="signup-empty" hidden>No registered accounts yet.</div>
+      <div class="note" id="signup-note" hidden></div>
+    </section>
 
     <section>
       <h2 id="active-heading">Active now</h2>
@@ -254,10 +279,65 @@ function show(id, visible) {
   document.getElementById(id).hidden = !visible;
 }
 
+function badge(text, cls) {
+  const b = document.createElement("span");
+  b.className = "badge " + cls;
+  b.textContent = text;
+  return b;
+}
+
+// Same textContent-only rule as renderRows, and it matters more here: email
+// and nickname are values the *user* chose at registration, so they're the
+// most directly attacker-controlled strings on the page.
+function renderSignups(tbody, entries) {
+  tbody.replaceChildren();
+  for (const e of entries) {
+    const tr = document.createElement("tr");
+
+    const email = document.createElement("td");
+    email.textContent = e.email;
+    tr.append(email);
+
+    const nick = document.createElement("td");
+    if (e.nickname) {
+      nick.textContent = e.nickname;
+    } else {
+      nick.textContent = "—";
+      nick.className = "dim";
+    }
+    tr.append(nick);
+
+    const when = document.createElement("td");
+    if (e.created_at) {
+      when.textContent = relTime(e.signed_up_seconds_ago);
+      when.title = absTime(e.created_at);
+    } else {
+      // Accounts predating the created_at column have no recoverable signup
+      // date -- say so rather than showing a fabricated one.
+      when.textContent = "before tracking";
+      when.className = "dim";
+      when.title = "Registered before signup dates were recorded (2026-08-04)";
+    }
+    tr.append(when);
+
+    const status = document.createElement("td");
+    if (e.is_superuser) status.append(badge("admin", "admin"));
+    status.append(e.subscription_status === "active"
+      ? badge("subscribed", "sub")
+      : badge(e.subscription_status || "free", "none"));
+    if (!e.is_verified) status.append(badge("unverified", "warn"));
+    if (!e.is_active) status.append(badge("inactive", "warn"));
+    tr.append(status);
+
+    tbody.append(tr);
+  }
+}
+
 async function load() {
-  const [activeRes, historyRes] = await Promise.all([
+  const [activeRes, historyRes, signupRes] = await Promise.all([
     fetch("/api/admin/active-users"),
     fetch("/api/admin/visitors"),
+    fetch("/api/admin/signups"),
   ]);
 
   // 401 (not logged in) and 403 (logged in, not a superuser) get the same
@@ -267,21 +347,35 @@ async function load() {
     show("content", false);
     return false;
   }
-  if (!activeRes.ok || !historyRes.ok) return true;
+  if (!activeRes.ok || !historyRes.ok || !signupRes.ok) return true;
 
   const active = await activeRes.json();
   const history = await historyRes.json();
+  const signups = await signupRes.json();
 
   show("denied", false);
   show("content", true);
 
   document.getElementById("stat-active").textContent = active.count.toLocaleString();
+  // `total`, not `count` -- count is capped by the endpoint's limit, and the
+  // tile is meant to be the real number of accounts.
+  document.getElementById("stat-signups").textContent = signups.total.toLocaleString();
   document.getElementById("stat-total").textContent = history.count.toLocaleString();
   document.getElementById("stat-hits").textContent =
     history.visitors.reduce((sum, v) => sum + v.hit_count, 0).toLocaleString();
 
   document.getElementById("active-heading").textContent =
     "Active now (last " + Math.round(active.window_seconds / 60) + " min)";
+
+  renderSignups(document.getElementById("signup-body"), signups.signups);
+  show("signup-empty", signups.count === 0);
+  const signupsTruncated = signups.total > signups.count;
+  show("signup-note", signupsTruncated);
+  if (signupsTruncated) {
+    document.getElementById("signup-note").textContent =
+      "Showing the " + signups.count.toLocaleString() + " most recent of " +
+      signups.total.toLocaleString() + " accounts.";
+  }
 
   renderRows(document.getElementById("active-body"), active.ips, false);
   show("active-empty", active.count === 0);

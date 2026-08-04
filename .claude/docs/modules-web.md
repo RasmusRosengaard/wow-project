@@ -60,8 +60,25 @@ Superuser-only activity tracking + visitor history (split out of
 `dashboard.py` 2026-08-04). `current_superuser` (403 for a logged-in
 non-superuser, on top of `current_active_user`'s 401) gates every route:
 `GET /api/admin/active-users` (`last_seen` within `ACTIVE_WINDOW_SECONDS`,
-15 min) and `GET /api/admin/visitors` (full history, newest first, capped at
-`VISITOR_HISTORY_LIMIT`); `/admin` → `admin.html` renders both.
+15 min), `GET /api/admin/visitors` (full history, newest first, capped at
+`VISITOR_HISTORY_LIMIT`) and `GET /api/admin/signups` (registered accounts
+with email, newest first, capped at `SIGNUP_LIST_LIMIT`); `/admin` →
+`admin.html` renders all three.
+
+`/signups` returns an **explicit field allowlist**, never the whole `User`
+row — that row also carries `hashed_password` and the Stripe customer/
+subscription ids, and a test asserts the exact key set so a future column
+can't leak by default. It reads `db.User.created_at`, added 2026-08-04
+because FastAPI-Users' base table has no signup timestamp and `uuid4` ids
+carry no embedded time. That column is **nullable with no backfill**:
+accounts predating it have no recoverable signup date, so they stay NULL and
+the page shows "before tracking" rather than inventing one. Ordering is
+`created_at DESC NULLS LAST` — Postgres defaults to NULLS FIRST on DESC,
+which would bury real recent signups under the legacy rows. Note that
+SQLAlchemy applies the column default whenever the attribute is None at
+flush, so a NULL `created_at` cannot be produced through the model; only the
+migration's pre-existing rows have one (tests reproduce that with a
+follow-up `UPDATE`).
 
 **The two-layer split is the whole design and must not be collapsed.**
 `track_activity` writes only to two in-process dicts (`_recent_activity` for

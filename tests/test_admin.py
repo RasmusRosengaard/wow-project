@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import admin
@@ -290,6 +290,110 @@ def test_visitors_is_capped(as_superuser, session_factory, monkeypatch):
     assert body["count"] == 2 and body["limit"] == 2
     # Newest kept, oldest dropped.
     assert [v["ip"] for v in body["visitors"]] == ["203.0.113.0", "203.0.113.1"]
+
+
+# --- signups -----------------------------------------------------------
+
+
+def _seed_user(factory, email, *, created_at=None, nickname=None,
+               subscription_status=None, is_superuser=False, is_verified=True,
+               is_active=True):
+    """created_at=None seeds a *legacy* row -- one that predates the column.
+
+    It needs a follow-up UPDATE because SQLAlchemy applies a column default
+    whenever the attribute is None at flush time, so an explicit
+    `created_at=None` on the model still comes back stamped with now(). That
+    is correct behaviour for real registrations (which must always get a
+    date), and it means the only rows that can legitimately be NULL are the
+    ones the migration added the column to -- exactly what this reproduces."""
+    async def _run():
+        async with factory() as session:
+            session.add(User(email=email, hashed_password="x", created_at=created_at,
+                             nickname=nickname, subscription_status=subscription_status,
+                             is_superuser=is_superuser, is_verified=is_verified,
+                             is_active=is_active))
+            await session.commit()
+            if created_at is None:
+                await session.execute(
+                    update(User).where(User.email == email).values(created_at=None))
+                await session.commit()
+    asyncio.run(_run())
+
+
+def test_signups_requires_superuser(as_plain_user):
+    assert client.get("/api/admin/signups").status_code == 403
+
+
+def test_signups_lists_accounts_with_email(as_superuser, session_factory):
+    """The literal ask: "new users actual signups also with mail"."""
+    _seed_user(session_factory, "new@example.com",
+               created_at=datetime.now(timezone.utc), nickname="Sniper")
+    body = client.get("/api/admin/signups").json()
+    entry = next(e for e in body["signups"] if e["email"] == "new@example.com")
+    assert entry["nickname"] == "Sniper"
+    assert entry["signed_up_seconds_ago"] < 60
+    assert body["total"] == 1
+
+
+def test_signups_orders_newest_first_with_undated_last(as_superuser, session_factory):
+    """created_at DESC NULLS LAST -- Postgres defaults to NULLS FIRST on
+    DESC, which would bury real recent signups under legacy accounts."""
+    now = datetime.now(timezone.utc)
+    _seed_user(session_factory, "old@example.com", created_at=now - timedelta(days=10))
+    _seed_user(session_factory, "legacy@example.com", created_at=None)
+    _seed_user(session_factory, "newest@example.com", created_at=now)
+    emails = [e["email"] for e in client.get("/api/admin/signups").json()["signups"]]
+    assert emails == ["newest@example.com", "old@example.com", "legacy@example.com"]
+
+
+def test_signups_reports_missing_created_at_as_null(as_superuser, session_factory):
+    """An account predating the column has no recoverable signup date; it
+    must come back null rather than being invented as "now"."""
+    _seed_user(session_factory, "legacy@example.com", created_at=None)
+    (entry,) = client.get("/api/admin/signups").json()["signups"]
+    assert entry["created_at"] is None
+    assert entry["signed_up_seconds_ago"] is None
+
+
+def test_signups_never_exposes_secrets(as_superuser, session_factory):
+    """The User row carries hashed_password and Stripe ids -- the response is
+    an explicit allowlist, so a future column can't leak by default."""
+    _seed_user(session_factory, "new@example.com", created_at=datetime.now(timezone.utc))
+    (entry,) = client.get("/api/admin/signups").json()["signups"]
+    assert set(entry) == {"email", "nickname", "created_at", "signed_up_seconds_ago",
+                          "subscription_status", "is_verified", "is_active", "is_superuser"}
+
+
+def test_signups_surfaces_subscription_and_flags(as_superuser, session_factory):
+    _seed_user(session_factory, "sub@example.com", created_at=datetime.now(timezone.utc),
+               subscription_status="active", is_superuser=True, is_verified=False)
+    (entry,) = client.get("/api/admin/signups").json()["signups"]
+    assert entry["subscription_status"] == "active"
+    assert entry["is_superuser"] is True and entry["is_verified"] is False
+
+
+def test_signups_total_counts_beyond_the_page_limit(as_superuser, session_factory,
+                                                    monkeypatch):
+    """`total` must be the real account count, not the truncated page length
+    -- the stat tile reads it."""
+    monkeypatch.setattr(admin, "SIGNUP_LIST_LIMIT", 2)
+    now = datetime.now(timezone.utc)
+    for i in range(4):
+        _seed_user(session_factory, f"u{i}@example.com", created_at=now - timedelta(hours=i))
+    body = client.get("/api/admin/signups").json()
+    assert body["count"] == 2 and body["total"] == 4
+
+
+def test_new_user_gets_created_at_automatically(session_factory):
+    """db.User.created_at's default must apply on insert -- fastapi-users'
+    UserManager doesn't set it, so registration relies entirely on this."""
+    async def _run():
+        async with session_factory() as session:
+            session.add(User(email="auto@example.com", hashed_password="x"))
+            await session.commit()
+            return (await session.execute(
+                select(User).where(User.email == "auto@example.com"))).scalar_one()
+    assert asyncio.run(_run()).created_at is not None
 
 
 def test_admin_page_is_served():

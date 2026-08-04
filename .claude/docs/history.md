@@ -3139,3 +3139,57 @@ is EU-based serving EU users, and there is a paid tier. Nothing currently
 deletes rows and `static/` has no privacy policy page. A retention sweep in
 the existing flush loop is cheap to add — left to the human, since it's a
 policy call, not an implementation one.
+
+## Admin signups list — `User.created_at` (2026-08-04, same day)
+
+Follow-up request to the admin page: "add new users actual signups also with
+mail". The IP tracking counts anonymous traffic; this is the real account
+list, so `GET /api/admin/signups` is a separate endpoint rather than an
+extension of `/visitors` — the two answer different questions and neither
+subsumes the other.
+
+**There was no signup timestamp to sort by.** FastAPI-Users' base table has
+`id`/`email`/`hashed_password`/`is_active`/`is_verified` and nothing
+temporal, and the ids are `uuid4`, which (unlike uuid1/uuid7) carries no
+embedded time — so account age was genuinely unrecoverable, not merely
+unexposed. Hence a new `User.created_at`.
+
+**The column is nullable with no backfill, deliberately.** A
+`server_default=now()` on the migration would have stamped every
+pre-existing account with the deploy timestamp, making the whole existing
+user base read as "signed up the day this shipped" — inventing data rather
+than admitting its absence. They stay NULL and the page renders "before
+tracking". Same reasoning as `VisitorIP.first_seen`'s docstring.
+
+Two consequences worth knowing, both found by tests rather than reasoned
+about up front:
+
+- **`ORDER BY created_at DESC` alone is wrong.** Postgres sorts NULLS FIRST
+  on DESC, so every undated legacy account would sit above the recent
+  signups the page exists to show. Needs `.nullslast()`.
+- **A NULL `created_at` cannot be produced through the ORM.** SQLAlchemy
+  applies a column default whenever the attribute is None at flush time, so
+  even an explicit `User(created_at=None)` comes back stamped with `now()`.
+  That is correct for real registrations — they must always get a date, and
+  it means `auth.py`'s `UserManager` needed no change at all — but it means
+  the only legitimately-NULL rows are the ones the migration added the
+  column to. The test seeding a "legacy" account does a follow-up `UPDATE`
+  to reproduce that state honestly, rather than weakening the model.
+
+**The response is an explicit field allowlist, not the row.** A `User` also
+carries `hashed_password`, `stripe_customer_id` and
+`stripe_subscription_id`; none of those belong in a JSON response even a
+superuser-only one, and a test asserts the exact key set so a column added
+later can't leak by default. Email is included because it *is* the request —
+and it's the only durable identifier an account has, since `nickname` stays
+NULL until a first forum post.
+
+`admin.html`'s signup rows are built with `textContent` like the IP rows,
+and it matters more here: email and nickname are strings the user chose at
+registration, so they are the most directly attacker-controlled values on
+the page.
+
+Verified in a browser against a seeded mix (brand-new unverified, active
+subscriber, free tier, cancelled+inactive, superuser, and one legacy account
+with no date) — ordering, badges, and the "before tracking" fallback all
+render correctly in both themes, no console errors.
