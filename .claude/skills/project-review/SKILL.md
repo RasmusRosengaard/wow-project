@@ -62,13 +62,15 @@ If the diff touches `fetch_snapshot.market_key()`, `bonus_key()`, or
 
 ## Tests
 
-- [ ] `python -m pytest -q` passes.
+- [ ] The tests covering the change pass (`tests/test_<module>.py`; full suite
+      for `db.py`/`auth.py`/`conftest.py` or anything cross-cutting). CI runs
+      all 441 on push and gates the deploy — see `/ship` step 2.
 - [ ] If the diff adds or changes a FastAPI route dependency (anything in
-      `dashboard.py`, `auth.py`, `db.py`): also run
-      `env -u DATABASE_URL python -m pytest -q` (Bash) before pushing. CI has
-      no `DATABASE_URL` set; a local `.env` can mask a missing test-fixture
-      override and pass locally while failing in CI — this has happened for
-      real in this project (see CLAUDE.md's CI-incident writeup).
+      `dashboard.py`, `auth.py`, `db.py`): does the touching test file point
+      that seam at throwaway SQLite? `tests/conftest.py`'s `no_real_database`
+      guard fails loudly if not. Fix the test, never weaken the guard — it is
+      what stops the "green locally, red in CI" asymmetry that cost 17 red CI
+      tests on 2026-08-01 (see HISTORY.md).
 - [ ] New behavior traced from a real production bug: is there a regression
       test using the *actual* observed values (item id, bonus_key, base
       level, price), not invented-but-plausible ones?

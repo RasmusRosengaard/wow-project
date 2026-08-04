@@ -467,7 +467,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 | Anonymous (no-account) dashboard access | `db.AnonSession`, `auth.resolve_or_create_anon_session()`, `dashboard.ensure_anon_cookie`/`_enforce_anon_realm_lock` (added 2026-08-03) |
 | Public pricing page | `static/pricing.html`, `GET /pricing` in `dashboard.py` |
 | Hosting | `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` |
-| Tests | `tests/` (`pytest -q`; run `env -u DATABASE_URL pytest -q` too before pushing), no external services needed |
+| Tests | `tests/` (`pytest -q`; locally just the affected `tests/test_<module>.py` — CI runs the full suite and gates the deploy), no external services needed |
 
 ## Where to look for more
 
