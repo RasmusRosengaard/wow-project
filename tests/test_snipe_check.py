@@ -709,6 +709,148 @@ def test_find_snipes_price_suspect_flags_sell_price_over_10x_median(tmp_path, mo
     assert by_item[ITEM_NOT_SUSPECT]["price_suspect"] is False
 
 
+def test_find_snipes_sniper_filter_suspect_flags_a_crowded_price(tmp_path, monkeypatch):
+    """sniper_filter_suspect ("Sniper filter", human request, 2026-08-04):
+    flags a buy-side candidate whose price is corroborated by
+    SNIPER_FILTER_MIN_REALMS+ other unique realms clustering within
+    SNIPER_FILTER_CLOSE_MULTIPLE of it. Real numbers from the human's own
+    example screenshot: buy price 400g, next SNIPER_FILTER_N (5) other
+    realms at 400/428/444/500/500g -- median 444g, well inside 1.7x of
+    400g. A second item with the same 400g buy price but every other realm
+    at 5000g (12.5x away, a genuinely isolated cheap listing) proves the
+    flag is a real threshold check, not always-true."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    assert snipe_check.SNIPER_FILTER_N == 5  # test provides exactly 5 other realms
+
+    ITEM_CROWDED = 930      # cluster sits close to the buy price
+    ITEM_NOT_CROWDED = 931  # cluster sits far above the buy price
+
+    sell_price_copper = 100_000_000  # 10,000g -- comfortably above both, for a real discount
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [
+        snap_row(9999, T1, item_id=103),
+        snap_row(1, T1, item_id=ITEM_CROWDED, buyout=sell_price_copper),
+        snap_row(2, T1, item_id=ITEM_NOT_CROWDED, buyout=sell_price_copper),
+    ]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    BUY_REALM = 9101
+    OTHER_REALMS = [9102, 9103, 9104, 9105, 9106]  # exactly SNIPER_FILTER_N=5
+
+    # ITEM_CROWDED: buy realm at 400g, next 5 unique realms at
+    # 400/428/444/500/500g -- median 444g, within 1.7x of 400g (680g).
+    crowded_prices_g = [400, 428, 444, 500, 500]
+    rows = [listing_row(BUY_REALM, item_id=ITEM_CROWDED, buyout=4_000_000, auction_id=9000)]
+    for i, (cr, price_g) in enumerate(zip(OTHER_REALMS, crowded_prices_g)):
+        rows.append(listing_row(cr, item_id=ITEM_CROWDED, buyout=price_g * 10_000, auction_id=9010 + i))
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA), listings_dir / "crowded.parquet")
+
+    # ITEM_NOT_CROWDED: same 400g buy price, but every other realm sits at
+    # 5000g (12.5x away) -- a genuinely isolated cheap listing.
+    rows2 = [listing_row(BUY_REALM, item_id=ITEM_NOT_CROWDED, buyout=4_000_000, auction_id=9100)]
+    for i, cr in enumerate(OTHER_REALMS):
+        rows2.append(listing_row(cr, item_id=ITEM_NOT_CROWDED, buyout=50_000_000, auction_id=9110 + i))
+    pq.write_table(pa.Table.from_pylist(rows2, schema=LISTING_SCHEMA), listings_dir / "not_crowded.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows_out = snipe_check.find_snipes(con, SELL_CR, min_discount=0)
+    by_item_realm = {(r["item_id"], r["buy_realm"]): r for r in rows_out}
+
+    assert by_item_realm[(ITEM_CROWDED, BUY_REALM)]["sniper_filter_suspect"] is True
+    assert by_item_realm[(ITEM_NOT_CROWDED, BUY_REALM)]["sniper_filter_suspect"] is False
+
+
+def test_find_snipes_sniper_filter_suspect_requires_minimum_realm_count(tmp_path, monkeypatch):
+    """Fewer than SNIPER_FILTER_MIN_REALMS other realms even having a
+    listing means there isn't enough data to judge clustering -- the flag
+    stays False (not enough evidence either way), never True, even when the
+    few realms that do exist happen to sit close to the buy price."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    assert snipe_check.SNIPER_FILTER_MIN_REALMS == 3  # test provides exactly 2 other realms: too few
+
+    ITEM = 940
+    sell_price_copper = 100_000_000  # 10,000g
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [snap_row(9999, T1, item_id=103), snap_row(1, T1, item_id=ITEM, buyout=sell_price_copper)]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    BUY_REALM = 9201
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    rows = [
+        listing_row(BUY_REALM, item_id=ITEM, buyout=4_000_000, auction_id=9200),  # 400g
+        listing_row(9202, item_id=ITEM, buyout=4_100_000, auction_id=9201),  # 410g -- close
+        listing_row(9203, item_id=ITEM, buyout=4_200_000, auction_id=9202),  # 420g -- close, but only 2 others
+    ]
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA), listings_dir / "sparse.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows_out = snipe_check.find_snipes(con, SELL_CR, min_discount=0)
+    by_realm = {r["buy_realm"]: r for r in rows_out if r["item_id"] == ITEM}
+    assert by_realm[BUY_REALM]["sniper_filter_suspect"] is False
+
+
+def test_find_snipes_sniper_filter_suspect_exempts_high_value_items(tmp_path, monkeypatch):
+    """SNIPER_FILTER_HIGH_VALUE_EXEMPT_G (human request, 2026-08-04): never
+    flags once both the sell price and region median clear the ceiling,
+    even when the cluster is tight enough it would otherwise trip the flag
+    -- a proportionally close cluster on an expensive item can still be a
+    huge absolute gold gap."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+
+    exempt_g = snipe_check.SNIPER_FILTER_HIGH_VALUE_EXEMPT_G
+    high_price_g = exempt_g * 3  # comfortably clears the 200k ceiling
+
+    ITEM = 950
+    sell_price_copper = int(high_price_g * 4 * 10_000)  # well above buy price and region median both
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [snap_row(9999, T1, item_id=103), snap_row(1, T1, item_id=ITEM, buyout=sell_price_copper)]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    BUY_REALM = 9301
+    OTHER_REALMS = [9302, 9303, 9304, 9305, 9306]
+    # Tight cluster right at high_price_g -- would trip the flag if not for
+    # the high-value exemption (region median == high_price_g > 200k).
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    rows = [listing_row(BUY_REALM, item_id=ITEM, buyout=int(high_price_g * 10_000), auction_id=9300)]
+    for i, cr in enumerate(OTHER_REALMS):
+        rows.append(listing_row(cr, item_id=ITEM, buyout=int(high_price_g * 10_000), auction_id=9310 + i))
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA), listings_dir / "high_value.parquet")
+
+    run_diff(monkeypatch)
+    con = analyze.connect(SELL_CR)
+    rows_out = snipe_check.find_snipes(con, SELL_CR, min_discount=0)
+    row = next(r for r in rows_out if r["item_id"] == ITEM and r["buy_realm"] == BUY_REALM)
+    assert row["sell_p_g"] >= exempt_g
+    assert row["region_median_g"] >= exempt_g
+    assert row["sniper_filter_suspect"] is False
+
+
 def test_find_snipes_min_value_floor_keeps_row_if_either_price_clears_it(tmp_path, monkeypatch):
     """min_value_floor_g (human request, 2026-08-01): OR-to-keep, AND-to-drop
     -- a row survives if *either* the sell price or the region median clears

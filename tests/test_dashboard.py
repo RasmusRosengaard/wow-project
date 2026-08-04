@@ -946,6 +946,45 @@ def test_api_snipes_carries_price_suspect_flag_unconditionally(tmp_path, monkeyp
     assert "sus_item_suspect" not in row  # still gated behind names=true, unaffected
 
 
+def test_api_snipes_carries_sniper_filter_suspect_flag_unconditionally(tmp_path, monkeypatch):
+    """sniper_filter_suspect ("Sniper filter", 2026-08-04, human request --
+    see snipe_check.SNIPER_FILTER_N) rides along unconditionally, same
+    pure-SQL passthrough pattern as price_suspect above -- present even
+    without names=true."""
+    monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)
+    monkeypatch.setattr(analyze, "DATA", tmp_path)
+    monkeypatch.setattr(snipe_check, "DATA", tmp_path)
+    monkeypatch.setattr(dashboard, "DATA", tmp_path)
+
+    ITEM = 960
+    sell_price_copper = 100_000_000  # 10,000g, comfortably above the 400g buy price
+
+    snap_dir = tmp_path / "snapshots" / str(SELL_CR)
+    snap_dir.mkdir(parents=True)
+    prev = [snap_row(9999, T0, item_id=103)]
+    curr = [snap_row(9999, T1, item_id=103), snap_row(1, T1, item_id=ITEM, buyout=sell_price_copper)]
+    for ts, rows_ in ((T0, prev), (T1, curr)):
+        pq.write_table(pa.Table.from_pylist(rows_, schema=SCHEMA), snap_dir / f"{ts}.parquet")
+
+    BUY_REALM = 9401
+    OTHER_REALMS = [9402, 9403, 9404, 9405, 9406]  # SNIPER_FILTER_N=5
+    crowded_prices_g = [400, 428, 444, 500, 500]  # median 444g, within 1.7x of 400g
+
+    listings_dir = tmp_path / "listings"
+    listings_dir.mkdir(parents=True)
+    rows = [listing_row(BUY_REALM, item_id=ITEM, buyout=4_000_000, auction_id=9400)]
+    for i, (cr, price_g) in enumerate(zip(OTHER_REALMS, crowded_prices_g)):
+        rows.append(listing_row(cr, item_id=ITEM, buyout=price_g * 10_000, auction_id=9410 + i))
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA), listings_dir / "crowded.parquet")
+
+    run_diff(monkeypatch)
+    r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0})
+    row = next(row for row in r.json()["rows"]
+               if row["item_id"] == ITEM and row["buy_realm"] == BUY_REALM)
+    assert row["sniper_filter_suspect"] is True
+    assert "sus_item_suspect" not in row  # still gated behind names=true, unaffected
+
+
 def test_api_snipes_variant_falls_back_without_names_resolved(tmp_path, monkeypatch):
     """Without names=true there's no base_level to check the claim against,
     so the smarter ilvl label is skipped entirely rather than shown unverified."""

@@ -308,6 +308,12 @@
      report: sitting apart from the other flag read as misplaced) -- both
      warnings now live in one spot, distinguished on hover. */
   .price-flag { color: var(--alert); margin-left: 0.3rem; cursor: help; }
+  /* sniper_filter_suspect ("Sniper filter", see dashboard.py's
+     sniper_filter_suspect, added 2026-08-04) -- same alert palette/own-class
+     convention as .price-flag: a different signal (region clustering, not a
+     single price ratio) so it gets its own tooltip text, same red "consider
+     hiding this" meaning. */
+  .sniper-flag { color: var(--alert); margin-left: 0.3rem; cursor: help; }
   /* Realm language tag (see dashboard.py's buy_realm_category) -- a quiet
      2-letter abbreviation, not a badge, since it's informational context
      about the realm, not a signal about the listing itself. */
@@ -429,7 +435,7 @@
       <input id="unique_appearance" type="checkbox"> Unique transmog only
     </label>
     <label class="auto-label" title="Old, likely-obsolete gear: neck/ring/trinket items below ilvl 150 from long-superseded expansions (no transmog value, usually no real market), plus the 52 confirmed class-starter armor pieces (e.g. Paladin's Girdle) every new character gets. Can't tell a dead item apart from a genuinely valuable twink item, so this is never filtered server-side -- toggle to judge for yourself.">
-      <input id="hide_sus_items" type="checkbox"> Hide flagged (sus items)
+      <input id="hide_sus_items" type="checkbox"> Hide flagged (sniper filter)
     </label>
     <div>
       <div class="filters-heading">Item class</div>
@@ -580,7 +586,10 @@ const BATCH_TOP = 10000;
 // (formatMoneyOrDash() reads a missing field as null) until the cache
 // happened to expire or the sell realm/item filter changed, same reasoning
 // as every prior bump.
-const CACHE_VERSION = 9;
+// Bumped to 10 (2026-08-04): sniper_filter_suspect was added to the row
+// shape -- an old cache would have no field to OR into "Hide flagged" or
+// show the new flag icon for, same reasoning as every prior bump.
+const CACHE_VERSION = 10;
 // Safety net, not the primary freshness signal: even if last_modified still
 // matches, force a real refetch once a cache is this old, in case the
 // status endpoint itself is stuck/wrong for some other reason. Comfortably
@@ -877,8 +886,12 @@ function applyFilters(rows) {
     // the sell realm's own reference price being >= 10x the region median
     // is a different signal (a troll sell-side listing, not an item-
     // identity guess) but the same "flag, let the user opt in to hiding
-    // it" convention, so one checkbox covers both.
-    if (hideSusItems && (r.sus_item_suspect || r.price_suspect)) return false;
+    // it" convention, so one checkbox covers both. sniper_filter_suspect
+    // (added 2026-08-04, see snipe_check.SNIPER_FILTER_N) rides the same
+    // checkbox too -- a third, independent signal (region-wide clustering
+    // around the buy price, not a single ratio), same opt-in-to-hide
+    // convention.
+    if (hideSusItems && (r.sus_item_suspect || r.price_suspect || r.sniper_filter_suspect)) return false;
     // No class checked = no class filtering (show everything); any checked
     // = row must match at least one.
     if (activeClasses.length && !activeClasses.some(c => c.test(r))) return false;
@@ -1010,6 +1023,9 @@ function showTooltip(row, x, y) {
     ${row.price_suspect
       ? `<div class="tt-row"><span class="lbl">Note</span><span>Suspect price -- sell realm's cheapest listing is 10x+ the EU median</span></div>`
       : ""}
+    ${row.sniper_filter_suspect
+      ? `<div class="tt-row"><span class="lbl">Note</span><span>Sniper filter -- several other realms are priced close to this listing</span></div>`
+      : ""}
     ${ue ? `<hr><div class="tt-sub">Click the icon for Undermine Exchange &rarr;</div>` : ""}
     <div class="tt-sub">Click the item name to copy it</div>
   `;
@@ -1091,12 +1107,19 @@ function buildRowHtml(row, idx, group, isSub) {
   const priceFlag = row.price_suspect
     ? `<span class="price-flag" title="Suspect price -- this realm's own current cheapest listing is 10x+ the EU median, likely a troll/joke listing inflating the discount shown here.">&#9888;</span>`
     : "";
+  // sniper_filter_suspect ("Sniper filter", see snipe_check.SNIPER_FILTER_N):
+  // several other unique realms cluster close to this buy price, so it's
+  // probably not actually rare -- the "snipe" is more likely the sell
+  // realm being pricier than usual, not this listing being a real steal.
+  const sniperFlag = row.sniper_filter_suspect
+    ? `<span class="sniper-flag" title="Sniper filter -- several other realms are priced close to this listing, so it's probably not a rare find; more likely the sell realm is just pricier than usual.">&#9888;</span>`
+    : "";
   const accountLabels = userRealmAccounts.get(row.buy_realm);
   const yourAccount = accountLabels && accountLabels.length ? accountLabels.join(", ") : "--";
   return `
     <tr class="${isSub ? "sub-row" : ""}">
       <td title="realm ${row.buy_realm}${row.buy_realm_category ? " &middot; " + escapeHtml(row.buy_realm_category) : ""}">${escapeHtml(row.buy_realm_name)}${row.buy_realm_category ? ` <span class="realm-lang">${escapeHtml(realmLangTag(row.buy_realm_category))}</span>` : ""}</td>
-      <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${escapeHtml(row.name ?? row.item_id)}</span>${susFlag}${priceFlag}${toggle}</div></td>
+      <td><div class="item-cell" data-row="${idx}">${icon}<span class="item-name">${escapeHtml(row.name ?? row.item_id)}</span>${susFlag}${priceFlag}${sniperFlag}${toggle}</div></td>
       <td class="mono" title="${escapeHtml(row.variant_raw ?? "")}">${escapeHtml(row.variant)}</td>
       <td class="num">${formatMoney(row.buy_copper)}</td>
       <td class="num">${formatMoney(row.sell_copper)}</td>

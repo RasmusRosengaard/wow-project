@@ -333,9 +333,19 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # joke-listing signal on the *sell* side. Unconditional, same as
         # region_median_g above (pure SQL, no NameCache lookup needed) --
         # unlike sus_item_suspect this isn't gated behind names=true.
-        # Never filters server-side -- dashboard.html's "Hide flagged (sus
-        # items)" checkbox ORs this in alongside sus_item_suspect.
+        # Never filters server-side -- dashboard.html's "Hide flagged
+        # (sniper filter)" checkbox ORs this in alongside sus_item_suspect.
         "price_suspect": r["price_suspect"],
+        # sniper_filter_suspect ("Sniper filter", added 2026-08-04, human
+        # request -- see snipe_check.SNIPER_FILTER_N's docstring): this
+        # buy-side candidate's price is corroborated by several other
+        # unique realms clustering near it, so it's probably not actually
+        # rare -- the "snipe" is more likely the sell realm being pricier
+        # than usual, not this listing being a real steal. Same pure-SQL,
+        # unconditional passthrough as price_suspect above; never filters
+        # server-side -- dashboard.html's "Hide flagged (sniper filter)"
+        # checkbox ORs it in alongside the other two.
+        "sniper_filter_suspect": r["sniper_filter_suspect"],
         # TSM EU region-wide sale rate/sold-per-day (added 2026-08-01, human
         # request -- see snipe_check.find_snipes()'s min_sale_rate docstring
         # and tsm.py). Both None if TSM has no data for this item (never
@@ -387,8 +397,8 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # pattern as is_profession_item above -- costs nothing extra,
         # base_level()/inventory_type() are resolved by the same
         # _fetch_item_details() call that already backs item_class/quality.
-        # Never filters server-side -- dashboard.html's "Hide flagged (sus
-        # items)" checkbox is the only thing that can hide it.
+        # Never filters server-side -- dashboard.html's "Hide flagged
+        # (sniper filter)" checkbox is the only thing that can hide it.
         out["sus_item_suspect"] = snipe_check.is_sus_item(
             r["item_id"], names.inventory_type(r["item_id"]), names.base_level(r["item_id"]))
     return out

@@ -440,9 +440,62 @@ MIN_VALUE_FLOOR_G = 2000
 # median is already outlier-resistant so a tight threshold on it doesn't
 # have the same blast radius a tight threshold on a mean would. Same house
 # convention as every other heuristic here: flag, never silently filter --
-# dashboard.html's "Hide flagged (sus items)" checkbox is what can hide it,
-# same as sus_item_suspect, not a server-side drop like MIN_VALUE_FLOOR_G.
+# dashboard.html's "Hide flagged (sniper filter)" checkbox is what can hide
+# it, same as sus_item_suspect, not a server-side drop like MIN_VALUE_FLOOR_G.
 PRICE_SUSPECT_MULTIPLE = 10
+
+# sniper_filter_suspect ("Sniper filter", added 2026-08-04, human request,
+# "experimental filter" -- named by the human): a different failure mode
+# than price_suspect above -- that one catches a troll/inflated *sell*-side
+# reference price; this one catches a buy-side candidate that only *looks*
+# like a rare find because the sell realm happens to be pricier than usual,
+# when the wider region shows the buy price is actually common. Human-
+# provided concrete example (a real screenshot): item flagged as a snipe at
+# 400g because the sell realm/EU median were much higher, but the next
+# several other realms' own cheapest listings were 400/428/444/500/500g --
+# a tight cluster right next to the "snipe" price, not a lone outlier. That
+# clustering means the 400g listing isn't special/rare; it's roughly what
+# the item goes for on plenty of realms, so the real story is the sell
+# realm being an outlier, not this listing being a steal.
+#
+# Deliberately NOT the mirror case (a lone cheap listing far below every
+# other realm) -- that's indistinguishable from a genuinely great snipe by
+# price data alone (the human explicitly flagged this ambiguity), so this
+# flag only ever fires in the "corroborated by nearby realms" direction,
+# never as a "suspiciously isolated" direction.
+#
+# Mechanism: per buy-side candidate (buy_realm, item_id, pet identity),
+# take the SNIPER_FILTER_N cheapest *other* realms' own cheapest listing
+# for the same item (region_realm_floor -- already deduped to one row per
+# realm, so one realm spamming N copies of the same auction can't inflate
+# the cluster), and take their median. Flags when that cluster median sits
+# within SNIPER_FILTER_CLOSE_MULTIPLE of the buy price -- close enough
+# that multiple independent realms corroborate this price level. Requires
+# at least SNIPER_FILTER_MIN_REALMS other realms to even have a listing
+# before drawing any conclusion; below that, the flag stays False (not
+# enough data to judge clustering either way, same "unknown isn't a claim"
+# convention as region_sale_rate/appearance_sources being None -- see their
+# own docstrings), not an assumed pass.
+#
+# All three numbers are human-specified (2026-08-04), not agent-picked, per
+# this project's own convention for calibrating a pricing heuristic.
+# Same house convention as price_suspect/sus_item_suspect: flag, never
+# silently filter server-side -- dashboard.html's existing "Hide flagged
+# (sniper filter)" checkbox ORs this in alongside the other two.
+SNIPER_FILTER_N = 5
+SNIPER_FILTER_CLOSE_MULTIPLE = 1.7
+SNIPER_FILTER_MIN_REALMS = 3
+
+# High-value exemption (added 2026-08-04, human request, same day): on an
+# expensive item, a cluster within SNIPER_FILTER_CLOSE_MULTIPLE can still be
+# a huge absolute gold gap (e.g. 200,000g vs 340,000g), so proportional
+# "closeness" alone is a weaker signal there than it is on a cheap item --
+# skip the flag entirely once both the sell realm's own price AND the EU
+# median agree the item is genuinely high-value. AND, not OR (both numbers
+# must clear the ceiling), mirroring MIN_VALUE_FLOOR_G's own AND-to-drop
+# convention just inverted into a ceiling instead of a floor -- human-
+# confirmed choice, not the assistant's default.
+SNIPER_FILTER_HIGH_VALUE_EXEMPT_G = 200_000
 
 
 def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
@@ -618,6 +671,21 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     scam-price flag that used to live alongside this, was removed
     2026-07-31 -- see HISTORY.md.)
 
+    **sniper_filter_suspect** ("Sniper filter", added 2026-08-04, human
+    request -- see SNIPER_FILTER_N's own comment above for the full
+    mechanism and the real example that prompted it): a buy-side candidate
+    whose price is corroborated by SNIPER_FILTER_MIN_REALMS+ other realms
+    clustering within SNIPER_FILTER_CLOSE_MULTIPLE of it -- i.e. this
+    specific listing isn't actually rare/unique, the item is just commonly
+    available around this price region-wide, and the "snipe" is more
+    likely an artifact of the sell realm being pricier than usual. Never
+    flags when both sell_p_g and region_median_g clear
+    SNIPER_FILTER_HIGH_VALUE_EXEMPT_G (200,000g, human-specified,
+    2026-08-04) -- on an expensive item, a proportionally-close cluster can
+    still be a huge absolute gold gap, so the ratio check alone is weaker
+    evidence there than on a cheap item. Same flag-don't-filter convention
+    as price_suspect, folded into the same dashboard checkbox.
+
     **min_value_floor_g** (added 2026-08-01, human request, see
     MIN_VALUE_FLOOR_G's own comment above for the full rationale): drops a
     row from the SQL candidate pool when BOTH the sell realm's cheapest
@@ -766,6 +834,65 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                   >= {float(min_discount)}
                   {price_filter}
         ),
+        -- sniper_filter_suspect ("Sniper filter", see SNIPER_FILTER_N's
+        -- comment above): does a cluster of other unique realms sit close
+        -- to this buy candidate's own price? Scoped to (buy_realm, item_id,
+        -- pet identity) combos that already survived the matches WHERE
+        -- above, not the whole region -- cheaper than region_stats' own
+        -- unconditional-over-`buy` computation, and correctness is
+        -- unaffected since this flag is only ever read off a matches row.
+        sniper_filter_keys AS (
+            SELECT DISTINCT buy_realm, item_id, pet_species_id, pet_quality_id
+            FROM matches
+        ),
+        sniper_filter_ranked AS (
+            SELECT k.buy_realm, k.item_id, k.pet_species_id, k.pet_quality_id,
+                   rrf.realm_cheapest,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY k.buy_realm, k.item_id, k.pet_species_id, k.pet_quality_id
+                       ORDER BY rrf.realm_cheapest ASC
+                   ) AS realm_rank
+            FROM sniper_filter_keys k
+            JOIN region_realm_floor rrf
+              ON k.item_id = rrf.item_id
+             AND k.pet_species_id IS NOT DISTINCT FROM rrf.pet_species_id
+             AND k.pet_quality_id IS NOT DISTINCT FROM rrf.pet_quality_id
+             AND rrf.cr_id != k.buy_realm
+        ),
+        sniper_filter_cluster AS (
+            -- median()/count() over just the SNIPER_FILTER_N nearest other
+            -- realms (by price) -- not every other realm region-wide, which
+            -- would just re-derive region_median_g at a coarser N.
+            SELECT buy_realm, item_id, pet_species_id, pet_quality_id,
+                   median(realm_cheapest) AS cluster_median_copper,
+                   count(*) AS cluster_realm_count
+            FROM sniper_filter_ranked
+            WHERE realm_rank <= {SNIPER_FILTER_N}
+            GROUP BY buy_realm, item_id, pet_species_id, pet_quality_id
+        ),
+        matches_flagged AS (
+            SELECT m.*,
+                   -- COALESCE(...,0) >= MIN_REALMS short-circuits to plain
+                   -- FALSE (not NULL) when fewer than MIN_REALMS other
+                   -- realms even have a listing -- "not enough data to
+                   -- judge clustering" is treated as "don't flag", not
+                   -- "unknown, assume clustered." High-value exemption
+                   -- (SNIPER_FILTER_HIGH_VALUE_EXEMPT_G, see its own
+                   -- comment above): never flags once both sell_p_g and
+                   -- region_median_g clear the ceiling, regardless of how
+                   -- close the cluster sits.
+                   (NOT (m.sell_p_g >= {SNIPER_FILTER_HIGH_VALUE_EXEMPT_G}
+                         AND m.region_median_g >= {SNIPER_FILTER_HIGH_VALUE_EXEMPT_G})
+                    AND COALESCE(sfc.cluster_realm_count, 0) >= {SNIPER_FILTER_MIN_REALMS}
+                    AND sfc.cluster_median_copper <= m.buy_copper * {SNIPER_FILTER_CLOSE_MULTIPLE})
+                                                                         AS sniper_filter_suspect
+            FROM matches m
+            LEFT JOIN sniper_filter_cluster sfc
+              ON m.buy_realm = sfc.buy_realm
+             AND m.item_id = sfc.item_id
+             AND m.pet_species_id IS NOT DISTINCT FROM sfc.pet_species_id
+             AND m.pet_quality_id IS NOT DISTINCT FROM sfc.pet_quality_id
+        ),
         capped AS (
             SELECT *, ROW_NUMBER() OVER (
                 -- item_id (+ pet identity), not bonus_key -- caps per real
@@ -779,7 +906,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
                 PARTITION BY item_id, pet_species_id, pet_quality_id
                 ORDER BY discount_pct DESC, buy_g ASC, auction_id
             ) AS item_rank
-            FROM matches
+            FROM matches_flagged
         )
     """
     if class_quotas is None:
