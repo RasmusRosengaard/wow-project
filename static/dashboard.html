@@ -431,6 +431,9 @@
     <label title="EU region-wide TSM sale rate (added 2026-08-01) -- roughly what fraction of days this item sells at least once, region-wide, not specific to your sell realm. Items TSM has no data for (never tracked, or a cold cache) are excluded when this is set.">
       Min sale rate % <input id="min_sale_rate_pct" type="number" min="0" max="100" step="1" placeholder="any">
     </label>
+    <label title="EU region-wide TSM average sale price (the 'Sale avg' column). Items TSM has no average-sale-price data for are excluded when this is set.">
+      Min sale avg (g) <input id="min_sale_avg" type="number" step="1" min="0" placeholder="any">
+    </label>
     <label class="auto-label">
       <input id="unique_appearance" type="checkbox"> Unique transmog only
     </label>
@@ -846,9 +849,11 @@ function applyFilters(rows) {
   const maxGoldRaw = $("max_gold").value.trim();
   const minSellNowRaw = $("min_sell_now").value.trim();
   const minSaleRatePctRaw = $("min_sale_rate_pct").value.trim();
+  const minSaleAvgRaw = $("min_sale_avg").value.trim();
   const minGold = minGoldRaw ? Number(minGoldRaw) * 10000 : null;
   const maxGold = maxGoldRaw ? Number(maxGoldRaw) * 10000 : null;
   const minSellNow = minSellNowRaw ? Number(minSellNowRaw) * 10000 : null;
+  const minSaleAvg = minSaleAvgRaw ? Number(minSaleAvgRaw) * 10000 : null;
   // .trim() ? ... : null, not `Number(x) || null` -- "0 is a real,
   // falsy-but-valid value" is a real bug class this rail has hit before
   // (2026-07-31): "0" here is a genuine filter (region_sale_rate must be
@@ -880,6 +885,7 @@ function applyFilters(rows) {
     // region_sale_avg_copper is null for anything TSM has no average-sale-
     // price data for -- same "unknown doesn't count as passing" convention
     // as minSaleRate above, not "let it through since we can't tell."
+    if (minSaleAvg != null && (r.region_sale_avg_copper == null || r.region_sale_avg_copper < minSaleAvg)) return false;
     if (belowSaleAvg && (r.region_sale_avg_copper == null || r.buy_copper >= r.region_sale_avg_copper)) return false;
     // "Unique" means no other item grants the same transmog look, excluding
     // profession tool/accessory slots (is_profession_item, see dashboard.py)
@@ -1502,7 +1508,7 @@ $("sell").addEventListener("change", onSellRealmChange);
 // the user types/adjusts, not just on blur, matching the instant feel the
 // client-side sort already established.
 const LIVE_FILTER_IDS = ["min_discount_pct", "min_gold", "max_gold",
-                         "min_sell_now", "min_sale_rate_pct"];
+                         "min_sell_now", "min_sale_rate_pct", "min_sale_avg"];
 LIVE_FILTER_IDS.forEach(id => $(id).addEventListener("input", () => {
   hideTooltip();
   renderTable();
