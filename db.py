@@ -194,6 +194,52 @@ class AnonSession(Base):
                                                  default=lambda: datetime.now(timezone.utc))
 
 
+class VisitorIP(Base):
+    """Persistent visitor history for the superuser admin page (2026-08-04,
+    human request: "current active users ... history of all IP's accessing
+    page"). One row per distinct client IP, NOT one per request or per visit
+    (human decision) -- this table is bounded by how many distinct visitors
+    the site has ever had, so it stays small indefinitely, where a
+    row-per-request log would grow by thousands a day and put exactly the
+    kind of write pressure on the pool that already caused a real outage
+    (see engine()'s comment below).
+
+    Supersedes the in-memory-only tracker admin.py used to be: "who's on the
+    site right now" is just last_seen within admin.ACTIVE_WINDOW_SECONDS, so
+    both the live view and the history read from this one table.
+
+    Nothing here is written on the request path. admin.track_activity() only
+    touches an in-process dict; admin._visitor_flush_loop() batches those
+    into this table roughly once a minute.
+
+    first_seen is when the *flush* first observed the IP, not a true
+    first-ever-visit for IPs that were already visiting before this table
+    existed -- there was no history to backfill from, so early rows read as
+    "first seen since this shipped".
+
+    No geolocation columns yet (human decision, 2026-08-04: ship the
+    tracking first, add location later) -- adding nullable country/city/org
+    is a trivial follow-up migration when a provider is picked, and empty
+    columns in the meantime would just be dead UI."""
+    __tablename__ = "visitor_ip"
+
+    # 45 chars fits the longest possible IPv6 form (an IPv4-mapped address
+    # like ::ffff:192.168.100.228 plus a zone suffix); a header-supplied
+    # X-Forwarded-For value is truncated to fit rather than rejected -- see
+    # admin._client_ip().
+    ip: Mapped[str] = mapped_column(String(45), primary_key=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=lambda: datetime.now(timezone.utc))
+    # Indexed: the admin page's two reads are both "most recently active
+    # first" -- the live view filters last_seen >= cutoff, the history
+    # orders by it.
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True,
+                                                default=lambda: datetime.now(timezone.utc))
+    # Total /api/* requests ever seen from this IP -- accumulated across
+    # flushes, so it survives the redeploys that reset the in-memory dict.
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 def _database_url() -> str:
     url = os.environ.get("DATABASE_URL")
     if not url:

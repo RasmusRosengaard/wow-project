@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import admin
 import analyze
 import auth
 import billing
@@ -122,15 +123,24 @@ async def _collection_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = None
+    tasks = []
     if ENABLE_BACKGROUND_COLLECTION:
         log.info("starting background collection loop (every %ss, or %ss during the "
                  "expected publish window :%s-:%s past the hour)",
                  COLLECTION_INTERVAL_SECONDS, TIGHT_INTERVAL_SECONDS,
                  TIGHT_WINDOW_START_MINUTE, TIGHT_WINDOW_END_MINUTE)
-        task = asyncio.create_task(_collection_loop())
+        tasks.append(asyncio.create_task(_collection_loop()))
+    # Gated on DATABASE_URL rather than started unconditionally: db.engine()
+    # raises SystemExit (a BaseException, which the loop's own `except
+    # Exception` deliberately does not swallow) when it's unset, and a bare
+    # local `python dashboard.py` run legitimately has no database. Same
+    # spirit as ENABLE_BACKGROUND_COLLECTION defaulting off for local dev.
+    if os.environ.get("DATABASE_URL"):
+        log.info("starting visitor activity flush loop (every %ss)",
+                 admin.FLUSH_INTERVAL_SECONDS)
+        tasks.append(asyncio.create_task(admin._visitor_flush_loop()))
     yield
-    if task is not None:
+    for task in tasks:
         task.cancel()
 
 
@@ -155,50 +165,12 @@ async def no_cache_html(request, call_next):
     return response
 
 
-# Lightweight in-process activity tracker (added 2026-08-01, human request:
-# "who's on the site right now" visible via GET /api/admin/active-users
-# below, rather than only via ad-hoc `railway logs --http` queries). Maps
-# client IP -> last-seen unix timestamp. Deliberately just an in-memory
-# dict, not a DB table or persisted anywhere -- resets on redeploy, same
-# not-critical-infrastructure precedent as `_realm_info_cache` above. This
-# is an observability convenience for a low-traffic period, not a real
-# analytics feature; revisit with something heavier if/when traffic
-# actually grows past what an ad-hoc log check can answer.
-_recent_activity: dict[str, float] = {}
-ACTIVE_WINDOW_SECONDS = 15 * 60  # "currently on the site" = seen in the last 15 min
-# Cheap, opportunistic pruning trigger -- avoids the dict growing unbounded
-# over a long-running process without needing a separate background task.
-_ACTIVITY_PRUNE_THRESHOLD = 1000
-
-
-def _client_ip(request: Request) -> str:
-    """Best-effort real client IP. Railway's edge proxy connects to this
-    app over an internal address -- request.client.host would show that
-    proxy hop, not the real visitor (confirmed live: matches the
-    fd12:.../upstreamAddress format seen in `railway logs --http` output,
-    not a real public IP) -- so X-Forwarded-For (set by the proxy;
-    confirmed live to match that same command's own `srcIp` field) is
-    checked first. A chain (multiple proxies) puts the original client
-    first, so only the first entry is used."""
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-@app.middleware("http")
-async def track_activity(request: Request, call_next):
-    """Records a hit against /api/* routes only -- static asset/page loads
-    aren't a meaningful "is someone using the app" signal the way an API
-    call is."""
-    if request.url.path.startswith("/api/"):
-        now = time.time()
-        _recent_activity[_client_ip(request)] = now
-        if len(_recent_activity) > _ACTIVITY_PRUNE_THRESHOLD:
-            cutoff = now - ACTIVE_WINDOW_SECONDS
-            for ip in [k for k, v in _recent_activity.items() if v < cutoff]:
-                del _recent_activity[ip]
-    return await call_next(request)
+# Visitor activity tracking lives in admin.py (moved there 2026-08-04, when
+# it grew from an in-memory debugging convenience into a persisted history
+# with its own admin page). Middleware is a property of the app rather than
+# of a router, so registration has to happen here even though the
+# implementation doesn't.
+app.middleware("http")(admin.track_activity)
 
 
 @app.middleware("http")
@@ -226,6 +198,7 @@ async def ensure_anon_cookie(request: Request, call_next):
     return response
 
 
+app.include_router(admin.router)
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
 app.include_router(billing.router)
@@ -460,31 +433,6 @@ async def api_me(request: Request, session: AsyncSession = Depends(get_async_ses
         # instead of hardcoding a second, driftable copy of the numbers.
         "anon_cap": ANON_SNIPE_CAP,
         "free_cap": SNIPE_TIER_CAPS["free"],
-    }
-
-
-@app.get("/api/admin/active-users")
-async def api_admin_active_users(user: User = Depends(current_active_user)) -> dict:
-    """Superuser-only (2026-08-01, human request): who's currently on the
-    site, by distinct client IP that's hit any /api/* route in the last
-    ACTIVE_WINDOW_SECONDS -- see track_activity()'s own comment above for
-    why this is IP-based (cheap, no per-request DB lookup) rather than
-    resolved to a real account identity. 403, not 401, for a logged-in
-    non-superuser -- current_active_user already proved they're logged in;
-    this is a stricter check on top of that, same convention
-    has_active_subscription's 402 elsewhere in this file follows."""
-    if not user.is_superuser:
-        raise HTTPException(403)
-    now = time.time()
-    cutoff = now - ACTIVE_WINDOW_SECONDS
-    active = {ip: last_seen for ip, last_seen in _recent_activity.items() if last_seen >= cutoff}
-    return {
-        "count": len(active),
-        "window_seconds": ACTIVE_WINDOW_SECONDS,
-        "ips": [
-            {"ip": ip, "last_seen_seconds_ago": round(now - last_seen)}
-            for ip, last_seen in sorted(active.items(), key=lambda kv: -kv[1])
-        ],
     }
 
 
@@ -1055,6 +1003,17 @@ def watchlist_page() -> FileResponse:
     nothing here is sensitive, and static/watchlist.html itself swaps its
     nav based on /api/me the same way those pages do."""
     return FileResponse(ROOT / "static" / "watchlist.html")
+
+
+@app.get("/admin")
+def admin_page() -> FileResponse:
+    """Serves the shell only -- no auth check on the HTML itself, same
+    client-side-gate convention every other page here follows. That's safe
+    because the page ships no data: every number on it comes from
+    /api/admin/*, and those are gated server-side by
+    admin.current_superuser. A non-superuser who guesses this URL gets an
+    empty page telling them so."""
+    return FileResponse(ROOT / "static" / "admin.html")
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")

@@ -137,6 +137,18 @@ several entries around it, all dated 2026-08-01.
   and live requests self-bound their wait on it (15s) instead of blocking
   indefinitely. A superuser-only `GET /api/admin/active-users` shows who's
   currently on the site.
+- **Admin activity page** (2026-08-04, human request): `/admin`, superuser
+  only, showing who's on the site now and the full history of every client
+  IP that has ever hit `/api/*` (first/last seen, lifetime hit count).
+  Lives in `admin.py` + `db.VisitorIP`, not a separate Railway service —
+  the middleware has to run in the process it observes. Requests stay
+  memory-only; a background loop flushes to Postgres once a minute.
+  **No geolocation yet** — deliberately deferred (human decision: ship the
+  tracking first), so the columns don't exist; adding nullable
+  `country`/`city`/`org` is a small follow-up migration once a provider is
+  picked. **No retention policy either** — stored IPs are personal data
+  under GDPR and nothing currently deletes them; flagged to the human,
+  not yet decided.
 - **Multi-WoW-account registration** (added 2026-08-02, human request,
   subscribers only; UI rebuilt from scratch the same day, see "Last
   updated" above): register WoW accounts (numbered by default, still

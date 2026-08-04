@@ -3050,3 +3050,92 @@ followed by a bullet list ("Capped at N items" / "Create a free account to
 raise your cap to N"), human-specified layout. Says nothing about cookies
 anywhere (human decision — don't hint that clearing the `ah_anon` cookie
 resets the realm lock).
+
+## `admin.py` — activity tracking split out of `dashboard.py` (2026-08-04)
+
+**The question was whether to make this a Railway service.** The human asked
+whether the whole `/api/admin/active-users` endpoint could move to a second
+service in the same Railway project, superuser-login only, "to sort aiming
+for microservices". The answer was no, and not on style grounds: the
+endpoint's only data source was `_recent_activity`, an in-process dict
+written by `dashboard.py`'s own `track_activity` middleware. A second
+container has its own RAM and serves none of the `/api/*` traffic, so the
+moved endpoint would have returned `{"count": 0, "ips": []}` forever. Making
+it work across a process boundary would have meant Redis or a Postgres table
+written *on every request* — a real latency and pool cost, paid to relocate
+what its own code comment called "an observability convenience". Secondary
+costs, all real but none decisive on their own: `auth.py`'s
+`CookieTransport(cookie_name="ah_auth")` cookie wouldn't cross to a
+different Railway domain without a shared parent domain, a second DB pool
+and a second copy of fastapi-users would exist only to answer "is this user
+a superuser", and the whole web layer is under 1,800 lines — there is no
+team boundary or scaling pressure that a service split solves. Recorded here
+because "why isn't this a microservice" is the kind of question that comes
+back.
+
+**What the human actually wanted** turned out to be bigger than the existing
+endpoint: an admin page showing current active users *and* a persistent
+history of every IP that has accessed the site, with location. That changes
+the storage answer (history means persistence) without changing the service
+answer (the middleware still has to run where the traffic is). So: a module
+split, `admin.py` + `static/admin.html`, in the same app.
+
+**Two-layer design, forced by a prior incident.** `db.engine()`'s comment
+records a real outage — QueuePool exhausted, login failing, from a single
+account browsing lightly — and `dashboard.html` auto-refreshes, so a DB
+write per `/api/*` request was never viable. The request path stays
+memory-only (`track_activity` writes two dicts and returns);
+`_visitor_flush_loop` batches into `db.VisitorIP` every 60s. One write a
+minute, not one per request. Both endpoints then read the *table*, so the
+numbers survive a redeploy where the old in-memory view reset to zero; the
+accepted cost is that a brand-new IP can lag up to one flush interval before
+it appears. Merging the live dict into the read would close that gap but
+give two sources of truth that disagree about `hit_count` — not worth it for
+an observability page.
+
+**Schema shape was a human decision**: one row per distinct IP
+(`first_seen`, `last_seen`, `hit_count`) rather than a row per visit or a
+full request log. Bounded by distinct visitors, so it stays small
+indefinitely, and it answers both questions from one table — "active now" is
+`last_seen` within `ACTIVE_WINDOW_SECONDS`, history is the same table
+ordered by it.
+
+**Geolocation was offered and deferred** (human picked "skip geo for now"
+from ipinfo.io / MaxMind GeoLite2 local DB / ip-api.com / skip). Worth
+keeping the licensing note: ip-api.com's free tier is the easiest to ship
+but is explicitly non-commercial and HTTP-only, which doesn't fit a product
+with a paid tier. No `country`/`city`/`org` columns were added speculatively
+— empty columns would just be dead UI.
+
+**Two bugs found while building, both real rather than test artifacts:**
+
+- `DateTime(timezone=True)` is honoured by Postgres but *not* SQLite, which
+  has no native timestamp type and returns a naive `datetime`. So the same
+  column arrives aware in production and naive under test, and any
+  arithmetic mixing them raises `TypeError`. Fixed with `_as_utc()` on every
+  read — everything written is UTC, so attaching UTC to a naive value
+  recovers the real instant rather than guessing.
+- `_client_ip()` returns an attacker-controlled header value
+  (`X-Forwarded-For`) which is now a `String(45)` primary key, where an
+  over-length value raises instead of being silently accepted the way the
+  old dict did. Truncated to `MAX_IP_LEN`. For the same reason
+  `admin.html` builds every row with `textContent`, never `innerHTML` — a
+  stored-XSS hole on the one page a superuser is guaranteed to open would be
+  a bad trade for a few characters of markup.
+
+**Verified in a real browser** (per the definition of done), which needed a
+workaround worth recording: the `ah_auth` cookie is `HttpOnly`, so a
+superuser session can't be forged from `document.cookie` to load `/admin`
+as an admin. The logged-out denial state was screenshotted directly; both
+endpoints were exercised end-to-end with `curl` against a local instance
+carrying a minted JWT (which also proved the flush loop works — the local
+`127.0.0.1` row appeared in the table with a real hit count, all the way
+through middleware → buffer → flush → table → API); the page's rendering
+was then driven by feeding `load()` those exact payloads. Light and dark
+both checked, no console errors.
+
+**Flagged, not decided: GDPR.** Stored IPs are personal data, the operator
+is EU-based serving EU users, and there is a paid tier. Nothing currently
+deletes rows and `static/` has no privacy policy page. A retention sweep in
+the existing flush loop is cheap to add — left to the human, since it's a
+policy call, not an implementation one.

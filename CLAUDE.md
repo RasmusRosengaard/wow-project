@@ -11,7 +11,7 @@ unless the task actually touches them.
 | Read this | When |
 |---|---|
 | `.claude/docs/modules-pipeline.md` | Changing collection, scanning or pricing (`blizz`, `fetch_snapshot`, `scan_region`, `collect_all`, `snipe_check`, `diff_snapshots`, `analyze`, `appearance`, `item_names`, `tsm`, `tsm_import`) |
-| `.claude/docs/modules-web.md` | Changing the API, auth, billing or DB models (`dashboard.py`, `auth`, `db`, `billing`, `forum`, `wow_accounts`, `watchlist`) |
+| `.claude/docs/modules-web.md` | Changing the API, auth, billing or DB models (`dashboard.py`, `auth`, `db`, `billing`, `forum`, `wow_accounts`, `watchlist`, `admin`) |
 | `.claude/docs/modules-frontend.md` | Changing any page under `static/` |
 | `.claude/docs/modules-infra.md` | Tests, Docker, migrations, dependencies, repo tooling |
 | `.claude/docs/architecture.md` | Data layout on disk, schemas, **Blizzard API facts** (trust these, don't guess) |

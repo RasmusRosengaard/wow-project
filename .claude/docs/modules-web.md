@@ -37,17 +37,60 @@ one `UPDATE ... WHERE locked_sell_realm IS NULL` with
 `synchronize_session=False`, never read-then-write (a real TOCTOU race); non-
 subscribed accounts and anonymous sessions alike lock to their first-queried
 realm. Routes: `/` → `landing.html`, `/snipes` → `dashboard.html`, plus
-`/snipe-board`, `/watchlist`, `/pricing`, `/profile`; `GET /api/realms/eu`
-(subscriber-only, fans out to one entry per *member* realm name) backs
-`wow_accounts.py`. Middleware: `no_cache_html` (`Cache-Control: no-cache` on
-every HTML response — without it browsers serve a stale page after a deploy),
-`ensure_anon_cookie` (sets `ah_anon` on the genuinely final response; a route-
-local `Response` param is invisible when a route raises `HTTPException`, which
-is the *common* anonymous path), and `track_activity` (in-memory IP→timestamp
-behind superuser-only `GET /api/admin/active-users`; `_client_ip()` reads
-`X-Forwarded-For`, not `request.client.host`, which only shows Railway's
-proxy). `logging.basicConfig(stream=sys.stdout)` — the default `stderr` makes
-Railway tag every log line as an error. History: see history.md.
+`/snipe-board`, `/watchlist`, `/pricing`, `/profile`, `/admin`; `GET
+/api/realms/eu` (subscriber-only, fans out to one entry per *member* realm
+name) backs `wow_accounts.py`. Middleware: `no_cache_html` (`Cache-Control:
+no-cache` on every HTML response — without it browsers serve a stale page
+after a deploy), `ensure_anon_cookie` (sets `ah_anon` on the genuinely final
+response; a route-local `Response` param is invisible when a route raises
+`HTTPException`, which is the *common* anonymous path), and
+`admin.track_activity` (implementation in `admin.py`; registered here because
+middleware attaches to the app, not to a router). `lifespan` starts two
+background tasks: the collection loop (gated on
+`ENABLE_BACKGROUND_COLLECTION`) and `admin._visitor_flush_loop` (gated on
+`DATABASE_URL` being set — `db.engine()` raises `SystemExit`, a
+`BaseException` the loop's `except Exception` deliberately won't swallow,
+when it isn't). `logging.basicConfig(stream=sys.stdout)` — the default
+`stderr` makes Railway tag every log line as an error. History: see
+history.md.
+
+## `admin.py`
+
+Superuser-only activity tracking + visitor history (split out of
+`dashboard.py` 2026-08-04). `current_superuser` (403 for a logged-in
+non-superuser, on top of `current_active_user`'s 401) gates every route:
+`GET /api/admin/active-users` (`last_seen` within `ACTIVE_WINDOW_SECONDS`,
+15 min) and `GET /api/admin/visitors` (full history, newest first, capped at
+`VISITOR_HISTORY_LIMIT`); `/admin` → `admin.html` renders both.
+
+**The two-layer split is the whole design and must not be collapsed.**
+`track_activity` writes only to two in-process dicts (`_recent_activity` for
+liveness, `_pending_hits` for counts) and does no I/O;
+`_visitor_flush_loop` batches those into `db.VisitorIP` every
+`FLUSH_INTERVAL_SECONDS` (60). A per-request `INSERT` would push straight on
+the pool exhaustion `db.engine()`'s comment records as a real outage, and
+the dashboard auto-refreshes. Both reads come from the table, not the dicts,
+so the numbers survive a redeploy — the cost is that a brand-new IP can lag
+up to one flush interval before appearing.
+
+`flush_visitors()` swaps the buffer out before writing (hits arriving
+mid-flush land in the fresh dict rather than being dropped) and does a
+portable SELECT-then-UPDATE/INSERT rather than a dialect-specific upsert —
+one writer, one process, no race to lose. `_as_utc()` exists because
+`DateTime(timezone=True)` is honoured by Postgres but not SQLite, so the same
+column arrives aware in production and naive under test.
+
+`_client_ip()` reads `X-Forwarded-For`, not `request.client.host` (which only
+shows Railway's proxy hop), and truncates to `MAX_IP_LEN` (45) — that value
+is an attacker-controlled header and is now a `String(45)` primary key.
+`admin.html` builds every row with `textContent`, never `innerHTML`, for the
+same reason.
+
+Why this is a module and not a Railway service (asked 2026-08-04): the thing
+being observed is this process's own request traffic, so the middleware has
+to run in the process that serves it. A second service could read the table
+but the writer would still live here — the split would buy a duplicated auth
+stack and a second deploy target for zero isolation.
 
 ## `auth.py`
 

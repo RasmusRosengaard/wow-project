@@ -60,7 +60,13 @@ above.
   This is the core inference engine; see `.claude/docs/matching.md` for the classification
   logic and its known limits.
 - **Relational data**: Postgres, via async SQLAlchemy (`db.py`) — users,
-  sessions, subscription state only.
+  sessions, subscription state, visitor activity.
+- **Admin** (`admin.py`): superuser-only `/admin` page — who's on the site
+  now, plus the history of every client IP that has hit `/api/*`. One
+  process, not a separate service: the middleware that records traffic has
+  to run where the traffic is served. Requests only touch an in-memory
+  buffer; a background task flushes it to Postgres once a minute, because a
+  write per request would recreate a past connection-pool outage.
 - **Billing**: Stripe (`billing.py`), **live mode** — Checkout Session per
   subscription, webhook-driven access gating (`auth.current_subscribed_user`).
   Deployed straight to live rather than verified against test mode first
