@@ -25,7 +25,7 @@ CI" → auto-deploy + migration. There is no manual deploy step — pushing to
    `DATABASE_URL=""` and `tests/conftest.py` hard-fails any test that reaches
    a real engine, so the old "green locally, red in CI" asymmetry is gone.
    (The previous step 3 here, `env -u DATABASE_URL python -m pytest -q`, was
-   retired — it had become a silent no-op, see HISTORY.md 2026-08-04.)
+   retired — it had become a silent no-op, see .claude/docs/history.md 2026-08-04.)
 3. Stage the specific files that changed (never `git add -A` blindly — check
    `git status` after staging for anything that looks like a secret or an
    unintended file), commit with a message explaining *why*, not just what.

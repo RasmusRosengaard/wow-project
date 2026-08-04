@@ -209,7 +209,7 @@ def market_key(bk: str, base_level: int | None = None,
     based) was removed 2026-07-26 along with market_key-based pricing (see
     CLAUDE.md's "What this project is" for the human decision and the bug
     that prompted re-examining it; the full methodology is preserved in
-    HISTORY.md's "Bonus-list noise detection" entry). `relist_key()`, the
+    .claude/docs/history.md's "Bonus-list noise detection" entry). `relist_key()`, the
     only remaining real caller, always passes None. None means "don't strip
     anything from the b: segment" -- same "unknown means don't strip"
     principle as base_level.

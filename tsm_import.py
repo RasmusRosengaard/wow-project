@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decode a TradeSkillMaster (TSM4) *group export* string, for Watchlist's
 "import a TSM group instead of adding items one at a time" feature (see
-FEATURE_WATCHLIST.md).
+.claude/docs/feature-watchlist.md).
 
 A TSM group export is not plain text -- it's `LibSerialize:SerializeEx(...)`
 piped through `LibDeflate:CompressDeflate()` then `:EncodeForPrint()`
@@ -33,7 +33,7 @@ Format shape, confirmed live: `items` is a Lua table mapping TSM
 itemString -> the item's sub-group path *relative to the exported group*
 (empty string if the item sits directly in the exported group, not a
 sub-group -- covers both the "group/items" and "group/subcategory/items"
-shapes FEATURE_WATCHLIST.md flagged as an open question). Sub-paths are
+shapes .claude/docs/feature-watchlist.md flagged as an open question). Sub-paths are
 backtick-joined (`TSM.CONST.GROUP_SEP`), not `/` -- re-joined here with
 `/` for display, matching how the rest of this project already presents
 paths to a human.

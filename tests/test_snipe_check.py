@@ -469,7 +469,7 @@ def test_find_snipes_pools_bonus_list_noise_with_no_sample_floor(tmp_path, monke
     above a 20-sample floor (BONUS_NOISE_MIN_SAMPLES) -- traced live
     2026-07-26 to silently fail on ~1,223 real items sitting under that
     floor since the 2026-07-25 retention change stopped accumulating the
-    historical samples the heuristic depended on (see HISTORY.md). With
+    historical samples the heuristic depended on (see .claude/docs/history.md). With
     item_id-only matching there's no sample floor to clear at all -- a
     single buy-side listing (auction_id=100 below) matches regardless."""
     monkeypatch.setattr(diff_snapshots, "DATA", tmp_path)

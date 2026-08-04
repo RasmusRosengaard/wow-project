@@ -22,6 +22,19 @@ in, and use the dashboard there. This project is **not meant to be run
 locally as a product** — it's a hosted service. The sections below are for
 people changing the code, not people wanting their own instance.
 
+## Where the docs live
+
+| File | What's in it |
+|---|---|
+| `README.md` | This file — the human-facing overview. |
+| `CLAUDE.md` | Agent-facing brief: the product thesis, hard guardrails, conventions, commands. Deliberately small; it loads into an agent's context every session. |
+| `.claude/docs/architecture.md` | Data layout on disk, schemas, Blizzard API facts. |
+| `.claude/docs/matching.md` | Matching/inference logic, `market_key()`, known pitfalls. |
+| `.claude/docs/modules-*.md` | Per-module current-state reference (pipeline / web / frontend / infra). |
+| `.claude/docs/roadmap.md` | Build order and every deliberate deviation from it. |
+| `.claude/docs/progress.md` | Scannable done/not-done status per feature. |
+| `.claude/docs/history.md` | The full session-by-session incident log — *why* a given constant or design choice exists. |
+
 ## How it works
 
 Deep-collects one or more high/full-population EU realms' auctions hourly →
@@ -34,7 +47,7 @@ that item/variant, net of the 5% AH cut, is a validated snipe.
 The snapshot pipeline also diffs consecutive snapshots and classifies every
 vanished auction (`inferred_sale`, `likely_relisted`, `ambiguous`,
 `likely_expired`, `bid_only_gone`) — this classification engine still runs
-and is still real, useful "core IP" (see `CLAUDE.md`'s "Inference logic"),
+and is still real, useful "core IP" (see `.claude/docs/matching.md`),
 but as of 2026-07-25 it no longer drives the sell price shown to users; see
 above.
 
@@ -44,14 +57,14 @@ above.
   auth (`auth.py`, FastAPI-Users, cookie sessions). One process.
 - **AH data**: parquet + DuckDB (`fetch_snapshot.py`, `scan_region.py`,
   `diff_snapshots.py`, `analyze.py`, `snipe_check.py`) — not in Postgres.
-  This is the core inference engine; see `CLAUDE.md` for the classification
+  This is the core inference engine; see `.claude/docs/matching.md` for the classification
   logic and its known limits.
 - **Relational data**: Postgres, via async SQLAlchemy (`db.py`) — users,
   sessions, subscription state only.
 - **Billing**: Stripe (`billing.py`), **live mode** — Checkout Session per
   subscription, webhook-driven access gating (`auth.current_subscribed_user`).
   Deployed straight to live rather than verified against test mode first
-  (human decision); see `CLAUDE.md`/`PROGRESS.md` for what that traded off.
+  (human decision); see `CLAUDE.md`/`.claude/docs/progress.md` for what that traded off.
 - **Collection**: `collect_all.py` polls every ~10 minutes *inside* the
   deployed app (`ENABLE_BACKGROUND_COLLECTION=true` on Railway) — not
   hourly, since Blizzard republishes at no fixed clock time and a fixed
@@ -66,7 +79,7 @@ above.
   and run migrations (`alembic upgrade head`) before serving. Railway's
   GitHub integration auto-deploys `main` on push.
 
-See `CLAUDE.md` for full architecture detail, Blizzard API facts, and the
+See `.claude/docs/architecture.md` for full architecture detail and Blizzard API facts, plus the
 project's guardrails (decision-support only, no in-game automation).
 
 ## The deploy flow
@@ -138,7 +151,7 @@ commands (`item`/`trace`/`summary`) still use it for manual debugging.
   match, so a troll who tweaks their joke price between relists can still
   slip through misclassified as two separate "sales" — this is exactly what
   motivated dropping sold-price inference from the pricing model (item
-  13051, see `CLAUDE.md`).
+  13051, see `.claude/docs/history.md`).
 - **Bid-only auctions** can't be insta-bought → excluded.
 - **Crafted items pool by market, not exact roll:** Blizzard attaches
   several undocumented per-craft identifiers to crafted/scaling gear (both
@@ -146,7 +159,7 @@ commands (`item`/`trace`/`summary`) still use it for manual debugging.
   listing its own "variant." `market_key()` pools these into one market
   instead of fragmenting into dozens of near-unique buckets, using
   structural detection (companion pairs, N-way partitions) rather than a
-  blind frequency cutoff — see `CLAUDE.md`'s "Inference logic" for the full
+  blind frequency cutoff — see `.claude/docs/matching.md` for the full
   history, including two earlier, simpler approaches that were tried and
   found insufficient before this one.
 - **Known blind spot:** a cancel *without* a relist is indistinguishable from a
@@ -188,7 +201,7 @@ data (250 rows, locked to the first sell realm queried). An active €4.99/mo
 Stripe subscription (`/subscribe` — `billing.py`) raises the cap to 2,000
 rows and unlocks switching sell realms freely; see `/pricing` for the full
 comparison. Sell realm is picked from a dropdown (`GET /api/realms`), not a
-free-typed id. See `CLAUDE.md`/`PROGRESS.md` for current status.
+free-typed id. See `CLAUDE.md`/`.claude/docs/progress.md` for current status.
 
 ## Verification protocol (algorithm validation, not a setup step)
 
@@ -223,7 +236,7 @@ auth and a live Stripe subscription gating the dashboard (**done**,
 (ItemModifiedAppearance mappings via wago.tools + the static item API,
 **groundwork started** 2026-07-23 — `appearance.py`, a "unique transmog"
 filter) → deal score with buy-realm → sell-realm routing → Discord webhook
-alerts → free companion addon. See `PROGRESS.md`/`CLAUDE.md` for current
+alerts → free companion addon. See `.claude/docs/progress.md`/`CLAUDE.md` for current
 staged status and immediate next steps (a restricted Stripe key is the main
 thing ahead, human-only to change). The full visual redesign (light "assay
 ledger" theme, dark-mode toggle) and dashboard QoL pass (sell-realm picker,

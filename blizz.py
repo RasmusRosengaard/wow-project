@@ -16,7 +16,7 @@ _ROOT = Path(__file__).resolve().parent
 class _TokenBucket:
     """Thread-safe token bucket -- shared, process-wide rate limiting for
     every Blizzard API call, added 2026-08-01 after a real incident (see
-    HISTORY.md): an ad-hoc diagnostic script called
+    .claude/docs/history.md): an ad-hoc diagnostic script called
     item_names.NameCache.ensure_many() with no coordination with anything
     else in the process, firing a burst of thousands of concurrent requests
     that starved collect_all.py's background collector of its share of the

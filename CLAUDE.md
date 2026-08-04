@@ -1,492 +1,178 @@
 # CLAUDE.md — WoW AH Snipe Validator (EU retail)
 
-Agent-facing project brief. `README.md` is the human-facing version — keep both in
-sync when architecture or commands change. `HISTORY.md` holds the full
-session-by-session incident log this file used to carry inline — this file
-is the **current-state reference only**: what's true now, not how we got
-here. If you're debugging something and want the "why" behind a constant,
-threshold, or design choice, search `HISTORY.md` for the item id or file
-name mentioned in a comment near it.
+Agent-facing brief. This file is loaded into context **every session**, so it
+holds only what's always needed: what the product is, the rules that must never
+be broken, and where to find everything else. `README.md` is the human-facing
+version — keep both in sync when architecture or commands change.
+
+Detail lives in `.claude/docs/` and is read **on demand** — don't open these
+unless the task actually touches them.
+
+| Read this | When |
+|---|---|
+| `.claude/docs/modules-pipeline.md` | Changing collection, scanning or pricing (`blizz`, `fetch_snapshot`, `scan_region`, `collect_all`, `snipe_check`, `diff_snapshots`, `analyze`, `appearance`, `item_names`, `tsm`, `tsm_import`) |
+| `.claude/docs/modules-web.md` | Changing the API, auth, billing or DB models (`dashboard.py`, `auth`, `db`, `billing`, `forum`, `wow_accounts`, `watchlist`) |
+| `.claude/docs/modules-frontend.md` | Changing any page under `static/` |
+| `.claude/docs/modules-infra.md` | Tests, Docker, migrations, dependencies, repo tooling |
+| `.claude/docs/architecture.md` | Data layout on disk, schemas, **Blizzard API facts** (trust these, don't guess) |
+| `.claude/docs/matching.md` | Matching/inference logic, `market_key()`, and the async-blocking pitfall that has recurred |
+| `.claude/docs/roadmap.md` | Build order and every deliberate deviation from it |
+| `.claude/docs/progress.md` | Scannable done/not-done status per feature |
+| `.claude/docs/history.md` | *Why* a constant, threshold or design choice exists — search it for the item id or file name in a nearby comment |
 
 ## What this project is
 
 A **validation layer for WoW auction-house sniping**, not another sniper.
-Existing tools (TSM Sniper, Auctionator) flag items cheap relative to
-*listing* prices. This project deep-collects one or more sell realms'
-auction history and separately scans every other EU realm's current
-listings, flagging a listing elsewhere that's cheap relative to your sell
-realm's own current cheapest listing for that item, net of the 5% AH cut.
+Existing tools (TSM Sniper, Auctionator) flag items cheap relative to *listing*
+prices. This project deep-collects one or more sell realms' auction data and
+separately scans every other EU realm's current listings, flagging a listing
+elsewhere that's cheap relative to your sell realm's own current cheapest
+listing for that item, net of the 5% AH cut.
 
-**Pricing model note (2026-07-25, see HISTORY.md for the full incident
-chain)**: sell price used to be an *inferred sold-price percentile* from
-snapshot-diffing (the product's original differentiator — "does this item
-actually sell," not just "is it listed cheap"). After three separate live
-production pricing bugs traced to the same design flaw (troll/camped
-listings corrupting the inference), the human made an explicit, discussed
-decision to replace it: sell price is now simply the sell realm's own
-current cheapest live listing — directly observable, no classification, no
-misclassification possible by construction. This makes a "snipe" a
-listing-to-listing comparison, the same thing TSM Sniper/Auctionator
-already do — a deliberate, accepted tradeoff, not an oversight. The
-underlying snapshot-diff classification engine (`diff_snapshots.py`) still
-runs and is unaffected; it could back a future liquidity/confidence signal
-without being on the pricing path again.
+Two product decisions that override anything you might infer from older code:
 
-**Matching model note (2026-07-26, see HISTORY.md's "Bonus/ilvl matching
-removed" entry)**: matching used to be `(item_id, market_key(bonus_key),
-pet_species_id, pet_quality_id)` — a coarsened-but-not-fully-collapsed
-version of an item's bonus/modifier data (ilvl, sockets, crafted stat
-rolls), pooling *some* variance via `market_key()`'s per-item noise
-detection while deliberately keeping other variance (a real ilvl tier, a
-real socket bonus) as separate markets. That noise-detection heuristic
-turned out to have a real, silent failure mode — traced live to a ~20-
-sample floor that ~1,223 real items were sitting under, post-2026-07-25's
-retention change, so exactly the per-craft fragmentation it existed to
-catch kept recurring. Combined with an explicit human decision that
-bonus/ilvl differences shouldn't gate a match at all, matching is now
-purely **`(item_id, pet_species_id, pet_quality_id)`** — every bonus/ilvl
-variant of an item is one market, priced at the sell realm's overall
-cheapest listing for that item_id, full stop. The specific bonus_key/ilvl
-of the *buy-side* listing is still shown per row (display only, unaffected
-— see `dashboard.py`'s `_variant_label()`). `market_key()` and its noise-
-detection machinery (`fetch_snapshot.py`) are still real code, just no
-longer called from `snipe_check.py` — they remain in use by
-`diff_snapshots.py`'s relist detection and `analyze.py`'s manual debugging
-tool, both of which still need finer-grained identity than "same item_id."
+- **Pricing (2026-07-25):** sell price is simply the sell realm's own current
+  cheapest live listing — directly observable, no classification. It used to be
+  an inferred sold-price percentile (the original differentiator); three live
+  pricing bugs from troll/camped listings killed that. This makes a snipe a
+  listing-to-listing comparison, the same shape TSM Sniper does — a deliberate,
+  accepted tradeoff, not an oversight. `diff_snapshots.py`'s classification
+  engine still exists and still works, but is no longer on the pricing path.
+- **Matching (2026-07-26):** purely **`(item_id, pet_species_id,
+  pet_quality_id)`**. Every bonus/ilvl variant of an item is one market, priced
+  at the sell realm's overall cheapest listing for that `item_id`. The buy-side
+  listing's own `bonus_key`/ilvl is still shown per row, display only.
 
-Business model (decided, don't revisit without the human): free in-game addon
-(Blizzard requires addons to be free) + paid external data service — Discord
-alerts, dashboards, custom filters. Competitors: TSM (coarse regional sale
-rates, hostile UX), Saddlebag Exchange (alerts). Our edge: cross-realm snipe
-routing + (eventually) appearance-level intelligence.
+Business model (decided — don't revisit without the human): free in-game addon
+(Blizzard requires addons to be free) + paid external data service. Competitors:
+TSM (coarse regional sale rates, hostile UX), Saddlebag Exchange. Our edge:
+cross-realm snipe routing, and eventually appearance-level intelligence. The web
+dashboard has an anonymous tier, a free logged-in tier, a subscription, and an
+internal superuser tier.
 
-**Free tier on the web dashboard** (added 2026-07-25): a logged-in-but-
-unsubscribed account can see the dashboard with real, capped data instead of
-being bounced to `/subscribe` with zero preview — see `dashboard.py`'s
-`SNIPE_TIER_CAPS` in the file table below.
+**Current phase: 0 — the sale-inference signal's validation gate was explicitly
+skipped** (human decision, 2026-07-20) in order to build ahead. The
+classification engine has never been checked against real seller behavior.
 
 ## Market structure (Warbands — core to the product)
 
-Since The War Within, the warband bank makes **gold account-wide** and lets
+Since The War Within the warband bank makes **gold account-wide** and lets
 **unsoulbound BoE items move between a player's characters on any realm**. The
 gear/transmog AH is still per connected realm (separate listings, buyer pools,
 prices) — so cheap listings rot on low-pop realms while hubs pay full price.
 That asymmetry IS the product:
 
-- The user picks **sell realms** (their high/full-pop hub realms). We
-  deep-collect hourly snapshots there.
+- The user picks **sell realms** (their high/full-pop hubs); we deep-collect
+  those.
 - A lightweight **region scanner** sweeps every other EU connected realm's
   current listings (no history needed on the buy side).
-- **Validated snipe** = a listing on any realm priced well below the sell
-  realm's own current cheapest listing for that item, net of the 5%
-  AH cut.
+- A **snipe** is a listing on any realm priced well below the sell realm's own
+  current cheapest listing for that item, net of the 5% AH cut.
 - An AH listing is guaranteed unsoulbound — BoP items cannot be listed, full
-  stop. The only remaining transfer risk is *usage*, not per-item data: don't
-  equip/use an item before moving it through the warband bank, or it locks to
-  that character. No per-item Warbound/BoP/Unique-equipped flag is needed or
-  planned — every item this tool surfaces is by definition AH-listed, so
-  there's no non-AH item in scope for such a flag to ever matter (closed,
-  not just deferred, 2026-07-24).
+  stop. The only remaining transfer risk is *usage*: don't equip/use an item
+  before moving it through the warband bank. No per-item Warbound/BoP flag is
+  needed or planned (closed, not deferred, 2026-07-24).
 
-Rate-limit math holds: deep collection ~6 req/h per sell realm; scanning all
-~100 EU connected realms hourly is ~100 dumps/h against a 36,000 req/h limit.
-
-**Current phase: 0 — the sale-inference signal's validation gate was
-explicitly skipped** (human decision, 2026-07-20) to build ahead; the
-classification engine (still real, still running) has never been checked
-against real seller behavior. See "Roadmap" below.
+Rate-limit math holds: ~6 req/h per deep-collected realm; sweeping all ~100 EU
+connected realms hourly is ~100 dumps/h against a 36,000 req/h limit.
 
 ## Non-negotiable guardrails
 
 - **Decision support only.** Never write code that automates in-game actions: no
   auction posting/buying automation, no input simulation, no game-client memory
-  reading, no packet interception. ToS compliance is a product requirement, not a
-  preference. If a task drifts that way, stop and flag it.
+  reading, no packet interception. ToS compliance is a product requirement, not
+  a preference. If a task drifts that way, stop and flag it.
 - The future in-game addon must be **free**; monetization lives in the external
   service only.
 - Before any payment/monetization feature ships, the human must re-read the
-  current Blizzard Developer API Terms of Use. Do not ship payments autonomously.
+  current Blizzard Developer API Terms of Use. Do not ship payments
+  autonomously.
 - Secrets live in `.env`, never in code, never committed.
 - **Never rotate/swap the live Stripe secret key without the human present**,
-  even when otherwise told to keep working autonomously (human-only task,
-  see below).
+  even when otherwise told to keep working autonomously.
 - No "WoW"/"Warcraft" in product branding; "for World of Warcraft" as a
   description is the accepted form.
 
-## Current state
-
-| File | Purpose |
-|---|---|
-| `blizz.py` | `.env` loader, OAuth client-credentials token, `api_get()`, realm-slug↔id lookups: `find_connected_realm`, `list_connected_realms()`, `connected_realm_population()`, `connected_realm_slugs()`/`connected_realm_realms()`. `connected_realm_realms()` also returns each member realm's `category` (added 2026-07-31, human request — "which language does this realm belong to"): Blizzard's own per-realm field, confirmed live across all 92 EU connected realms as one of `English`/`German`/`French`/`Italian`/`Russian`/`Spanish`, never mixed within one connected realm. **`api_get()` is now rate-limited via two shared, thread-safe `_TokenBucket`s (`_burst_limiter`: 90 capacity/90 per second, `_hourly_limiter`: 34000 capacity/~9.44 per second)** (added 2026-08-01, real incident: an ad-hoc diagnostic script's `NameCache.ensure_many()` call fired a burst of thousands of requests with zero coordination with anything else in the process, starving `collect_all.py`'s background collector — confirmed live via production logs, several realms' collection failing outright with `HTTP 429`). Before this, `api_get()` had no rate awareness at all — `fetch_snapshot.py` has its own local retry/backoff for 429s on the one endpoint it calls, but `scan_region.py`/`item_names.py`/`appearance.py` all call `api_get()` directly with none, and none of the independent callers had any shared notion of how much of the budget something else in the same process had already spent. Both buckets are consulted on every single call (`acquire()` blocks/sleeps transparently, no caller-side throttling logic needed) — a token bucket rather than just a concurrency cap, since a cap alone doesn't bound throughput if individual requests are fast. Capacities sit a bit under Blizzard's published limits (90/34,000 vs the real 100/36,000 — see "Blizzard API facts" below) as headroom. **The regular background collection cadence (10 min, see `collect_all.py`'s row) was deliberately left unchanged, not slowed to hourly, despite this incident** — confirmed live it only uses ~2.2% of the hourly budget (~810 of 36,000 req/h: ~35 deep-collect realms, mostly cheap 304s via If-Modified-Since, + ~100 region-sweep realms, no conditional request at all) — the incident was caused by an uncoordinated *burst*, not the steady-state cadence, and slowing the cadence to hourly would cost real data freshness (the whole reason it's 10 min and not 60, see that row) for negligible safety benefit; the rate limiter is the fix that actually matters regardless of cadence. Covered by `tests/test_blizz.py`'s `_TokenBucket`/`api_get()` tests (a `_FakeClock` makes the wait-duration assertions deterministic without a real test sleeping). |
-| `fetch_snapshot.py` | Sell-realm collector CLI: polls one connected realm, writes hourly parquet snapshots (If-Modified-Since aware); backs off on 429/5xx, skips malformed-JSON bodies. Owns `bonus_key()` (canonical variant string, stored/displayed as-is), `parse_bonus_key(bk) -> dict` (read-only tokenizer — `{"bonus_ids": [...], "mods": {type: value}}` — shared by `market_key()`'s own type-28 check and `dashboard._parse_variant()`'s display logic), and `market_key(bk, base_level=None, noise_bonus_ids=None)` (coarser matching-only key — see "Inference logic" below). `ilvl_plausible(claimed, base_level)` — `claimed <= base_level * ILVL_PLAUSIBILITY_MULTIPLE (3) and claimed <= ILVL_ABSOLUTE_MAX (1000)`, both guards required (ratio catches low-base-level junk, absolute cap catches high-base-level junk — see HISTORY.md for the two real cases, items 237468 and 164353, that motivated each). `BONUS_NOISE_*` constants tuned the structural noise test formerly run by `snipe_check._detect_noise_bonus_ids()` — both removed 2026-07-26 along with market_key-based pricing (see "Inference logic"); the methodology is preserved in `HISTORY.md`'s "Bonus-list noise detection" entry if it's ever needed again. |
-| `scan_region.py` | Region scanner: sweeps every EU connected realm's *current* listings (`--exclude` to skip sell realms already deep-collected) into `data/listings/{cr_id}.parquet`, overwritten each sweep via a temp-file + `os.replace()` atomic rename (fixed 2026-07-25 after a real production crash — a reader could open the file mid-write). |
-| `snipe_check.py` | Joins `data/listings/*.parquet` (every other EU realm's current listings) against the sell realm's own **current cheapest live listing**, matching on **`(item_id, pet_species_id, pet_quality_id)`** — bonus/ilvl variance never gates a match; the buy-side row's `bonus_key` rides along for display only. `find_snipes()` params: `items`/`min_discount`/`min_gold`/`max_gold`/`min_sell_now`/`max_appearance_sources`/`max_per_item`/`class_quotas`/`min_value_floor_g`/`min_sale_rate`/`top`/`sort`. Every `ORDER BY` ends in `auction_id` — without that final tiebreak DuckDB's parallel plan returns different rows across identical calls. `check_data_ready(sell)` is the shared "snapshot exists + listings swept" precondition (CLI and `/api/snipes`). Two post-SQL Python filters, each attaching its columns unconditionally so callers can always display them: `_filter_by_appearance()` (`appearance_sources`, excludes `NON_TRANSMOG_INVENTORY_TYPES`) and `_filter_by_sale_rate()` (`region_sale_rate`/`region_sold_per_day`/`region_sale_avg_copper` from `tsm.py`; `None` means TSM has no data, which counts as **failing** a set threshold, not "unknown, allow"). Either being active widens the SQL pool to `max(top*20, 1000)`. **Thresholds, all human-specified:** `MIN_VALUE_FLOOR_G=2000` drops a row only when `sell_p_g` **and** `region_median_g` are both under it (OR-to-keep, AND-to-drop). `PRICE_SUSPECT_MULTIPLE=10` sets `price_suspect` when `sell_p_g >= 10 * region_median_g`. `SNIPER_FILTER_N=5`/`SNIPER_FILTER_CLOSE_MULTIPLE=1.7`/`SNIPER_FILTER_MIN_REALMS=3`/`SNIPER_FILTER_HIGH_VALUE_EXEMPT_G=200000` set `sniper_filter_suspect` when the median of the 5 cheapest *other unique realms* sits within 1.7x the buy price — needs ≥3 such realms, and never fires once both `sell_p_g` and `region_median_g` clear 200k gold. `CLASS_QUOTA_PER_ITEM_CAP=3`/`CLASS_QUOTA_RESOLVE_LIMIT=20000` bound `class_quotas`, a `{bucket: max_rows}` dict (buckets match `dashboard.html`'s `ITEM_CLASS_FILTERS`, see `CLASS_BUCKET_RULES`; `mount` needs `item_class==15 AND item_subclass==5`) applied as real SQL window functions over the **complete** candidate set in a `TEMP TABLE` — a truncated pool was tried and proven insufficient. `is_sus_item(item_id, inventory_type, base_level)` flags old jewelry (`LEGACY_JEWELRY_INVENTORY_TYPES`, `LEGACY_JEWELRY_ILVL_MAX=150`) plus `CURATED_SUS_ITEM_IDS` (class-starter armor, Slithershell, Black Tooth Grunt sets); it has a known blind spot for twink-valuable items, so it never filters server-side. **House rule: every flag here marks a row, never drops it** — hiding is the dashboard checkbox's job alone. `region_median_g`/`region_median_copper` (median of the per-other-realm cheapest listings) is informational except where `min_value_floor_g` reads it. `print_snipes()` prints `CAVEAT` (the equip-before-transfer warning) on every CLI run. History: see HISTORY.md. |
-| `collect_all.py` | The sole collection path (runs in-process inside `dashboard.py`'s background loop, `ENABLE_BACKGROUND_COLLECTION=true`, Railway only). Deep-collects FULL/HIGH-population EU realms (`deep_collect_realm_ids()`, cached in-process), then an unscoped `scan_region.sweep()` (every EU realm's listings). Runs every ~10 minutes, not hourly (Blizzard publishes at no fixed clock time). **Only the latest snapshot per realm is kept** (2026-07-25, replacing the earlier adaptive multi-day retention the same day it shipped — pricing turned out to only ever read the latest snapshot, so retaining history was unnecessary complexity): `prune_to_latest(cr)` deletes every snapshot but the newest immediately after a fresh one lands. `diff_snapshots.py` is no longer invoked from this loop as a result — see its own row below. `_prewarm_item_base_levels()` resolves up to `PREWARM_BASE_LEVEL_CAP=1000` more type-28 item base levels per cycle in the background, regardless of user traffic, so `snipe_check._resolve_base_levels()`'s cache converges over a few hours instead of depending on dashboard loads. **Also refreshes `tsm.py`'s `SaleRateCache`** (added 2026-08-01, human request — see `tsm.py`'s row): `tsm.SaleRateCache().refresh_if_stale()` runs once per cycle, after the prewarm block; `refresh_if_stale()`'s own `REFRESH_INTERVAL_SECONDS=6*60*60` gate means most cycles are a cheap no-op, not a real fetch. Wrapped in its own `try/except` (never lets a TSM outage break realm collection) and reported in the cycle's `summary` dict as `tsm_refreshed: bool`. Covered by `tests/test_collect_all.py::test_collect_all_refreshes_tsm_sale_rates`/`::test_collect_all_survives_tsm_refresh_failure`. **Also runs `watchlist.check_triggers()` every cycle** (added 2026-08-02, human request -- see `watchlist.py`'s row): rides this existing ~10-min cadence rather than getting its own, same non-decision as `tsm.py`'s refresh call above. Wrapped in its own `try/except`; reported in `summary` as `watchlist: dict`. |
-| `dashboard.py` | FastAPI app, read-only web layer over `snipe_check.find_snipes()`. `GET /api/snipes` mirrors the CLI's flags as query params and returns JSON rows via `_row_to_json()`: prices in both gold and raw copper (`buy_copper`/`sell_copper`), `pet_species_id`/`pet_quality_id`, `region_median_g`/`_copper`, `region_sale_rate`/`region_sold_per_day`/`region_sale_avg_copper`, `price_suspect`, `sniper_filter_suspect`, `buy_realm_name`/`buy_realm_category` — all unconditional — plus, only when `names=true`, `name`/`icon`/`quality`/`quality_color`/`item_class`/`item_subclass`/`is_profession_item`/`sus_item_suspect`/`variant`, which need `NameCache` lookups (the rest are pure SQL, hence free). **Event-loop discipline — this project's most-repeated bug:** `api_snipes()` is `async def` and does 30-175s of work, so both the query (`_run_query`) and the `names=true` row build (`_build_rows`, prewarming via `NameCache.ensure_many()`/`.ensure_icons_many()` under `LIVE_RESOLVE_DEADLINE_SECONDS`) run inside `asyncio.to_thread()`. **Any new blocking call site needs the same treatment** — this has already recurred once at a site the first fix didn't cover. **Auth/tiers:** `/api/snipes`, `/api/me`, `/api/status` and `/api/realms` are all unauthenticated; `api_snipes()` resolves its user manually via `auth.resolve_user_from_request()` rather than `Depends(current_active_user)`, because a `Depends` chain holds a pooled DB connection for the request's entire duration (a real pool-exhaustion outage). Caps: `ANON_SNIPE_CAP` 250 / free 500 / subscribed 2000 / superuser 10000, with matching `ANON_`/`FREE_`/`SUBSCRIBED_`/`SUPERUSER_CLASS_QUOTAS` dicts that each sum **exactly** to their own cap (tests assert this). `_run_query()` always passes `min_value_floor_g=snipe_check.MIN_VALUE_FLOOR_G`. `_enforce_realm_lock()` and `_enforce_anon_realm_lock()` both delegate to `_atomic_lock_first_realm()` — one `UPDATE ... WHERE locked_sell_realm IS NULL` with `synchronize_session=False`, never read-then-write (a real TOCTOU race); non-subscribed accounts and anonymous sessions alike lock to their first-queried realm. Routes: `/` → `landing.html`, `/snipes` → `dashboard.html`, plus `/snipe-board`, `/watchlist`, `/pricing`, `/profile`; `GET /api/realms/eu` (subscriber-only, fans out to one entry per *member* realm name) backs `wow_accounts.py`. Middleware: `no_cache_html` (`Cache-Control: no-cache` on every HTML response — without it browsers serve a stale page after a deploy), `ensure_anon_cookie` (sets `ah_anon` on the genuinely final response; a route-local `Response` param is invisible when a route raises `HTTPException`, which is the *common* anonymous path), and `track_activity` (in-memory IP→timestamp behind superuser-only `GET /api/admin/active-users`; `_client_ip()` reads `X-Forwarded-For`, not `request.client.host`, which only shows Railway's proxy). `logging.basicConfig(stream=sys.stdout)` — the default `stderr` makes Railway tag every log line as an error. History: see HISTORY.md. |
-| `static/dashboard.html` | Single static file, vanilla JS, no build step; "assay ledger" visual identity with a `localStorage` dark-mode toggle shared across pages. **Client-side filtering architecture:** fetches one loose batch per sell realm (`fetchBatch()`, `BATCH_TOP=10000` — must stay >= the highest tier cap, the server clamps down) and re-filters/re-sorts entirely in the browser (`applyFilters()`/`renderTable()`/`compareRows()`), so only a realm switch or the 60s timer refetches. `checkForUpdates()` polls the cheap `/api/status` first and only refetches when its timestamp actually advanced. Batches cache per realm in `localStorage` under `CACHE_VERSION` (**currently 10 — bump it whenever the row shape changes**, or stale cached rows get painted by code expecting new fields); `saveCache()` purges other-version keys, then evicts the least-recently-fetched *other* realm (`evictOldestOtherCache()`), then halves its own row count, because one full batch can exceed the per-origin quota on its own. Ten sortable columns (buy realm, item, variant, buy, sell, EU median, sale rate %, sale avg, discount %, your account); `NUMERIC_SORT_KEYS` marks the numeric ones and nullable columns always sort last. `table-layout: fixed` with per-column % widths and `white-space: normal` headers — auto layout made every column jump on each filter change, and `nowrap` headers forced a horizontal scrollbar. `renderTable()` paginates at `RENDER_PAGE_SIZE=200` behind a "Show N more" button; building every row at once was ~90% of a ~1s re-render. Rows group by `(item_id, pet_species_id, pet_quality_id)` (`groupKey()`) with a `▾ N` expand toggle. **Filter rail, all client-side:** discount %, buy-price range, min sell price, min sale rate %, min sale avg (g), unique-transmog, "Hide flagged (sniper filter)" (ORs `sus_item_suspect`/`price_suspect`/`sniper_filter_suspect`; flagged rows always render a red ⚠ regardless of the checkbox, so the signal shows even when not filtering on it), "Buy below sale avg", 9-way item class, 6-way rarity. Numeric inputs parse via `.trim() ? Number(x) : null`, never `Number(x) || null` — `0` is a valid threshold, and that has been a real bug. A `null` TSM value fails any set TSM threshold, matching the server exactly. `escapeHtml()` is a real regex escaper applied to every row-derived string **including inside quoted attributes** — the `textContent`→`innerHTML` trick doesn't escape quotes, which was a real stored-XSS bug in this project. `userRealmAccounts` (from `/api/wow-accounts`) backs the "Your account" column and is deliberately kept out of the shared row cache. Anonymous visitors get the full free-tier UI plus an `#anon-banner` reading its numbers from `/api/me`; the page never mentions cookies anywhere. History: see HISTORY.md. |
-| `static/landing.html` | New (2026-07-26): the public marketing page now served at `/` (see `dashboard.py`'s row above — the sniper tool itself moved to `/snipes`). Same "assay ledger" visual identity/tokens as every other page, plus one deliberate, restrained departure: the hero `<h1>` alone uses a serif system font stack (`Georgia, "Times New Roman", serif`) against the sans-serif body everywhere else, meant to read like a heading on a certified/appraisal document — reinforcing the existing seal-mark thesis rather than introducing a new one. Hero's signature element is a **real excerpt of the actual ledger table** (human request, replacing an earlier custom-card mockup): the same `table`/`item-cell`/`item-icon`/`money`/`coin` markup and class names as `dashboard.html`'s own table, one illustrative row (labeled "Example listing: illustrative, not live data" so it's never mistaken for real numbers), not a paraphrased approximation. A numbered 3-step "how it works" section (genuinely sequential, not decorative numbering: "Pick your sell realm" / "Scans every EU realm" / "Only genuine snipes surface") follows; the earlier "Not another sniper" TSM/Auctionator comparison section was removed outright (human request), as was a closing "Every account gets real data" CTA section (human request, along with its now-unused `.closing` CSS and the `#closing-cta` reference in the CTA-personalization script below). Copy avoids em-dashes throughout (human request) — periods/colons instead. Hero subheading (and the matching `<meta name="description">`) rewritten (human request) to stop overclaiming "already validated" — now explicitly says the tool calculates the real price difference (the literal "arbitrage") and that not every flagged gap is a genuine bargain, since a troll/camped listing can still be the reference price (see "Known gaps" in `PROGRESS.md` — this was a real accuracy fix, not just polish). **Does not redirect a logged-in visitor away** (tried and reversed the same day, human feedback: forcing a redirect means nobody signed in could ever actually see the page, e.g. a shared link or checking their own marketing copy) — instead, checks `/api/me` on load and swaps the sign-up CTAs (`#nav-cta`/`#hero-cta`) to "Go to dashboard" pointing at `/snipes`, and removes the "Log in" nav link (`#nav-login`), leaving the rest of the page (including "See pricing") untouched either way. No brand-mark self-link (it *is* `/`). **Widened + example row made a real, live-verified item (2026-08-01, human request "fills the entire width" + "use an actual icon")**: `main`'s `max-width` raised 1000px → 1400px (the page read as a narrow column with unused space on a wide screen; the 3-step section in particular now actually spreads across the width instead of a cramped single-column feel) and `.sample-wrap` 640px → 820px. The hero example row now uses item 22691, "Corrupted Ashbringer" — confirmed live via `blizz.api_get()` (`/data/wow/search/item`, `/data/wow/media/item/22691`) rather than a fabricated name, with its real icon hotlinked from Blizzard's render CDN (`render.worldofwarcraft.com`, the same CDN `item_names.py`'s `.icon()` already serves real rows from) instead of a plain gradient-div placeholder. Buy/sell deliberately set to a joke-extreme 1g buy vs. a 214748g 36s 47c sell (the classic single-character WoW gold cap, 2³¹−1 copper) for a ~100.0% discount — still clearly inside the "Example listing: illustrative, not live data" label, just a more memorable illustration than the previous mundane 45g/210g numbers. Re-added `--coin-silver`/`--coin-copper` CSS vars + `.coin-silver`/`.coin-copper` classes (removed as dead code 2026-07-31 when only gold was in use — legitimately needed again now that the sell price shows all three denominations, mirroring `dashboard.html`'s exact gradient values). |
-| `Dockerfile` / `.dockerignore` / `docker-entrypoint.sh` | Packages the web app into a container; entrypoint runs `alembic upgrade head` then `exec python dashboard.py`. Reads `PORT` (Railway-injected) and `DEFAULT_SELL` (UI prefill only) from env. |
-| `tests/` | pytest suite. Real duckdb/pyarrow throughout, no mocking of the data layer; live Blizzard calls are stubbed. **Two conftests**: root `conftest.py` puts the project root on `sys.path`, sets test-safe `SECRET`/`COOKIE_SECURE`, and forces `DATABASE_URL=""` to match CI (must be `""` not deleted — `blizz._load_env()` uses `setdefault()` and would refill an absent key from `.env`); `tests/conftest.py`'s `no_real_database` autouse fixture patches `db._database_url()` to raise a named `RuntimeError`, so a missing DB override fails in ~2s locally instead of hanging (`SystemExit` is a `BaseException` and deadlocks TestClient's portal). Fix the test, never weaken the guard. `isolate_item_names_cache`/`isolate_appearance_cache`/`isolate_tsm_cache` autouse fixtures redirect cache paths into `tmp_path` so tests never touch the real gitignored caches or make live TSM calls — patch `CACHE_PATH` directly, not `DATA` (it's bound at import time). **Locally run only the tests covering the change** (`tests/test_<module>.py`; full suite for `db.py`/`auth.py`/`conftest.py`) — CI runs all of them on push and gates the Railway deploy. History: see HISTORY.md. |
-| `diff_snapshots.py` | **Core IP**, the snapshot-diff classification engine — **no longer invoked automatically** (2026-07-25, see `collect_all.py`'s row above: pricing only ever reads the latest snapshot, so nothing keeps multi-day history around for this to diff anymore). Still real, still correct, still usable by hand against manually-accumulated snapshot history (e.g. `fetch_snapshot.py --loop` run locally, then `python diff_snapshots.py --cr-id X`). `relist_key(r)` — non-price identity `(item_id, market_key(bonus_key), pet_species_id, pet_quality_id, quantity)` — **the last remaining live caller of `fetch_snapshot.market_key()`** (2026-07-26, since `snipe_check.py`'s pricing join dropped it, see "What this project is" above); relist detection genuinely needs finer-than-item_id identity (a vanished ilvl-636 listing relisting as ilvl-636, not as ilvl-40, is what "relisted" means), unlike pricing. Price is matched separately via `_find_relist_match()` within `RELIST_PRICE_TOLERANCE` (±15%, added 2026-07-25) instead of requiring exact equality, so a troll reposting at a nearby joke price still counts as a relist rather than a fake `inferred_sale`. See "Inference logic" below for the full classification rules. |
-| `analyze.py` | DuckDB CLI: liquidity summary + per-item sold-price distribution / percentile check / per-auction trace (manual debugging only, not on the pricing path). `connect(cr)` builds `ev`/`sales` from `data/events/{cr}.parquet` if a human has run `diff_snapshots.py` for that realm; otherwise (the production default since 2026-07-25) builds an empty `ev` table instead of erroring, so the live pipeline stays functional with no events file at all. Registers `market_key(bk, base_level := NULL)` as a DuckDB macro (three helper macros: `_ilvl28_value`/`_ilvl28_implausible`/`_strip_type`) — the SQL-side mirror of `fetch_snapshot.market_key()`'s base_level behavior, kept honest by `tests/test_market_key.py`'s parity check; used by this file's own manual debugging queries, not by the live pricing path (see "What this project is" above). `noise_bonus_ids` (a separate, Python-only argument to `fetch_snapshot.market_key()`, never mirrored in this SQL macro at all) was previously computed by `snipe_check._detect_noise_bonus_ids()`, removed 2026-07-26 along with the rest of `market_key`-based pricing/matching (see "Inference logic" below) — nothing currently computes it. |
-| `appearance.py` | `AppearanceCache`: itemId → transmog-appearance rarity (`source_count` — how many distinct item ids grant the same appearance region-wide), cached at `data/appearances.json`, source is wago.tools' `ItemModifiedAppearance` DB2 export (`python appearance.py --refresh`, manual/periodic — not wired into the Railway background loop, since wago.tools is outside this project's Blizzard rate-limit budget). Display/filter-only, never-raises. A v1 rarity proxy, not a real obtainability model. |
-| `item_names.py` | `NameCache`: display/filter-only, never-raises lookups backed by the static item/pet API, cached at `data/item_names.json`. `.get()` name, `.icon()`, `.quality_color()`, `.quality()` (the tier name itself, e.g. `"EPIC"` — added 2026-07-25 alongside `.quality_color()`'s derived ring color, backs the dashboard's rarity filter), `.base_level()` (still used for display only — `dashboard._variant_label()`'s "ilvl NNN" check — since matching stopped using ilvl 2026-07-26, see "What this project is" above), `.inventory_type()`, `.item_class()`/`.item_subclass()` (Blizzard's official ids, confirmed live via `GET /data/wow/item-class/index`). `.ensure_many(ids, max_workers, limit)` resolves concurrently, used by `collect_all._prewarm_item_base_levels()` (its other original caller, `snipe_check._resolve_base_levels()`, was removed 2026-07-26 along with market_key-based matching). `.ensure_icons_many(ids, max_workers)` (added 2026-07-26) is the same concurrent-batch pattern for `.icon()` specifically — `.icon()` isn't covered by `.ensure_many()`'s `_fetch_item_details` batch at all (icons come from a separate media endpoint), which was a real gap: `dashboard.py`'s `names=true` row-building used it item-by-item and hung on any never-before-queried sell realm (see "Real production outage" below). All fields backfill onto an older cache entry missing them, self-healing an old cache file instead of returning `None` forever. **`.has_class_info(item_id)`** (added 2026-07-31, real bug fix found during a repo-wide audit): whether `item_class`/`item_subclass` are already resolved, without triggering `.item_class()`/`.item_subclass()`'s own transparent blocking-fetch fallback for a cache miss. Deliberately narrower than a full "is this item completely cached" check — `.name`/`.quality`/`.level` are truthy-only writes (a separate, pre-existing quirk: a genuinely-empty name means those keys can lag behind forever) while `item_class`/`item_subclass` are always written unconditionally, so reusing the strict definition would wrongly deny an item a bucket even when this call's own resolution had a real answer for it. Used by `snipe_check._register_class_quota_maps()` (see that row) to avoid reintroducing the blocking-calls failure mode `ensure_many()`'s own `limit` param exists to prevent. **`.save()` re-reads the cache file and merges in only this instance's own newly-resolved keys, rather than overwriting with its full in-memory snapshot** (2026-08-01, real bug fix, root cause of the "items randomly jumping" report — worst with a small `class_quotas` bucket like the free tier's 50-row `recipe` quota, or with `sus_item_suspect` flickering under "hide flagged"): at least three independent `NameCache()` instances race on `data/item_names.json` within the same process — `_register_class_quota_maps()` and `dashboard._build_rows()` each make their own within a single `/api/snipes` call, plus another on `collect_all._prewarm_item_base_levels()`'s background loop, running concurrently with live requests. The old `save()` was a blind `write_text()` of the whole in-memory `_cache` with no locking and no atomic temp-file+rename (unlike `scan_region.py`'s sweep writes) — a classic lost-update race: instance B loads the file before instance A resolves and saves item X, then B finishes its own unrelated work and saves, overwriting the file with a snapshot that never saw X, silently reverting it to unresolved. Since `has_class_info()`/`_class_bucket()` gate bucket membership on presence in the cache, this directly flipped which items appeared in a class-quota'd bucket between otherwise-identical requests, and flipped `is_sus_item()`'s `base_level`/`inventory_type` inputs the same way — with zero change in the underlying auction data. Fixed by tracking each instance's own writes separately (`self._pending`, via a new `_set()` helper every write site now goes through) and having `save()` re-read-and-merge those into the current file instead of replacing it wholesale. `__init__`'s file read is now wrapped in `try/except` too (a concurrent non-atomic write could leave the file mid-write for a reader to catch) — previously an unhandled `json.JSONDecodeError` there would crash whatever request constructed the instance. Covered by `tests/test_item_names.py::test_save_does_not_clobber_a_concurrent_instances_write` (reproduces the exact interleaving) and `::test_save_tolerates_a_torn_read_of_the_cache_file`. **`.ensure_many()`/`.ensure_icons_many()` gained a `deadline_seconds` param, and a module constant `LIVE_RESOLVE_DEADLINE_SECONDS=15`** (added 2026-08-01, human-specified value, real incident: the same day `blizz.api_get()` gained a shared rate limiter — see `blizz.py`'s row — these calls stopped failing fast on a 429 and started *waiting* on the shared budget instead, which turned a single live `/api/snipes` call's resolution step from its documented 30-175s baseline to 158-300+ seconds, confirmed live): once elapsed time since the call started exceeds the deadline, the `as_completed()` loop stops waiting and returns with whatever resolved so far — same self-healing pattern as `limit`/`CLASS_QUOTA_RESOLVE_LIMIT`, an item that misses the deadline just stays unresolved for this one call. `None` (the default) preserves unbounded behavior, used by every background caller (`collect_all._prewarm_item_base_levels()` — deliberately never passes a deadline, nothing is waiting on it). Both live-request call sites — `dashboard._build_rows()` and `snipe_check._register_class_quota_maps()` (reached on every real `/api/snipes` call too, since `class_quotas` is never `None` there) — pass `LIVE_RESOLVE_DEADLINE_SECONDS` explicitly. Implementation no longer uses `with ThreadPoolExecutor(...) as pool:` — that context manager's `__exit__` calls `shutdown(wait=True)` unconditionally regardless of the deadline, which would defeat the whole point; manages the pool explicitly instead and calls `shutdown(wait=False, cancel_futures=True)` so queued-but-unstarted work is dropped rather than waited on (already-in-flight fetches, up to `max_workers` of them, keep running in the background but their results are no longer collected — bounded wasted work, not a correctness issue). Covered by `tests/test_item_names.py::test_ensure_many_deadline_seconds_does_not_wait_for_slow_items`/`::test_ensure_icons_many_deadline_seconds_does_not_wait_for_slow_items` (a stub blocked on a `threading.Event` proves the call doesn't hang) and `tests/test_dashboard.py::test_api_snipes_passes_a_real_resolve_deadline_at_both_call_sites`. |
-| `tsm.py` | **New (2026-08-01)**, human request — "a filter, where the user can set a minimum sellrate," confirmed against TSM's own real region-wide file schema before building (`saleRate`/`soldPerDay` exist only on TSM's **region**-wide public CSVs, `region/items.csv`, not the per-realm `realm/{slug}/items.csv` ones — confirmed live via `tsm._fetch_csv()` against a real 30,984-row response). `SaleRateCache`: same `AppearanceCache`/`NameCache` display/filter-only, never-raises convention, cached at `data/tsm_sale_rates.json`. `_fetch_csv()` hits `REGION_ITEMS_URL` (`https://public-data.tradeskillmaster.com/retail/eu/region/items.csv`, no auth — TSM's Public Data API is free/unauthenticated) and returns `{}` on any non-200 or exception, never raises. `refresh_if_stale(interval_seconds=REFRESH_INTERVAL_SECONDS)` (`6*60*60` — TSM's own region files update roughly daily, so 6h is a conservative poll, not a real-time need) only re-fetches when the cache is empty or older than the interval, and **keeps the old data on a failed fetch** rather than clearing it — a transient TSM outage degrades to "slightly stale sale rates," never to "no sale rates at all." `.get(item_id)` returns `{"sale_rate": float, "sold_per_day": float, "avg_sale_price": float}` or `None` — `avg_sale_price` (added 2026-08-03, human request, "region sale avg from tsm") is TSM's `avgSalePrice` column, already in copper (confirmed live via `_fetch_csv()` — item 2624/Thinking Cap: `avgSalePrice` 28,500,000 = 2850g, in line with its six-figure `marketValue`), same region-wide-only scope as `saleRate`/`soldPerDay` since it's the same file/row. **Single-writer design, deliberately** (same reasoning as `item_names.py`'s 2026-08-01 lost-update-race fix, applied from the start rather than found live a second time): only `collect_all.py`'s background loop ever calls `refresh_if_stale()`/writes the cache file; every live-request read (`snipe_check._filter_by_sale_rate()`) only ever calls `.get()`, never triggers a fetch or a write — so there's no concurrent-writer race to have in the first place, unlike `NameCache`'s per-request-instance pattern. No `--refresh` CLI flag by design, for the same reason `appearance.py --refresh` exists but this doesn't: `appearance.py`'s wago.tools source is outside this project's Blizzard rate-limit budget and needs a human to run it manually/periodically, while TSM's feed is free, low-volume (one HTTP GET), and already fully automated via `collect_all.py` — a manual trigger would just race the same file the background loop owns. TSM's Public Data API docs (`support.tradeskillmaster.com`) and ToS (`tradeskillmaster.com/terms`, confirmed live via a real browser session after `WebFetch` was blocked with a 403) explicitly invite third-party tools to pull this feed; no hard ToS blocker found, though the docs specifically invite heavier/programmatic users to reach out first (`admin@tradeskillmaster.com`) — not yet done, worth doing before this is under heavier real production load. Covered by `tests/test_tsm.py` (fetch parsing/errors, cache get/refresh/staleness/persistence/corruption-tolerance). |
-| `db.py` | Async SQLAlchemy for the *relational* data only (users/sessions/subscription state, and now forum posts) — separate from the parquet+DuckDB AH data layer. `User` model: FastAPI-Users base fields + `stripe_customer_id`/`stripe_subscription_id`/`subscription_status`/`subscription_current_period_end` (written only by `billing.py`'s webhook) + `locked_sell_realm` (nullable, written only by `dashboard._enforce_realm_lock`) + `nickname` (added 2026-07-29, nullable, no uniqueness constraint — public display name for Snipe Board posts, written only by `dashboard.update_nickname()`; see that route's entry above for why it exists). `ForumPost` model (added 2026-07-29): `author_id` (FK to `user.id`, using the same `fastapi_users_db_sqlalchemy.generics.GUID` type as `user.id` itself) + `author_email` (denormalized at post time, **no longer exposed by the API** — see `forum.py`'s row below, kept only for internal reference) + `author_nickname` (added 2026-07-29, denormalized the same way and for the same reason as `author_email` — a post keeps showing the nickname the poster had *at post time* even if they change it later; nullable only because posts made before this column existed have none) + `title` (nullable) + `image_filename` + `created_at` (set in Python via `datetime.now(timezone.utc)`, not a DB `server_default`, so it's identical across the Postgres-in-production/SQLite-in-tests split). **`WowAccount`/`WowAccountRealm` models** (added 2026-08-02, see `wow_accounts.py`'s row): a subscribed user's self-declared WoW-account labels (`WowAccount.owner_id` FK, `.label`) and, per account, which EU connected-realm ids have a character there (`WowAccountRealm.wow_account_id` FK, `.connected_realm_id`, `UniqueConstraint(wow_account_id, connected_realm_id)`). No ORM `relationship()` on either side — this file uses plain FK columns everywhere, no back-refs, stays consistent. No DB-level cascade delete (SQLite test fixtures don't enable FK enforcement) — `wow_accounts.delete_account()` deletes child realm rows explicitly, same transaction. Tests override the session dependency with SQLite. **`User.discord_webhook_url`/`WatchlistItem`** (added 2026-08-02, see `watchlist.py`'s row): a nullable plain-text Discord webhook URL (no OAuth) is the Watchlist notification delivery target; `WatchlistItem` (`owner_id` FK, `item_id`, `pet_species_id` nullable — no `pet_quality_id` column, deliberately: matching was never asked to be quality-granular for this feature) carries a nullable `trigger_price_copper` (nullable specifically so a bulk TSM-group import doesn't have to force one shared price onto every imported item — see that row for the full reasoning), an optional `label` (a TSM group's path, when imported that way), and `last_notified_at` (backs the notification cooldown). Real cross-DB gap found and fixed while building this: SQLite (tests) returns a naive `datetime` for a `DateTime(timezone=True)` column even though `datetime.now(timezone.utc)` is always what gets written, while Postgres (production, via asyncpg) round-trips tz-aware correctly — `watchlist.check_triggers()`'s cooldown math normalizes (`.replace(tzinfo=timezone.utc)` when naive) rather than assuming either driver's behavior, confirmed live via `tests/test_watchlist.py`'s cooldown tests failing with `TypeError: can't subtract offset-naive and offset-aware datetimes` before the fix. **`isolated_session()`** (added 2026-08-02, real production incident: every single `collect_all.py` cycle was throwing `asyncpg.exceptions._base.InternalClientError: got result for unknown protocol state 3` / `RuntimeError: ... got Future <Future pending> attached to a different loop` inside `watchlist.check_triggers()`, confirmed live via `railway logs` — silently swallowing every Watchlist Discord notification with zero visible symptom on the dashboard itself, since `collect_all()`'s per-step `try/except` means one failed step never breaks the cycle or shows up anywhere but the log): `engine()`/`sessionmaker()`'s module-level singleton pool is shared with the *main* FastAPI event loop, but `watchlist.check_triggers()` runs inside its own `asyncio.run()`-created loop (a background OS thread, see that function's docstring) — asyncpg connections are loop-bound, so handing out a pooled connection that was opened under the main loop to this different loop corrupts the connection. `isolated_session()` is an `@asynccontextmanager` that creates a brand-new single-connection engine (`pool_size=1`) and fully disposes it within the same call, so no connection ever crosses a loop boundary; used only by `watchlist._check_triggers_async()`, not by any request-path code (those all correctly stay on the main loop and keep using `sessionmaker()`). Covered by `tests/test_watchlist.py`'s `bypass_get_async_session` fixture, which monkeypatches `db.isolated_session` to reuse the test's own SQLite engine (aiosqlite has no loop-binding issue, so the fixture doesn't need to replicate the create/dispose dance, just the seam). **`AnonSession`** (added 2026-08-03, see `dashboard.py`'s Auth/tiers entry): a visitor-with-no-account's identity, keyed by an opaque `token` (the primary key, `uuid.uuid4().hex` — same generation convention as `forum.py`'s image filenames) set as the `ah_anon` cookie (see `auth.py`'s row). `locked_sell_realm` mirrors `User`'s own column exactly — the same "locked to the first sell realm ever queried" anti-abuse rule now applies to anonymous browsing too, enforced by the same shared atomic-lock core (`dashboard._atomic_lock_first_realm`) `_enforce_realm_lock`/`_enforce_anon_realm_lock` both call. No cleanup/expiry mechanism, deliberately, same precedent as `ForumPost` rows never being reaped. |
-| `forum.py` | Backing module for the **Snipe Board** page (renamed 2026-07-29 from an initial "Forum" — human request, module/route names weren't renamed to match, same precedent as `dashboard.py` serving `/snipes`). "Post a snipe you found" feature — an image (required) + optional title, logged-out visitors can see every post, posting requires login **and a nickname** (added 2026-07-29, human feedback: posts were showing the account's real email publicly, the wrong default). `create_post()` rejects with 400 if `user.nickname` is unset — enforced here, not at registration, since that also naturally covers every account that registered before nicknames existed; `static/snipeboard.html`'s post dialog is what actually prompts for one inline (via `PATCH /api/me/nickname`, see `dashboard.py`'s row above) before a first post, but this check is the real boundary, not that client convenience. `_post_to_json()` returns `author_nickname` (falling back to the literal string `"Anonymous Sniper"` for the small number of posts made before this column existed — see `db.ForumPost`) and never `author_email`. Deliberately minimal: no editing/deleting/comments/moderation. Two `APIRouter`s: `router` (`/api/forum/posts`, `GET` public / `POST` gated by `auth.current_active_user`) and `image_router` (`/forum/images/{filename}`, public, reads `IMAGE_DIR` fresh per request rather than a `StaticFiles` mount — a fixed-at-mount-time directory can't be redirected into a tmp dir for tests, this can via `monkeypatch.setattr(forum, "IMAGE_DIR", ...)`). Images are plain files under `DATA/forum_images/` on the same persistent volume `data/snapshots`/`data/listings` already use (`ALLOWED_IMAGE_TYPES` content-type allowlist, not a client-supplied extension; `MAX_IMAGE_BYTES` = 5MB) — server-generates the filename (`uuid4().hex` + the validated extension) so the client's original filename is never trusted for anything, including the path `serve_image()` reads from (`Path(filename).name` strips any directory components as defense in depth). Wired into `dashboard.py` via `app.include_router(forum.router)` / `app.include_router(forum.image_router)`, plus a public `GET /snipe-board` route serving `static/snipeboard.html` (same client-side-gate convention as `/snipes` — the page itself checks `/api/me` to decide whether to show the "+ Post a snipe" button or a "log in to post" link). |
-| `wow_accounts.py` | **New (2026-08-02)**, human request — "a user on their profile can add wow accounts... on each account there should be the option to add realms... display to the user which wow account they should log into." A subscribed user registers self-declared WoW-account labels (no Blizzard OAuth/credentials anywhere — just a string typed in on `profile.html`) and, per account, which EU connected-realm ids have a character there; `static/dashboard.html` cross-references each snipe row's buy-side realm against this client-side to show a "Your account" column. Mirrors `forum.py`'s shape: own `APIRouter(prefix="/api/wow-accounts")`, `Depends(current_subscribed_user)` throughout (not `current_active_user` — gated the same as the paid sniping feature itself, the first real consumer of that dependency, see `auth.py`'s row), manual `if`/`raise HTTPException` validation, a `_account_to_json()` serializer. `GET ""` (list this user's accounts + realm ids, no Blizzard/name lookups — names are resolved client-side against the new `GET /api/realms/eu`, see `dashboard.py`'s row), `POST ""` (create), `PATCH "/{account_id}"` (rename), `DELETE "/{account_id}"` (delete, explicitly deletes child `wow_account_realm` rows first since there's no DB-level cascade — see `db.py`'s row), `POST "/{account_id}/realms"` (add a realm), `DELETE "/{account_id}/realms/{connected_realm_id}"` (remove one). **`MAX_ACCOUNTS_PER_USER=8`** (lowered from an initial 10 the same day, 2026-08-02 — matches Blizzard's real per-Battle.net-account WoW account limit, human-specified) **`/MAX_REALMS_PER_ACCOUNT=50`** (human-specified) enforced via `_insert_account_atomic()`/`_insert_realm_atomic()` — a single `INSERT ... SELECT ... WHERE (SELECT COUNT(*) ...) < cap` statement, not a separate `SELECT COUNT(*)` followed by a Python-side `if` — this app has two recorded TOCTOU bugs from exactly that read-then-write pattern (`dashboard._enforce_realm_lock`'s old race, `item_names.NameCache.save()`'s lost-update race, both in `HISTORY.md`), both fixed the same way: making the check and the write one atomic DB statement instead of two round trips. Exposed as standalone functions (not inlined in the route handlers) specifically so tests can drive the exact interleaving directly with independent sessions, same testability precedent as `dashboard._enforce_realm_lock`. The duplicate-realm case doesn't need a second atomic check at all — `WowAccountRealm`'s `UniqueConstraint` is the real atomic guard, caught here as an `IntegrityError`. Ownership checks (`_get_owned_account()`) 404 rather than 403 on "exists but isn't yours" — no existence-leaking, same non-distinguishing precedent used everywhere else in this app. Covered by `tests/test_wow_accounts.py` (CRUD, both caps including real concurrent-race regression tests via two independent SQLite sessions, ownership, auth-gating) and `tests/test_dashboard.py`'s `GET /api/realms/eu` tests. **`profile.html`'s UI was fully redesigned the same day** (human follow-up, "this whole adding wow accounts needs a big UI/make sense update" → "remake the entire profile page") — see `static/profile.html`'s row below for the new numbered-cards/searchable-realm-picker shape; the account cap dropped from an initial 10 to 8 in the same pass (see above). `GET /api/realms/eu` (`dashboard.py`'s row) also changed shape the same day to support searching a connected realm by any of its member names, not just its primary one — see that row for why. |
-| `tsm_import.py` | **New (2026-08-02)**, backing Watchlist's "import a TSM group instead of adding items one at a time" (see `watchlist.py`'s row, `FEATURE_WATCHLIST.md`). Decodes a TSM4 group-export string -- confirmed live (not guessed) against TSM's own real, unmodified addon source (`Core/Service/Groups/ImportExport.lua`'s `GenerateExport`/`DecodeNewImport`) to be `LibSerialize:SerializeEx(...)` piped through `LibDeflate:CompressDeflate()` then `:EncodeForPrint()` -- a 64-char alphabet (`a-z A-Z 0-9 ( )`), not the classic `^`-prefixed AceSerializer format some older TSM strings use (AceSerializer is bundled by TSM only for backward-compat decoding of those, confirmed unused for new exports). Rather than hand-porting that bit-packed binary format to Python from documentation (real risk of a wrong bit offset silently producing wrong item ids, not an error), this runs the two real Lua files TSM itself ships (`vendor/tsm_lua/LibDeflate.lua`/`LibSerialize.lua`, byte-identical to TSM's bundled copies -- confirmed via git-blob-SHA comparison against the real TSM addon source, fetched by a research subagent -- LibSerialize is pinned at TSM's `MINOR=1`, not current upstream, which has since moved to a different wire format) through a real embedded Lua interpreter, the `lupa` package (new dependency, human-approved after an explicit tradeoff discussion against a pure-Python reimplementation -- see `requirements.txt`'s row). `unpack` is injected as a global before loading `LibSerialize.lua` -- WoW's Lua 5.1 has it as a global, modern Lua (what `lupa` embeds) only has `table.unpack`; the one shim needed, confirmed by grepping both vendored files for other WoW-only globals before writing this module. A single module-level Lua runtime is lazily created and guarded by a lock (not safe for concurrent calls from multiple threads, and recreating the interpreter + reloading both library files per call is needless overhead for a low-frequency interactive action). `decode_group_export(export_str) -> TsmGroupExport` raises `TsmImportError` (not a raw `lupa.LuaError`) on anything that isn't a valid current-format export -- confirmed live that malformed/garbage input (including valid-alphabet-but-structurally-invalid strings) fails cleanly inside `LibDeflate`'s own `DecodeForPrint`/`DecompressDeflate` (returns `nil`, not a Lua-level error) rather than crashing. Group-path format, confirmed live against a real 300-item/112-subpath sample the human pasted during development: `items` is a Lua table mapping TSM itemString (`i:<itemId>...`) to the item's sub-group path *relative to the exported group*, backtick-joined (`TSM.CONST.GROUP_SEP`), covering both the `group/items` and `group/subcategory/items` shapes the human flagged as a real case -- re-joined with `/` here for display, matching how the rest of this project presents paths. **Known limitation**: only `i:` itemStrings are parsed -- TSM's caged-pet itemString format (`p:...`) wasn't present in the one real sample available while building this, and rather than guess at its shape, pet entries in an imported group are silently skipped (not crashed on). Covered by `tests/test_tsm_import.py`, which uses the exact real sample string as its test vector (not synthetic) -- metadata (group name, 300-item count), item-id parsing, nested-subgroup-path handling, and error cases all re-derived through the real module. |
-| `watchlist.py` | **New (2026-08-02)**, human request -- "user imports TSM groups or RAW itemids and set a trigger price for when they want a notification." Watchlist tracks specific items across every EU realm, independent of any sell realm (see `FEATURE_WATCHLIST.md`, whose six open questions this module resolves -- see that file's own updated "Open questions" section for the human decisions behind each). Key product decisions, all explicit human calls during the same conversation: matching is `item_id`-only (+ optional `pet_species_id`), not bonus/ilvl-aware, matching the rest of the product's 2026-07-26 decision rather than reopening it; `trigger_price_copper` is a plain user-set absolute gold price, explicitly **not** a discount-vs-region-median "auto-price" the rest of the product uses elsewhere ("Ignore this 'autoprice' sort of thing now, we only want to trigger for whatever price the user wants" -- corrected mid-build after an initial round of `AskUserQuestion`s had already been answered "absolute gold price," reinforcing the same call); delivery is a per-user Discord webhook URL (`db.User.discord_webhook_url`), chosen over in-app-only (passive, only useful if checked) or email (real new infra, no existing precedent in this project) via an explicit `AskUserQuestion` round. Mirrors `wow_accounts.py`'s shape: own `APIRouter(prefix="/api/watchlist")`, `Depends(current_subscribed_user)` throughout (premium-only, matching the "Coming soon (premium-only)" badge the `watchlist.html` placeholder already shipped with), manual `if`/`raise HTTPException` validation, the same atomic `INSERT ... SELECT ... WHERE count < cap` pattern as `wow_accounts._insert_account_atomic()` for `MAX_WATCHLIST_ITEMS_PER_USER=500` (a UX limit, not a human-tuned number like most thresholds in this product -- picked generously enough that a real 300-item TSM group import comfortably fits). **Route registration order matters**: `PATCH /discord-webhook` is registered *before* the `PATCH "/{item_id}"`/`DELETE "/{item_id}"` routes -- found live while writing this module's own tests (a 422 Unprocessable Entity, since Starlette matched `/discord-webhook` against `/{item_id}: int` first and failed the int conversion) -- FastAPI/Starlette matches routes in registration order, not by specificity. `POST /import-tsm` calls `tsm_import.decode_group_export()` (via `asyncio.to_thread()`, same "any new blocking call site needs checking" discipline as every other route in this app, see "Real production outage" below -- CPU-bound Lua execution, not network, but not guaranteed instant for an arbitrarily large pasted group either), inserts each parsed item with `trigger_price_copper=None` (a TSM export carries no price data -- forcing one shared trigger onto a whole imported group would be meaningless) and `label` set to the item's group path, skipping item ids already on the user's list (checked both against existing DB rows and within the same import batch, so a group with the same item under two sub-paths doesn't double-insert). **`check_triggers()`** is the sync entry point `collect_all.py`'s background loop calls every ~10-min cycle (no new scan cadence, per `FEATURE_WATCHLIST.md`'s resolved open question #6) -- `asyncio.run()` inside a plain sync function is safe here specifically because `collect_all()` itself only ever runs via `asyncio.to_thread()`, a real OS thread with no event loop of its own already running. That alone isn't the full story, though: `_check_triggers_async()` opens its session via `db.isolated_session()`, not `db.sessionmaker()`'s shared singleton — see `db.py`'s row for the real production bug (every cycle silently failing on an asyncpg cross-loop error) this fixed 2026-08-02. Reads every `WatchlistItem` with a trigger set via a real `JOIN` against `User` (needs the owning user's `discord_webhook_url`), computes each watched item's current region-wide cheapest listing from `data/listings/*.parquet` (`_region_cheapest_by_item()`, a plain `min()` over the whole region sweep -- unlike `snipe_check.py`'s sell-realm-relative comparison, Watchlist has no sell realm to exclude), and Discord-POSTs (`_send_discord_notification()`, a plain `requests.post()` with a 10s timeout, wrapped in try/except, never raises) when a listing clears the trigger. **`NOTIFY_COOLDOWN_SECONDS=4*60*60`** (4 hours, not human-specified -- a reasonable default worth tuning with real usage, unlike this product's usual human-tuned-constant convention) gates re-notifying the same still-cheap item every cycle, tracked via `WatchlistItem.last_notified_at`. Covered by `tests/test_watchlist.py` (CRUD, cap enforcement, TSM import including the real sample string from `tests/test_tsm_import.py`, ownership, and `check_triggers()`'s trigger/cooldown/no-webhook-still-tracks-silently behavior against a real fixture `data/listings/*.parquet`) -- the cooldown tests found the tz-naive/aware SQLite gap documented in `db.py`'s row above. |
-| `auth.py` | FastAPI-Users wiring: email/password register+login, cookie-based sessions. `current_active_user` gates login-only routes. `has_active_subscription(user)` — single source of truth for "unrestricted" (active subscription OR superuser), used by both `_enforce_realm_lock` and anywhere else that needs the same check. `current_subscribed_user` (402 if not subscribed) went unused by any route for a while after free tier superseded its original purpose, until `wow_accounts.py` became its first real consumer (2026-08-02, see that row below). `COOKIE_SECURE` env toggle (`false` in dev `.env`, unset/secure in production). **`resolve_user_from_request(request) -> User \| None`** (added 2026-08-01, real production incident: Postgres pool exhaustion broke login under barely any real traffic): manually resolves the current user from the request's `ah_auth` cookie using a session opened and closed *within this one function call*, instead of `current_active_user`'s `Depends()` chain, which FastAPI keeps checked out for a route's *entire* request lifetime (confirmed by reading `fastapi/routing.py`'s `solve_dependencies`/`AsyncExitStack` handling — cleanup only runs after the full response is sent). `dashboard.py`'s `/api/snipes` is the one route in the app that does 30-175s of unrelated DuckDB/Blizzard work after authenticating; holding a pooled connection open for all of that, on every call, at every tier, was the actual root cause of the incident (a smaller, immediate mitigation — raising the pool from 15 to 60 connections — shipped the same day but doesn't fix the underlying pattern). Mirrors `fastapi_users.current_user(active=True)`'s real behavior exactly (confirmed by reading the installed package's `Authenticator._authenticate()`/`JWTStrategy.read_token()`): only the `active` check applies, since this app never uses `verified=True`/`superuser=True` anywhere — so replicating just that one check is complete, not partial. Returns `None` on any failure (no cookie, invalid/expired token, unknown user, inactive user) rather than raising — callers 401 themselves. `db.sessionmaker()`'s `expire_on_commit=False` means the returned `User`'s already-loaded scalar columns stay safely readable after the session closes. `_enforce_realm_lock()` itself (`dashboard.py`) deliberately kept its exact prior signature (still takes an explicit `session`) — its existing test coverage, including a real two-independent-sessions TOCTOU race regression test, depends on controlling that session precisely; only *where* `api_snipes()` gets that session from changed (a short-lived `async with db.sessionmaker()() as session:` opened just for that call, not a route-level `Depends(get_async_session)` held for the rest of the request). Covered by `tests/test_auth.py`'s `test_api_snipes_invalid_cookie_falls_back_to_anonymous`/`test_api_snipes_inactive_user_falls_back_to_anonymous` (renamed 2026-08-03 — both cases now fall through to the anonymous path below rather than 401ing, see that row) and `tests/test_dashboard.py::test_api_snipes_closes_the_realm_lock_session_before_slow_work` (patches `AsyncSession.close()` at the class level — `__aexit__` is dispatched via the type, not instance attributes, so an instance-level patch isn't seen by `async with` — to directly confirm the session closes before `find_snipes()` runs). **Test-seam note**: `tests/test_dashboard.py`'s `bypass_auth` fixture now also monkeypatches `auth.resolve_user_from_request` directly (not just `dependency_overrides[current_active_user]`) since it's a plain function call, not a declared FastAPI dependency, so `dependency_overrides` alone no longer reaches `/api/snipes`; both `tests/test_dashboard.py` and `tests/test_auth.py`'s fixtures also now monkeypatch `db.sessionmaker` itself (module-qualified — `auth.py`/`dashboard.py` both `import db` rather than `from db import sessionmaker`, specifically so this stays patchable) so the new direct-session-usage code paths land in the same throwaway SQLite test DB as everything else, alongside the pre-existing `dependency_overrides[get_async_session]` mechanism (kept, not replaced, since other routes still use it). **`ANON_COOKIE_NAME`/`resolve_or_create_anon_session(request, session)`** (added 2026-08-03, letting a visitor with no account use `/snipes`): resolves/mints a `db.AnonSession` identity from a separate `ah_anon` cookie (a different name than `ah_auth` so `CookieTransport` never tries to JWT-decode it), returning its opaque token. Called by `dashboard.py`'s `api_me()`/`api_snipes()` only once `resolve_user_from_request()` has already returned `None` — the "no real account" fallback, never a replacement for real auth. Does **not** set the cookie itself (that was tried first via a route-local `response: Response` parameter and found broken by a real bug: FastAPI's exception handling builds an entirely separate `Response` when a route raises `HTTPException`, which never sees mutations made to that parameter — and `/api/snipes` routinely raises `HTTPException` for anonymous requests, 400 for an uncollected realm or 403 for a different-realm lock, the *common* case for a first-time visitor, not an edge case). Instead stashes the resolved token on `request.state.anon_token`; `dashboard.py`'s `ensure_anon_cookie` middleware reads it after `call_next()` and sets the cookie on the response middleware actually receives, which is the genuinely final one regardless of whether a route returned normally or raised — see that middleware's own docstring. |
-| `billing.py` | **Live Stripe mode** (human decision — deployed straight to live, no test-mode verification pass). `POST /billing/checkout` creates a Checkout Session for the single €4.99/mo price; `POST /billing/webhook` verifies the Stripe signature and handles `checkout.session.completed`/`customer.subscription.updated`/`customer.subscription.deleted`, the only writer of the user's subscription fields. Still on the full `sk_live_...` secret key, not a restricted key (see "Roadmap" — human-only to change). **`create_checkout_session`'s `success_url` fixed to `/snipes`** (2026-07-31, real bug fix found during a repo-wide audit — was still `/` from before the 2026-07-26 routing migration moved the tool off the root path; every other post-login/post-action redirect was updated then, this one was missed, so a paying customer landed on the marketing page instead of the tool). **`_period_end()` now checks both possible field locations** (2026-07-31, same audit): `current_period_end` used to live directly on the Stripe Subscription object; newer Stripe API versions moved it onto each `SubscriptionItem` instead, and this project pins no `stripe.api_version`, so which shape a real webhook sends was never confirmed directly — falls back to `subscription["items"]["data"][0]["current_period_end"]` when the top-level field is `None`, so an account on a newer API version doesn't silently get `None` written for every renewal date. |
-| `alembic/`, `alembic.ini` | DB migrations. `env.py` reads `DATABASE_URL` from the environment. |
-| `static/login.html`, `register.html`, `subscribe.html`, `profile.html`, `pricing.html`, `snipeboard.html`, `watchlist.html` | Plain HTML/JS, same no-build-step convention, same visual identity/dark-mode as `dashboard.html`. `profile.html` shows subscription status + Stripe customer portal link + (added 2026-07-29) a nickname field/Save button (`PATCH /api/me/nickname`, see `dashboard.py`'s row above) — the one place to change a nickname after it's first set via `snipeboard.html`'s post dialog. **Fully redesigned 2026-08-02** (human follow-up after the first WoW-Accounts pass shipped: "this whole adding wow accounts needs a big UI/make sense update... its bad to list them... Infact remake the entire profile page"). The old single-narrow-column (`max-width: 420px`) stacked-rows layout is gone — `.shell` is now `max-width: 1100px`, and the top card is a compact horizontal "Account" summary (email + subscription badge + nickname inline, not one label-per-row) rather than a form-like list. Below it, a full-width **WoW Accounts** section with its own heading/lede, gated client-side on `subscription_status === "active" || is_superuser` (a non-subscribed account sees a one-line upsell instead of controls that would always 402).
-
-Key decisions confirmed via an AskUserQuestion round before building: **accounts are numbered, not freely named** ("Numbers will always be 1,2,3,4,5,6,7, or 8" — matches Blizzard's real per-account WoW limit; `addAccount()` sends `label: "Account " + (currentAccounts.length + 1)` with no text input at creation time, still renameable afterward via each card's own inline input — "Press Save to save changes." makes the two-step explicit, since renaming doesn't auto-save on blur) and **side-by-side cards**, not a stacked list — `#wow-accounts-list` is a CSS grid (`repeat(auto-fill, minmax(260px, 1fr))`), with a dashed "+ Add account" tile as the grid's trailing element (becomes a disabled "Maximum 8 WoW accounts reached" tile at the cap, replacing the button entirely rather than just disabling it).
-
-**Loading state, added the same day** (human request: "wait on displaying a user's account, until the data is actually loaded"): three pulsing gray `.skeleton-card` placeholders (`@keyframes skeleton-pulse`) show from the moment the account is confirmed subscribed until both `/api/wow-accounts` and `/api/realms/eu` resolve (`Promise.all`) — the grid/add-tile never flashes empty or renders before real data is in.
-
-**Realm search, replacing the original `<select>` dropdown same day** (human request: "the list should be searchable with a clear searchbar"): each card gets its own `<input>` + absolutely-positioned `.realm-search-results` dropdown, filtered live via `realmSearchMatches()` (substring match against `realmSearchEntries`, capped at 8, sorted by name) as the user types; `Enter` picks the top match, `Escape`/blur closes the dropdown. Result-item clicks use `mousedown` (not `click`) specifically so the pick fires before the search input's own `blur` handler could race the dropdown closed — `blur` still hides it, but only after a `setTimeout(150)` grace window. Realm chips and search-result items deliberately have **no truncation anywhere** (`white-space: normal; word-break: break-word`, no `overflow:hidden`/`text-overflow:ellipsis`) — human request: "make sure we always can see the full realm name."
-
-Uses the same regex-based `escapeHtml()` as `dashboard.html`/`snipeboard.html` (not the `div.textContent`→`innerHTML` trick that caused this project's one real stored-XSS incident, see `snipeboard.html`'s row) since account labels and Blizzard realm names are interpolated into `innerHTML` templates here. `subscribe.html` explains what a subscription changes vs the free tier, links to `/pricing`. `pricing.html` — public Free-vs-Subscriber comparison + FAQ, doesn't advertise the internal superuser/10000 tier (founder/admin headroom, not purchasable, raised from 5000 2026-07-26). `snipeboard.html` (added 2026-07-29 as `forum.html`, renamed the same day — human request, "Forum" undersold what it actually is) — public feed of user-posted snipes (see `forum.py`'s row above); checks `/api/me` on load to swap between a "+ Post a snipe" button (logged in) and a "log in to post" link (logged out), same client-side-gate pattern `landing.html` uses for its CTA swap, not a hard redirect — the feed itself is never gated. **Header/nav fixed 2026-07-30** (human report: the page "felt all over the place"): added an `<h2>Snipe Board</h2>` + `.lede` line ("Community feed of snipes.", trimmed the same day per human request from a longer first draft) above the feed (this page was the one content page missing the title+lede convention every sibling, e.g. `log.html`, already used) and put it in a `.page-head` flex row alongside the `+ Post a snipe`/`Log in to post` control instead of that button floating alone in a right-aligned bar with no heading to anchor it. **Widened the same day** (human follow-up: "it only uses the middle of the screen") from `log.html`'s 640px column (a copy-paste that made sense for that page's plain timestamp list, not for a photo board) to a 1400px `.wrap` (matching `dashboard.html`'s shell), and `.posts` changed from a single-file flex column to a no-JS CSS-`columns` masonry layout (`columns: 320px`, `.post { break-inside: avoid }`) so it actually fills the width with multiple cards per row on a wide screen instead of one narrow centered strip — chosen over a CSS grid because posted screenshots vary wildly in aspect ratio and a grid would leave ragged gaps next to short cards. Separately, a real bug: the nav (`Dashboard`/`Log`/`Pricing`/`Log in`) only ever removed `#nav-login` on login, leaving a logged-in visitor with no way back to Profile or to log out from this page at all. Nav now swaps by auth state in `init()`: logged out keeps the public-page set (`Dashboard`/`Log`/`Pricing`/`Log in`, matching `landing.html`'s convention for a page logged-out visitors can browse); logged in removes Pricing and shows `Profile`/`Log out` instead (mirroring `dashboard.html`'s authenticated nav and its 2026-07-26 Pricing-removal decision below), with the same `/auth/logout` → `/login` handler `dashboard.html`'s `#logout` button uses. **`Snipe Board` self-link added 2026-07-30** as part of the same nav-unification pass described in `dashboard.html`'s row (`.nav a.active`) — was previously omitted like every other page's self-link, one more source of the nav-width-shifts-per-page report. **Site-wide nav/auth pass, same day**: `login.html`/`register.html` previously had no check at all for an already-authenticated visitor — hitting either page while logged in just showed the form again instead of redirecting to `/snipes` (human request); both now run the mirror-image of the check every logged-in-only page already does (`fetch /api/me`, redirect on the result) before rendering anything else. `log.html`'s nav used to be entirely static (`Dashboard`/`Snipe Board`/`Pricing`, regardless of auth) — a logged-in visitor had no way to reach Profile/Log out from it and still saw `Pricing` despite every other logged-in page dropping it, and a logged-out visitor had no `Log in` link at all; it now swaps by auth state exactly like `snipeboard.html` does (same ids/pattern: `#nav-pricing`/`#nav-profile`/`#nav-login`/`#nav-logout`). `profile.html` had no `Log out` button at all (a real gap — the profile page you'd go to *to* manage your account had no way to end your session from it) and still showed `Pricing`; both fixed, and its nav now matches the unified 5-link set/order. The post form lives in a native `<dialog>` (`showModal()`), opened only by that button, so browsing the feed never shows the form unasked; a second `<dialog>` (`#lightbox`) opens full-size on clicking any posted screenshot (`cursor: zoom-in`) and closes on a click anywhere inside it or Escape (native `<dialog>` behavior) — no separate full-resolution asset, it's the same upload just unconstrained by the feed's `max-height`. The post dialog's `#nickname-field` only shows when `currentNickname` (set from `/api/me` at page load) is falsy — a real, unset `PATCH /api/me/nickname` call happens before the post itself if it's visible; `profile.html` is where an already-set nickname gets changed later (a plain input + Save button, same endpoint), so the dialog isn't the only place this can be edited. Every page's brand mark links to `/` now (`.brand-link`, see `dashboard.html`'s row above for the mechanism); `profile.html`'s "Dashboard" nav link points to `/snipes` (changed 2026-07-26 along with the routing move); `pricing.html`'s "Dashboard" nav link was removed outright (human request) rather than repointed; `subscribe.html`'s "← Back to dashboard" link was removed the same way. `login.html`'s post-login redirect goes to `/snipes`, not `/`. `pricing.html`'s "Log in" nav link (`#nav-login`) is unconditionally shown by default but removed on load if `/api/me` confirms an active session (2026-07-26, human request — the page previously always showed "Log in" even to an already-authenticated visitor) — no nav link put back in its place, since the "Dashboard" link here was deliberately removed already, not an oversight to restore. **Stored XSS fixed in `snipeboard.html`'s `escapeHtml()`** (2026-07-31, real bug fix found during a repo-wide audit, live-verified with a real Chrome DOM test): the `div.textContent -> div.innerHTML` trick only escapes what a browser escapes when serializing *text content* (`&`/`</>`) — not quotes — but its output was interpolated straight into a double-quoted `alt="..."` attribute (post titles), so a title containing `"` broke out of the attribute and injected live markup, executing for every visitor since the feed is public and posting only needs a free account. Replaced with a real regex-based escaper (`&`/`<`/`>`/`"`/`'` all mapped) that's correct in any interpolation context, not just text nodes — `dashboard.html`'s own `escapeHtml()` (see that row above) was written the same way specifically because of this incident. **`subscribe.html`'s pitch/steps copy rewritten** (2026-07-31, same audit): the paid checkout page still described the *retired* sold-price-inference pricing model ("we show what things actually sold for," "validated snipe") — the 2026-07-25 pricing model change rewrote `landing.html`'s hero the same day, but this page was missed. Now matches `landing.html`'s accurate framing (a listing-to-listing price difference, explicitly not every gap being a genuine bargain) instead of promising a capability the shipped code doesn't have. **`watchlist.html`** (added 2026-07-31 as a public "Coming soon" placeholder, **rebuilt into the real feature 2026-08-02** — see `watchlist.py`'s row for the backend): logged-out visitors and non-subscribers still see a public page (a "log in"/"see plans" upsell card, gated client-side same as every other subscriber-only page's convention), but a subscribed, logged-in user gets the real UI — a Discord-webhook-URL field, an add-by-item-id form, a paste-a-TSM-group-export textarea, and a table of watched items with an inline-editable gold trigger price per row and a Remove button. Reuses `profile.html`/`dashboard.html`'s exact visual system (topbar/nav/theme-toggle boilerplate, `escapeHtml()`, `.item-icon`/quality-color-ring convention) rather than inventing a new one. Verified end-to-end in a real browser against a real (throwaway-SQLite-backed, auth-bypassed) local server, not just by reading the diff, per this project's own frontend-verification convention: added an item by id (resolved a real live Blizzard item name/icon/quality color), imported the real 300-item TSM sample string used to build `tsm_import.py` (both flat `group/items` and nested `group/subcategory/items` paths rendered correctly), edited and saved a trigger price, removed an item, and confirmed a malformed Discord URL surfaces its validation error inline — zero console errors throughout. Every other authenticated page's nav (`dashboard.html`/`snipeboard.html`/`profile.html`) already had a `Watchlist` link from the placeholder's original addition; unchanged by this rebuild. |
-| `requirements.txt` | `requests`, `pyarrow`, `duckdb`, `fastapi`, `uvicorn`, `httpx`, `fastapi-users[sqlalchemy]`, `sqlalchemy[asyncio]`, `asyncpg`, `aiosqlite` (tests only), `alembic`, `stripe`, `pytest-asyncio`, `python-multipart` (added 2026-07-29 for `forum.py`'s image upload form — FastAPI's `Form`/`File` parsing needs it, not imported directly). `lupa` (added 2026-08-02 for `tsm_import.py` — embeds a real Lua interpreter so TSM's own unmodified `LibDeflate.lua`/`LibSerialize.lua` can run unmodified rather than being hand-ported to Python; the first non-Python-ecosystem runtime dependency this project has taken on, a deliberate human-approved tradeoff against reimplementation risk, not a default reached for lightly — see that module's row. Confirmed to ship prebuilt `manylinux`/`win_amd64` wheels for the Python versions this project uses, so `pip install` needs no compiler on either the Windows dev machine or the `python:3.12-slim` Docker image; `Dockerfile` was updated to `COPY vendor ./vendor` so the two vendored `.lua` files actually ship in the container). |
-| `.env.example` | `BLIZZ_CLIENT_ID`, `BLIZZ_CLIENT_SECRET`, `BLIZZ_REGION=eu`, `STRIPE_PUBLISHABLE_KEY`/`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`/`STRIPE_PRICE_ID`/`STRIPE_PRODUCT_ID`, `SECRET`, `COOKIE_SECURE`, `DATABASE_URL`. |
-| `.claude/commands/`, `.claude/skills/project-review/` | Reusable Claude Code tooling (added 2026-07-25): `/railway-status` (deploy/CI/volume status, read-only), `/railway-debug <command>` (runs a command against live production data via `railway ssh`), `/ship` (test both envs → commit → push → watch CI → confirm Railway deploy → optionally live-verify), `project-review` skill (a repo-specific pre-push checklist — market_key Python/SQL parity, copper-vs-gold units, the CI-env test mismatch class of bug, ToS/secrets/Stripe-key guardrails, frontend-verify-in-a-real-browser convention). Keep these current the same way as this file — if the Railway CLI invocation changes, update the command file, not just this note. |
-
-Verified: `pytest -q` green (see individual test files for current counts —
-run it, don't trust a number written here, it goes stale immediately).
-Full history of every session's test-count progression is in `HISTORY.md`
-if you want it; not tracked here on purpose.
-
-## Process deviations from the roadmap (all human decisions, not silent drift)
-
-The roadmap below says "execute top to bottom." That hasn't happened
-literally — each skip-ahead was a deliberate, human-directed call, not
-drift, and none of them reversed a guardrail. Summary (full reasoning for
-each is in `HISTORY.md` if you need it):
-
-- **Phase 0's 48h validation gate was skipped** (2026-07-20) to build ahead;
-  risk accepted indefinitely unless the human decides to run the
-  verification protocol later. The classification engine (`diff_snapshots.py`)
-  remains unvalidated against real seller behavior.
-- **Phase 5's dashboard was pulled forward** (2026-07-23) ahead of Phase 3;
-  viable because the dashboard surfaces the same `snipe_check.CAVEAT` the
-  CLI already prints, no new transferability guarantees needed.
-- **The hosted multi-tenant pivot happened in one day** (2026-07-23):
-  auth, live Stripe billing (skipping test-mode verification), scoped
-  server-side collection, and CD all shipped same-day — a higher-risk-
-  tolerance path than the roadmap implied, deliberate and human-directed.
-- **Phase 3 groundwork (appearance rarity) started ahead of Phase 1's
-  remaining hardening** (2026-07-23) — human asked for it directly.
-- **Phase 2 (commodities feed) is explicitly out of scope** (2026-07-24),
-  not just deprioritized — no current intent to build it.
-- **The sold-price-percentile pricing model was replaced** (2026-07-25) —
-  see "What this project is" above; this is a product-shape change, not a
-  roadmap skip, but is the single biggest deviation from the original
-  design in the project's history.
-- **Bonus/ilvl-aware matching (`market_key()`) was dropped from live
-  pricing** (2026-07-26) — see "What this project is" above's matching-
-  model note. A human product decision (matching should be pure `item_id`,
-  full pooling, lowest price wins, ilvl/bonus differences display-only)
-  made after a live-traced bug in the noise-detection heuristic that
-  matching depended on. Simplifies `snipe_check.py` substantially (four
-  helper functions and a temp-table join removed); `market_key()` itself
-  remains real code, still used by `diff_snapshots.py`'s relist detection
-  and `analyze.py`'s manual debugging tool.
-
-Not yet present: sell/scan realm config split (manual `--exclude`/`--items`
-flags stand in), `--since` incremental diffing, `VALIDATION.md`.
-
-## Architecture & data layout
-
-```
-Blizzard API ──> data/snapshots/{cr_id}/{epoch_ts}.parquet   (sell realms; only the
-                        │                                      LATEST is kept automatically
-                        │                                      since 2026-07-25, see
-                        │                                      collect_all.py's module docstring)
-                        v
-                 snipe_check.find_snipes() reads it directly -- no diffing needed,
-                 pricing is the sell realm's own current cheapest live listing
-
-data/state/{cr_id}.json  — Last-Modified cursor for the sell-realm collector
-
-Blizzard API ──> data/listings/{cr_id}.parquet   (region scanner, ALL EU realms;
-                                                    latest sweep only, overwritten,
-                                                    no history — buy side)
-```
-
-**Manual/ad-hoc path only** (diff_snapshots.py is no longer run automatically): a
-human who wants the sale-classification signal first accumulates real history
-themselves (e.g. `fetch_snapshot.py --loop` run locally, which is unaffected by
-collect_all.py's prune-to-latest), then runs `diff_snapshots.py --cr-id X` by
-hand to produce `data/events/{cr_id}.parquet` (derived; recomputed from
-scratch each run — always safe to delete), which `analyze.py`'s DuckDB views
-(`snaps`, `ev`, `sales`, `span`) then read. `analyze.connect()` works fine
-with no events file too — `ev`/`sales` just come back empty.
-
-Snapshot schema is `SCHEMA` in `fetch_snapshot.py`; event schema is
-`EVENT_SCHEMA` in `diff_snapshots.py`; listing schema is `LISTING_SCHEMA` in
-`scan_region.py`. Changing any must handle previously written files
-(regenerate, or read with `union_by_name`) — globs assume uniform schema.
-
-## Blizzard API facts (trust these, don't guess)
-
-- OAuth: `POST https://oauth.battle.net/token`, HTTP basic auth with client
-  id/secret, `grant_type=client_credentials`. Token lasts ~24h; cached in-process.
-- Base `https://eu.api.blizzard.com`; namespace param `dynamic-eu` (auctions,
-  realms) or `static-eu` (items, appearances, media).
-- Non-commodity AH: `GET /data/wow/connected-realm/{crId}/auctions`. Updates
-  roughly hourly, at no fixed clock time. Honor `If-Modified-Since` /
-  `Last-Modified` (implemented; the Last-Modified timestamp is the canonical
-  `snapshot_ts`).
-- Commodities (region-wide): `GET /data/wow/auctions/commodities` —
-  **Phase 2, explicitly out of scope**, not implemented.
-- Realm lookup: `GET /data/wow/search/connected-realm?realms.slug={slug}`.
-- Item class/subclass: `GET /data/wow/item-class/index` + per-class
-  `itemSubclasses` — confirmed live 2026-07-24: 2=Weapon, 4=Armor,
-  1=Container, 19=Profession, 20=Housing, 17=Battle Pets, 12=Quest,
-  15=Miscellaneous with subclass 5=Mount. 9=Recipe (confirmed live
-  2026-07-28, distinct from Profession's 19 — see `snipe_check.py`'s
-  `CLASS_BUCKET_RULES` row below).
-- Rate limit 36,000 req/h, 100 req/s. Headroom is not an invitation — stay
-  polite. `collect_all._prewarm_item_base_levels()` and `dashboard._build_rows()`'s
-  `NameCache.ensure_many()`/`.ensure_icons_many()` calls are where this
-  pipeline makes bulk Blizzard calls; the first is explicitly capped per
-  call (see its file-table entry above).
-- `time_left` buckets: SHORT <30m, MEDIUM 30m–2h, LONG 2–12h, VERY_LONG 12–48h.
-  Players list at 12/24/48h durations.
-- Prices are **copper** (10,000 = 1 gold) end to end; only format as gold at
-  display boundaries.
-- Battle pets: item_id 82800 cages + `pet_species_id` / `pet_quality_id` /
-  `pet_level` fields. `bonus_key`/`market_key` are empty for pets — matching
-  uses the pet identity fields instead.
-- `auction_id` is stable for a listing's lifetime → it is the diff key. Seller
-  identity is never exposed by the API.
-
-## Inference logic (change only with tests proving equivalence or improvement)
-
-For each auction present in snapshot N but missing in N+1, `classify_pair()`:
-
-1. `buyout IS NULL` → `bid_only_gone` (can't be insta-bought; excluded).
-2. `time_left == SHORT` → `likely_expired`.
-3. A matching `(item_id, market_key(bonus_key), pet_species_id,
-   pet_quality_id, quantity)` listing appears among brand-new auction ids in
-   N+1, **at a buyout within ±15% of the vanished listing's price**
-   (`RELIST_PRICE_TOLERANCE`, see `diff_snapshots.py`) → `likely_relisted`
-   (consumed from a per-key candidate list, so N identical vanished listings
-   need N matching relists).
-4. `gap_seconds >= MIN_REMAINING[time_left]` → `ambiguous` (could have expired;
-   also absorbs collector-downtime gaps).
-5. Else → `inferred_sale`.
-
-**Known blind spot**: a cancel *without* relist is indistinguishable from a
-sale. Never formally validated against real seller behavior (Phase 0's gate
-was skipped). This is one of several reasons the pricing model no longer
-depends on this classification (see "What this project is" above) — the
-classification itself is still real, correct code, but (since 2026-07-25)
-no longer runs automatically; it's a manual/ad-hoc tool for `analyze.py`'s
-debugging commands, not a live signal (see `collect_all.py`'s row in
-"Current state").
-
-### `market_key()` — the matching-only coarsening of `bonus_key`
-
-**No longer used by `snipe_check.py`'s live pricing/matching** (changed
-2026-07-26 — see "What this project is" above's matching-model note; that
-join is now plain `item_id`, no bonus/ilvl pooling logic needed at all).
-Still real, still correct, still used by `diff_snapshots.relist_key()`
-(needs finer-than-item_id identity for relist detection) and `analyze.py`'s
-manual debugging macro. Kept here for that reason, not as dead documentation.
-
-`bonus_key()` is pure and canonical — never changes what's stored/displayed.
-`market_key(bk, base_level=None, noise_bonus_ids=None)` is a *separate*,
-coarser key used only for matching/grouping (relist detection, and
-formerly the buy/sell join in `snipe_check.py`) — real crafted-item
-variance and Blizzard's undocumented per-craft/per-instance ids otherwise
-fragment one liquid market into dozens of near-unique buckets.
-
-Three independent things it strips, **unconditionally except type 28**:
-- `MARKET_IGNORE_MODIFIER_TYPES = {9, 42, 44}` — always stripped. 42 is a
-  continuous per-craft stat roll, 44 a per-instance serial (confirmed
-  sequential in live data). Type 9 was confirmed by a human not to affect
-  transmog appearance before being added (2026-07-24) — unlike 42/44, this
-  wasn't self-evident from the data alone.
-- Modifier type 28 (claimed "item level") — **conditionally** stripped, only
-  when `base_level` is supplied AND the claimed value fails
-  `ilvl_plausible()`. A plausible value on current-content ilvl-scaling gear
-  is genuinely a different market and is left untouched. `base_level=None`
-  (the default, and what `diff_snapshots.relist_key()` still passes) always
-  means "don't strip" — never "assume junk."
-- `noise_bonus_ids` (a per-item `frozenset[int]` of `b:` bonus-list ids) —
-  Python-only. Formerly computed by `snipe_check._detect_noise_bonus_ids()`
-  via a **structural** test (not a frequency threshold — a flat cutoff was
-  tried and live-disproven, see `HISTORY.md`): a bonus-list value was
-  treated as real only if it had a *partner* — reliably co-occurring with
-  another specific value (a companion pair), or belonging to a small
-  mutually-exclusive set that jointly covers most of an item's listings (a
-  partition); per-craft noise had neither shape. **Removed 2026-07-26**
-  along with the rest of `market_key`-based pricing (see this section's
-  intro) — the per-20-sample floor this test needed (`BONUS_NOISE_MIN_SAMPLES`)
-  turned out to silently fail on ~1,223 real items post-2026-07-25's
-  retention change (see `HISTORY.md`'s "Bonus/ilvl matching removed" entry),
-  and matching no longer needs bonus-id noise detection at all now that it
-  doesn't look at bonus_key. Nothing currently computes this parameter —
-  every real caller (`relist_key()`) passes `None`, same as always.
-
-Any **new** modifier type discovered to be junk needs either strong
-corroborating evidence from real data (e.g. identical troll price across
-different values) or explicit human confirmation it doesn't affect the
-thing it might affect (transmog appearance) before being added to the
-unconditional ignore set — don't assume.
-
-Mirrored as a SQL macro in `analyze.connect()` (`MARKET_KEY_MACRO_SQL`,
-three helper macros) for DuckDB-side grouping — two independent
-implementations kept honest by `tests/test_market_key.py`'s parity check
-(runs the same real-item vectors through both, asserts identical results).
-`noise_bonus_ids` is **not** mirrored in SQL (Python-only, and — since
-2026-07-26 — nothing currently computes it at all, see above) — the parity
-test only covers the base_level argument shape.
-
-**If you touch any of this**: update both implementations, add a real
-(not invented) test vector to `tests/test_market_key.py`, and check the
-`project-review` skill's matching-logic checklist before shipping.
-
-## Real production outage, lesson for next time (2026-07-25, recurred 2026-07-26)
-
-`snipe_check._resolve_base_levels()` (since removed 2026-07-26 along with
-market_key-based matching, see "What this project is" above — this
-narrative describes what was true at the time) could make blocking
-Blizzard API calls. `dashboard.py`'s `api_snipes()` is an `async def` route
-but was calling it directly on the event loop thread — on a cold cache,
-hundreds of sequential blocking calls froze the *entire* single-process
-server, including unrelated routes, for the call's full duration. Fixed via
-`asyncio.to_thread(...)`. **Full incident in `HISTORY.md`.**
-
-**The same bug recurred 2026-07-26 at a second call site the first fix
-didn't cover**: the `names=true` per-row translation added to `api_snipes()`
-after the original fix (`NameCache.get()`/`.icon()`/`.quality()`/etc., each
-a cache-miss fallback to a blocking Blizzard call) ran directly on the event
-loop, never wrapped in `to_thread` at all. Symptom: switching the dashboard's
-sell realm to one never queried before hung/timed out, while an
-already-warmed realm (Draenor) always worked — the tell that it's *this*
-class of bug, not a data issue. Fixed the same way (`asyncio.to_thread`),
-plus closed a second gap found in the process: `.icon()` was never covered
-by `NameCache.ensure_many()`'s concurrent batch at all (icons are a separate
-media endpoint) — added `.ensure_icons_many()` alongside it. See
-`HISTORY.md`'s "Realm-switch hang/timeout" entry for the full trace.
-
-**Lesson for next time a route gains a synchronous, possibly-slow
-dependency** (a new network call, a large one-time computation): ask
-whether it can block *other* requests, not just whether it's correct or
-fast on a warm cache. An `async def` FastAPI route does not protect you
-from this by itself — it only helps if the blocking work is actually
-offloaded, and **that check has to be repeated for every new blocking call
-site added later, not just the one that triggered the original fix** — this
-is exactly how the 2026-07-26 recurrence happened. There is still no test
-coverage for "does this route block the event loop" — worth a regression
-test (a slow stub swapped into `_resolve_base_levels()` or `NameCache`,
-asserting a concurrent lightweight request still completes quickly) if this
-class of bug recurs a third time.
-
 ## Conventions
 
-- Python 3.10+, stdlib `argparse` CLIs, minimal deps. No pandas, no ORM.
-  DuckDB does the analytics. FastAPI + uvicorn is the one web framework in
-  use (three focused deps, no Node/npm toolchain — the frontend is static
-  HTML + vanilla JS, no build step). Every other CLI tool stays
-  framework-free.
+- Python 3.10+, stdlib `argparse` CLIs, minimal deps. No pandas, no ORM for the
+  AH data. DuckDB does the analytics. FastAPI + uvicorn is the one web
+  framework; the frontend is static HTML + vanilla JS with **no build step**.
+- **Prices are copper end to end** (10,000 = 1 gold). Only format as gold at
+  display boundaries. This has caused real bugs — check units on every new money
+  field, and expose both `_g` and `_copper` variants on API rows.
 - Small modules, pure functions where possible (`classify_pair`, `bonus_key`,
   `parse_bonus_key`, `rows` are deliberately pure — keep them testable).
+- Heuristics **flag, never silently filter** server-side; hiding is the
+  dashboard checkbox's job. Pricing/matching thresholds are human-specified —
+  propose the mechanism and calibration and wait, don't pick defaults yourself
+  even when told "whatever it takes".
 - Derived data (`data/events/`) is always recomputed from scratch; never make it
   incrementally stateful without also keeping the idempotent path.
-- Collector loop must survive any exception (it guards a multi-day run).
-- Update this file and `README.md` whenever commands, schemas, or architecture
-  change. Update `PROGRESS.md` (the scannable done/not-done status summary)
-  whenever a feature ships or a phase's status changes. Put detailed
-  incident narrative in `HISTORY.md`, not inline here — that's the whole
-  point of the 2026-07-25 docs restructure that produced this file's current
-  shape.
+- The collector loop must survive any exception (it guards a multi-day run).
+- An `async def` FastAPI route does **not** by itself protect you from blocking
+  the event loop. Any new synchronous, possibly-slow call inside one needs
+  `asyncio.to_thread()`. This has already recurred once —
+  see `.claude/docs/matching.md`.
+- Update this file and `README.md` when commands, schemas or architecture
+  change; `.claude/docs/progress.md` when a feature ships; put incident
+  narrative in `.claude/docs/history.md`, never inline here.
 
 ## Commands
 
-Standalone debugging/inspection tools — none of them are how the product
+Standalone debugging/inspection tools — none of these is how the product
 actually runs (`collect_all.py` inside the deployed app is).
 
 ```
 python fetch_snapshot.py --find silvermoon          # realm slug -> cr-id
-python fetch_snapshot.py --cr-id 1096 --loop        # collect (48h+), local debugging only
+python fetch_snapshot.py --cr-id 1096 --loop        # collect, local debugging only
 python diff_snapshots.py --cr-id 1096               # build events
 python analyze.py --cr-id 1096 summary --top 30
 python analyze.py --cr-id 1096 item 152510 --price 2500000   # copper
-python analyze.py --cr-id 1096 trace 152510   # per-auction classifications (verification)
-python scan_region.py --exclude 1403          # one sweep of all EU realms except your sell realm(s)
-python snipe_check.py --sell 1403             # flag discounted listings vs sell-realm's current cheapest
-python snipe_check.py --sell 1403 --items-file watchlist.txt --min-discount 0.3
-python dashboard.py --sell 1403               # local dev server on http://127.0.0.1:8000
-                                               # (leave ENABLE_BACKGROUND_COLLECTION unset locally)
+python scan_region.py --exclude 1403          # one sweep of all EU realms
+python snipe_check.py --sell 1403             # flag discounted listings
+python dashboard.py --sell 1403               # local dev on 127.0.0.1:8000
+                                              # (leave ENABLE_BACKGROUND_COLLECTION unset)
 ```
+
+## Testing and shipping
+
+Run **only the tests covering your change** — CI runs the full suite on every
+push and gates the Railway deploy, so re-running all of it locally only
+duplicates that:
+
+| Changed | Run |
+|---|---|
+| `static/*.html` only | no pytest — verify in a real browser instead |
+| `<module>.py` | `python -m pytest -q tests/test_<module>.py` |
+| `snipe_check.py` | + `tests/test_dashboard.py` |
+| `db.py`, `auth.py`, `conftest.py` | full suite — wide blast radius |
+| unsure / cross-cutting | full suite |
+
+A local pass genuinely predicts CI: the root `conftest.py` forces
+`DATABASE_URL=""` and `tests/conftest.py` hard-fails any test that reaches a
+real database engine. Fix the test, never weaken that guard. Use `/ship` for the
+full commit → push → watch-CI → confirm-deploy sequence.
 
 ## Human-only tasks (never attempt; ask and wait)
 
 - Creating the Battle.net API client and filling `.env`.
 - All in-game actions, including the verification protocol in `README.md`
-  (posting, cancelling, expiring, and buying test auctions) and reporting results.
+  (posting, cancelling, expiring and buying test auctions) and reporting
+  results.
 - Any monetization/ToS decision.
-- Rotating/swapping the live Stripe secret key (`sk_live_...`), even a
-  planned improvement like a restricted key — ask and wait for the human to
-  be present.
+- Rotating/swapping the live Stripe secret key, even a planned improvement like
+  a restricted key.
 
-## Roadmap — execute top to bottom, don't skip ahead
+## Definition of done
 
-(See "Process deviations" above for where this hasn't happened literally,
-and why each skip was a deliberate call.)
-
-### Phase 0 — validate the signal
-**Gated, skipped** (2026-07-20). Formalized the synthetic fixture into
-`tests/test_diff.py` (done). The 48h collection + in-game verification
-protocol + `VALIDATION.md` write-up were never run — see `README.md`'s
-"Verification protocol" for what running it would involve.
-
-### Phase 1 — cross-realm engine + hardening
-**Mostly done.** Region scanner and snipe-check CLI both shipped and are
-the end-to-end product. Remaining: sell/scan realm config file (manual
-`--exclude`/`--items` flags stand in), `--since` incremental diffing if
-event rebuilds get slow.
-
-### Phase 2 — commodities feed
-**Out of scope** (human decision, 2026-07-24) — not being pursued.
-
-### Phase 3 — appearance layer
-**Started ahead of Phase 1's remaining hardening** (2026-07-23). Done:
-itemId → appearanceId mapping + source-item count (`appearance.py`), wired
-into `snipe_check.py`/`dashboard.py` as a "unique transmog" filter. Not
-done: static-API fallback, real obtainability flags (`source_count` is a
-rarity proxy, not a farmability check — known to diverge from Wowhead's own
-"same model as" data on at least one item), region-wide AH scarcity *of
-currently listed* appearances. The originally planned "warband
-transferability flag" is **closed, no flag will be built** — see "Market
-structure" above.
-
-### Phase 4 — deal score + Discord alerts (first paid feature)
-Not started — blocked on Phase 3 data. Score = f(discount vs current
-cheapest listing, appearance scarcity), attached to a route: buy realm →
-sell realm. Payments require the human's explicit ToS sign-off first
-(already read once, 2026-07-23 — re-check before turning on any *new*
-billing surface if time has passed).
-
-### Phase 5 — free companion addon + web dashboard
-**The dashboard half is done** (pulled forward 2026-07-23 — hosted,
-multi-tenant, auth, live Stripe subscriptions, free tier, all shipped).
-Only the free in-game addon itself remains, not started.
-
-## Definition of done for the current milestone
-
-- The tests covering the change green locally; CI's full `pytest -q` green
-  before the change counts as shipped (CI is the full-suite gate and blocks
-  the Railway deploy — see `/ship`). The old second `env -u DATABASE_URL`
-  run was retired 2026-08-04; it had become a no-op.
+- The tests covering the change are green locally, and CI's full run is green
+  before it counts as shipped.
 - Any change to `market_key()`/`bonus_key()`/`relist_key()` has a matching
-  SQL-macro update (if applicable) and a real test vector.
-- Any frontend change verified in an actual browser (see the
-  `project-review` skill's checklist), not just by reading the diff.
-- `CLAUDE.md`/`PROGRESS.md` updated for anything that changes current
-  state; detailed narrative goes in `HISTORY.md`, not inline here.
+  SQL-macro update and a **real** (not invented) test vector — see
+  `.claude/docs/matching.md`.
+- Any frontend change verified in an actual browser, not just by reading the
+  diff.
+- `CLAUDE.md`/`README.md` updated for anything that changes current state; the
+  relevant `.claude/docs/` file updated for the detail; narrative goes to
+  `.claude/docs/history.md`.

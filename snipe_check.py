@@ -102,9 +102,10 @@ def parse_items(items: str | None, items_file: str | None) -> list[int] | None:
 # tied row won a LIMIT boundary (here) or a ROW_NUMBER() cutoff (the
 # item_rank/class_rank windows below) could differ between two otherwise-
 # identical query executions. auction_id is stable for a listing's
-# lifetime and unique (see CLAUDE.md's Blizzard API facts), so appending it
-# makes the full ordering deterministic -- the result only changes when the
-# underlying listings/pricing genuinely change, never on its own.
+# lifetime and unique (see .claude/docs/architecture.md's Blizzard API
+# facts), so appending it makes the full ordering deterministic -- the
+# result only changes when the underlying listings/pricing genuinely
+# change, never on its own.
 SORT_COLUMNS = {
     "discount": "discount_pct DESC, buy_g ASC, auction_id",
     "gold": "sell_p_g DESC, buy_g ASC, auction_id",
@@ -430,7 +431,7 @@ MIN_VALUE_FLOOR_G = 2000
 # than a real market price, since the whole product thesis is hub realms
 # paying *somewhat* more, not 10x more. This is a recalibrated revival of
 # the 2026-07-27 sell_price_suspect flag removed 2026-07-31 (see
-# HISTORY.md's "sell_price_suspect removed" entry, traced live to Draenor
+# .claude/docs/history.md's "sell_price_suspect removed" entry, traced live to Draenor
 # item 36519/Moonlit Katana) -- two things changed, both deliberately: (1)
 # compared against the *median* (region_median_g, already computed in
 # region_stats below for display) instead of the mean sell_price_suspect
@@ -577,7 +578,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     noise shape the heuristic was built to catch, e.g. item 36322 at 19
     samples) -- meaning fragmentation kept recurring silently for exactly
     the lower-liquidity items this product cares most about. See
-    `HISTORY.md`'s "Bonus/ilvl matching removed" entry for the full trace
+    `.claude/docs/history.md`'s "Bonus/ilvl matching removed" entry for the full trace
     and discussion.
 
     bonus_key is empty for every caged pet (82800), so without the pet
@@ -669,7 +670,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
     this figure is to be a trustworthy "what does this actually cost
     around the region" number. (`sell_price_suspect`, an earlier mean-based
     scam-price flag that used to live alongside this, was removed
-    2026-07-31 -- see HISTORY.md.)
+    2026-07-31 -- see .claude/docs/history.md.)
 
     **sniper_filter_suspect** ("Sniper filter", added 2026-08-04, human
     request -- see SNIPER_FILTER_N's own comment above for the full
@@ -799,7 +800,7 @@ def find_snipes(con: duckdb.DuckDBPyConnection, sell_cr: int, *,
             -- outlier listing, so it's the more honest "typical EU price"
             -- to show a user than a mean would be. (This CTE used to also
             -- compute a mean powering sell_price_suspect, removed
-            -- 2026-07-31 -- see HISTORY.md.)
+            -- 2026-07-31 -- see .claude/docs/history.md.)
             SELECT item_id, pet_species_id, pet_quality_id,
                    median(realm_cheapest) AS region_median_cheapest
             FROM region_realm_floor

@@ -70,7 +70,7 @@ If the diff touches `fetch_snapshot.market_key()`, `bonus_key()`, or
       that seam at throwaway SQLite? `tests/conftest.py`'s `no_real_database`
       guard fails loudly if not. Fix the test, never weaken the guard — it is
       what stops the "green locally, red in CI" asymmetry that cost 17 red CI
-      tests on 2026-08-01 (see HISTORY.md).
+      tests on 2026-08-01 (see .claude/docs/history.md).
 - [ ] New behavior traced from a real production bug: is there a regression
       test using the *actual* observed values (item id, bonus_key, base
       level, price), not invented-but-plausible ones?
@@ -78,7 +78,7 @@ If the diff touches `fetch_snapshot.market_key()`, `bonus_key()`, or
 ## Docs
 
 - [ ] Does this change need a `CLAUDE.md` update (architecture, schema,
-      commands, a new non-obvious decision)? Does it need a `PROGRESS.md`
+      commands, a new non-obvious decision)? Does it need a `.claude/docs/progress.md`
       entry (feature shipped, phase status changed)? This project updates
       both throughout a session, not batched at the very end — don't leave
       it as a TODO.

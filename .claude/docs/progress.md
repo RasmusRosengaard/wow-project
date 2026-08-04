@@ -2,10 +2,10 @@
 
 Living status doc: what's built, what's not, what's next. `CLAUDE.md` is
 the authoritative current-state brief (architecture, conventions, roadmap,
-API facts). `HISTORY.md` has the full session-by-session narrative — this
+API facts). `history.md` has the full session-by-session narrative — this
 file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
-entire codebase — see `HISTORY.md`'s "Full project cleanup pass" entry).
+entire codebase — see `history.md`'s "Full project cleanup pass" entry).
 
 Last updated: 2026-08-03 — new heuristic, **`price_suspect`**
 (`snipe_check.py`'s `PRICE_SUSPECT_MULTIPLE=10`): flags a row when the sell
@@ -38,7 +38,7 @@ running TSM's own unmodified `LibDeflate.lua`/`LibSerialize.lua` via a
 vendored Lua runtime (`lupa`) rather than a reimplementation, after a
 research pass confirmed the exact format against TSM's real addon source.
 Trigger checking rides `collect_all.py`'s existing ~10-minute cycle (no new
-cadence). Full trace in `HISTORY.md`'s "Watchlist" entry.
+cadence). Full trace in `history.md`'s "Watchlist" entry.
 
 2026-08-02 (earlier) — the WoW Accounts profile page was rebuilt from
 scratch (same day it first shipped, after rapid human follow-up):
@@ -51,7 +51,7 @@ realm member name (not one per connected-realm id) so a user can find
 their realm by any of its names — confirmed live that Zul'jin and Sanguino
 share one connected realm. Also removed the dashboard's "Max per item"
 filter (superseded) and restyled the sus-item flag from a muted brown
-hourglass to a red warning triangle. Full trace in `HISTORY.md`'s "Profile
+hourglass to a red warning triangle. Full trace in `history.md`'s "Profile
 page redesign + connected-realm fan-out" entry.
 
 2026-08-02 — earlier the same day: new feature, multi-WoW-account
@@ -60,7 +60,7 @@ which EU realms each has a character on (`profile.html`, `wow_accounts.py`);
 the dashboard gets a new "Your account" column showing which account to
 log into for a given snipe. Also fixed a real horizontal-scrollbar
 regression the new column introduced (header text now wraps instead of
-forcing the table wider than its container). Full trace in `HISTORY.md`'s
+forcing the table wider than its container). Full trace in `history.md`'s
 "Multi-WoW-account registration" entry.
 
 2026-08-01 — the biggest incident this project has had:
@@ -78,7 +78,7 @@ jumping"), two new curated sus-item sets, the junk/decoy value floor raised
 didn't touch the code path actually running in production), a new
 superuser-only "who's on the site right now" endpoint, and a new TSM
 region-sale-rate filter (`tsm.py`, human request — see "Status at a
-glance"). Full trace in `HISTORY.md`'s "Production incident" entry and the
+glance"). Full trace in `history.md`'s "Production incident" entry and the
 several entries around it, all dated 2026-08-01.
 
 ## Status at a glance
@@ -133,7 +133,7 @@ several entries around it, all dated 2026-08-01.
   `static/dashboard.html` rows.
 - `/api/snipes` no longer holds a Postgres connection during its slow
   DuckDB/Blizzard work (2026-08-01, real production incident — see
-  `HISTORY.md`); every Blizzard API call in the app shares a rate limiter,
+  `history.md`); every Blizzard API call in the app shares a rate limiter,
   and live requests self-bound their wait on it (15s) instead of blocking
   indefinitely. A superuser-only `GET /api/admin/active-users` shows who's
   currently on the site.
@@ -183,7 +183,7 @@ several entries around it, all dated 2026-08-01.
    starts in earnest.
 2. **RESOLVED 2026-07-27** — **Decoy-listing discount% is crowding entire legitimate categories out of
    the dashboard's batch cap** (confirmed live 2026-07-26, via `railway ssh`
-   against production data on Draenor — see `HISTORY.md` for the full trace
+   against production data on Draenor — see `history.md` for the full trace
    once it's written up, or re-derive with the same technique: `find_snipes()`
    called directly against `analyze.connect(1403)`). Concrete finding: real,
    legitimate housing-item snipes exist (best confirmed discount 88.1%), but
@@ -209,7 +209,7 @@ several entries around it, all dated 2026-08-01.
      2026-07-25 — needs to be weighed against that decision, not just
      reversed reflexively). **2026-07-27 update**: a human decision was made
      on this specific question — flag, don't exclude (`sell_price_suspect`,
-     since removed 2026-07-31, see `HISTORY.md`). That decision stood at the
+     since removed 2026-07-31, see `history.md`). That decision stood at the
      time, and on its own it didn't resolve this batch-crowding item — the
      `class_quotas` mechanism below (also shipped 2026-07-27) is what
      actually did.
@@ -301,7 +301,7 @@ several entries around it, all dated 2026-08-01.
   (likely no backend change — formatting already-fetched row data).
 - ~~**TSM public pricing data as a cross-check, not a replacement**~~ (human
   idea, 2026-07-25, investigated, parked as a *pricing* cross-check — see
-  `HISTORY.md` for the full writeup on why it's not an independent ground
+  `history.md` for the full writeup on why it's not an independent ground
   truth) — **the narrowly-scoped version shipped 2026-08-01** as a liquidity
   filter instead (`tsm.py`'s `saleRate`/`soldPerDay`, see "Status at a
   glance"), not a pricing cross-check. The buylist-export idea directly
@@ -314,7 +314,7 @@ Stripe Dashboard — it won't happen automatically.
 
 All 5 stages (GitHub/CI, auth, Stripe, server-side collection, CD) are
 **done** — see `CLAUDE.md`'s "Current state" file table for what each piece
-does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
+does now, and `history.md`'s "Hosted SaaS pivot" entry for how it shipped.
 
 ## Longer-term roadmap (beyond the hosted pivot)
 
@@ -331,7 +331,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 
 - **A genuinely live troll/decoy current listing can still become a
   market's reference price.** Inherent to the current pricing model, not a
-  bug in it — see `HISTORY.md`'s "Pricing model replaced" entry (item
+  bug in it — see `history.md`'s "Pricing model replaced" entry (item
   13051). No sale-classification layer exists to catch "this current
   listing looks like a decoy"; not attempted. **Confirmed 2026-07-26 to
   have a second-order effect**: on Draenor, decoy-inflated discount%
@@ -379,7 +379,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   itself, only the ordering artifact it exposed.
   **`sell_price_suspect` itself was removed 2026-07-31** (human decision) —
   the tiebreak/class_quotas mitigations above are unaffected and remain in
-  place; see `HISTORY.md` for why the flag was dropped and what replaced it
+  place; see `history.md` for why the flag was dropped and what replaced it
   (`snipe_check.is_sus_item()`/`sus_item_suspect`, a broader,
   differently-scoped signal, not a like-for-like swap).
   **`MIN_VALUE_FLOOR_G` added 2026-08-01** (human request, currently 2000,
@@ -406,7 +406,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   underlying meaning is still community-sourced, not official. Same caveat
   applies to modifier types 9/42/44.
 - **Bonus/ilvl differences no longer gate a snipe match at all** (human
-  product decision, 2026-07-26, see `HISTORY.md`) — every variant of an
+  product decision, 2026-07-26, see `history.md`) — every variant of an
   item_id is treated as one market, priced at the sell realm's overall
   cheapest listing. This is a deliberate tradeoff, not a bug: a genuinely
   different-value variant (e.g. a much higher ilvl roll) can now be priced
@@ -417,7 +417,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 - **No test coverage for "does an async route block the event loop"** — see
   `CLAUDE.md`'s "Real production outage" note. This exact gap let the same
   bug recur at a second call site 2026-07-26 (a realm switch hanging/timing
-  out — fixed, see `HISTORY.md`); still no regression test for the class of
+  out — fixed, see `history.md`); still no regression test for the class of
   bug itself, only unit coverage for the specific fix
   (`tests/test_item_names.py`'s `ensure_icons_many` tests).
 - **If a sell realm's entire observed history for an item is troll/camped
@@ -437,7 +437,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
   checkbox. `LEGACY_JEWELRY_ILVL_MAX` (150) is a tunable starting cutoff,
   not a rigorously derived one. The `CLASS_STARTER_ARMOR_ITEM_IDS` half
   (52 confirmed ids) has no equivalent blind spot — it's a curated,
-  live-verified id set, not a threshold. See `HISTORY.md` for the
+  live-verified id set, not a threshold. See `history.md` for the
   live-verified examples of both, and for `sell_price_suspect`'s removal
   the same day.
 - The tightened background-poll window (`:18-:26` past the hour, narrowed
@@ -473,7 +473,7 @@ does now, and `HISTORY.md`'s "Hosted SaaS pivot" entry for how it shipped.
 
 - `CLAUDE.md` — architecture, conventions, current-state file table,
   Blizzard API facts, roadmap (authoritative for "what's true now").
-- `HISTORY.md` — full session-by-session incident log ("why" and "how we
+- `history.md` — full session-by-session incident log ("why" and "how we
   got here" for anything summarized above).
 - `README.md` — human-facing setup/usage.
 - `git log` — commit-level history.

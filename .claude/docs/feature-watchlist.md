@@ -3,7 +3,7 @@
 **Status: shipped 2026-08-02.** This file is kept as the original design
 sketch/rationale — see `CLAUDE.md`'s `watchlist.py`/`tsm_import.py`/
 `static/watchlist.html` rows for what actually got built and how it
-resolved the open questions below, and `PROGRESS.md`/`HISTORY.md` for the
+resolved the open questions below, and `progress.md`/`history.md` for the
 build trace. Left in place rather than deleted since the "why" reasoning
 here (especially the TSM-format and delivery-mechanism tradeoffs) isn't
 duplicated anywhere else.

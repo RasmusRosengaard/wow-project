@@ -1,5 +1,5 @@
 """Watchlist -- track specific items across every EU realm, independent of
-any sell realm (see FEATURE_WATCHLIST.md). A user adds items either one at a
+any sell realm (see .claude/docs/feature-watchlist.md). A user adds items either one at a
 time by item id or in bulk via a pasted TSM group export (tsm_import.py),
 sets a plain gold trigger price per item, and gets a Discord notification
 when the item's current region-wide cheapest listing clears that price.
@@ -28,7 +28,7 @@ CLAUDE.md's watchlist.py row for the fuller trace):
 
 check_triggers() is the one function collect_all.py's background loop
 calls, after each region sweep -- it does not run on its own cadence, it
-rides the existing ~10-minute cycle (FEATURE_WATCHLIST.md's open question
+rides the existing ~10-minute cycle (.claude/docs/feature-watchlist.md's open question
 #6, resolved: no new scan cadence).
 """
 import asyncio

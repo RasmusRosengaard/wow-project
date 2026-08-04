@@ -15,7 +15,7 @@ also human-specified) are enforced via an atomic INSERT...SELECT...WHERE rather 
 Python-side SELECT COUNT(*) then INSERT -- this app has two recorded TOCTOU
 bugs from exactly that pattern (dashboard._enforce_realm_lock's old
 read-then-write race, item_names.NameCache.save()'s lost-update race, both
-in HISTORY.md), both fixed by making the check and the write one atomic DB
+in .claude/docs/history.md), both fixed by making the check and the write one atomic DB
 statement instead of two round trips. Unlike locked_sell_realm (which
 bounds real compute/API cost) or the Blizzard rate limiter (which bounds a
 real external budget), these caps are pure UX limits on self-declared

@@ -10,7 +10,7 @@ were asked for.
 
 Images are stored as plain files under DATA/forum_images/ on the same
 persistent Railway volume that already holds snapshots/listings (see
-CLAUDE.md's "Architecture & data layout") rather than a new object-storage
+.claude/docs/architecture.md) rather than a new object-storage
 dependency -- consistent with this project's "minimal deps" convention.
 Filenames are server-generated (uuid4 + an extension derived from the
 validated content-type), never taken from the client, so there's no path-

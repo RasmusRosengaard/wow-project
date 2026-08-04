@@ -1,0 +1,268 @@
+# Frontend pages
+
+Static HTML + vanilla JS, no build step. Every page shares one visual identity
+and a localStorage dark-mode toggle.
+
+## `static/dashboard.html`
+
+Single static file, vanilla JS, no build step; "assay ledger" visual identity
+with a `localStorage` dark-mode toggle shared across pages. **Client-side
+filtering architecture:** fetches one loose batch per sell realm
+(`fetchBatch()`, `BATCH_TOP=10000` — must stay >= the highest tier cap, the
+server clamps down) and re-filters/re-sorts entirely in the browser
+(`applyFilters()`/`renderTable()`/`compareRows()`), so only a realm switch or
+the 60s timer refetches. `checkForUpdates()` polls the cheap `/api/status`
+first and only refetches when its timestamp actually advanced. Batches cache
+per realm in `localStorage` under `CACHE_VERSION` (**currently 10 — bump it
+whenever the row shape changes**, or stale cached rows get painted by code
+expecting new fields); `saveCache()` purges other-version keys, then evicts
+the least-recently-fetched *other* realm (`evictOldestOtherCache()`), then
+halves its own row count, because one full batch can exceed the per-origin
+quota on its own. Ten sortable columns (buy realm, item, variant, buy, sell,
+EU median, sale rate %, sale avg, discount %, your account);
+`NUMERIC_SORT_KEYS` marks the numeric ones and nullable columns always sort
+last. `table-layout: fixed` with per-column % widths and `white-space: normal`
+headers — auto layout made every column jump on each filter change, and
+`nowrap` headers forced a horizontal scrollbar. `renderTable()` paginates at
+`RENDER_PAGE_SIZE=200` behind a "Show N more" button; building every row at
+once was ~90% of a ~1s re-render. Rows group by `(item_id, pet_species_id,
+pet_quality_id)` (`groupKey()`) with a `▾ N` expand toggle. **Filter rail, all
+client-side:** discount %, buy-price range, min sell price, min sale rate %,
+min sale avg (g), unique-transmog, "Hide flagged (sniper filter)" (ORs
+`sus_item_suspect`/`price_suspect`/`sniper_filter_suspect`; flagged rows
+always render a red ⚠ regardless of the checkbox, so the signal shows even
+when not filtering on it), "Buy below sale avg", 9-way item class, 6-way
+rarity. Numeric inputs parse via `.trim() ? Number(x) : null`, never
+`Number(x) || null` — `0` is a valid threshold, and that has been a real bug.
+A `null` TSM value fails any set TSM threshold, matching the server exactly.
+`escapeHtml()` is a real regex escaper applied to every row-derived string
+**including inside quoted attributes** — the `textContent`→`innerHTML` trick
+doesn't escape quotes, which was a real stored-XSS bug in this project.
+`userRealmAccounts` (from `/api/wow-accounts`) backs the "Your account" column
+and is deliberately kept out of the shared row cache. Anonymous visitors get
+the full free-tier UI plus an `#anon-banner` reading its numbers from
+`/api/me`; the page never mentions cookies anywhere. History: see history.md.
+
+## `static/landing.html`
+
+New (2026-07-26): the public marketing page now served at `/` (see
+`dashboard.py`'s row above — the sniper tool itself moved to `/snipes`). Same
+"assay ledger" visual identity/tokens as every other page, plus one
+deliberate, restrained departure: the hero `<h1>` alone uses a serif system
+font stack (`Georgia, "Times New Roman", serif`) against the sans-serif body
+everywhere else, meant to read like a heading on a certified/appraisal
+document — reinforcing the existing seal-mark thesis rather than introducing a
+new one. Hero's signature element is a **real excerpt of the actual ledger
+table** (human request, replacing an earlier custom-card mockup): the same
+`table`/`item-cell`/`item-icon`/`money`/`coin` markup and class names as
+`dashboard.html`'s own table, one illustrative row (labeled "Example listing:
+illustrative, not live data" so it's never mistaken for real numbers), not a
+paraphrased approximation. A numbered 3-step "how it works" section (genuinely
+sequential, not decorative numbering: "Pick your sell realm" / "Scans every EU
+realm" / "Only genuine snipes surface") follows; the earlier "Not another
+sniper" TSM/Auctionator comparison section was removed outright (human
+request), as was a closing "Every account gets real data" CTA section (human
+request, along with its now-unused `.closing` CSS and the `#closing-cta`
+reference in the CTA-personalization script below). Copy avoids em-dashes
+throughout (human request) — periods/colons instead. Hero subheading (and the
+matching `<meta name="description">`) rewritten (human request) to stop
+overclaiming "already validated" — now explicitly says the tool calculates the
+real price difference (the literal "arbitrage") and that not every flagged gap
+is a genuine bargain, since a troll/camped listing can still be the reference
+price (see "Known gaps" in `progress.md` — this was a real accuracy fix, not
+just polish). **Does not redirect a logged-in visitor away** (tried and
+reversed the same day, human feedback: forcing a redirect means nobody signed
+in could ever actually see the page, e.g. a shared link or checking their own
+marketing copy) — instead, checks `/api/me` on load and swaps the sign-up CTAs
+(`#nav-cta`/`#hero-cta`) to "Go to dashboard" pointing at `/snipes`, and
+removes the "Log in" nav link (`#nav-login`), leaving the rest of the page
+(including "See pricing") untouched either way. No brand-mark self-link (it
+*is* `/`). **Widened + example row made a real, live-verified item
+(2026-08-01, human request "fills the entire width" + "use an actual icon")**:
+`main`'s `max-width` raised 1000px → 1400px (the page read as a narrow column
+with unused space on a wide screen; the 3-step section in particular now
+actually spreads across the width instead of a cramped single-column feel) and
+`.sample-wrap` 640px → 820px. The hero example row now uses item 22691,
+"Corrupted Ashbringer" — confirmed live via `blizz.api_get()`
+(`/data/wow/search/item`, `/data/wow/media/item/22691`) rather than a
+fabricated name, with its real icon hotlinked from Blizzard's render CDN
+(`render.worldofwarcraft.com`, the same CDN `item_names.py`'s `.icon()`
+already serves real rows from) instead of a plain gradient-div placeholder.
+Buy/sell deliberately set to a joke-extreme 1g buy vs. a 214748g 36s 47c sell
+(the classic single-character WoW gold cap, 2³¹−1 copper) for a ~100.0%
+discount — still clearly inside the "Example listing: illustrative, not live
+data" label, just a more memorable illustration than the previous mundane
+45g/210g numbers. Re-added `--coin-silver`/`--coin-copper` CSS vars + `.coin-
+silver`/`.coin-copper` classes (removed as dead code 2026-07-31 when only gold
+was in use — legitimately needed again now that the sell price shows all three
+denominations, mirroring `dashboard.html`'s exact gradient values).
+
+## `static/login.html`, `register.html`, `subscribe.html`, `profile.html`, `pricing.html`, `snipeboard.html`, `watchlist.html`
+
+Plain HTML/JS, same no-build-step convention, same visual identity/dark-mode
+as `dashboard.html`. `profile.html` shows subscription status + Stripe
+customer portal link + (added 2026-07-29) a nickname field/Save button (`PATCH
+/api/me/nickname`, see `dashboard.py`'s row above) — the one place to change a
+nickname after it's first set via `snipeboard.html`'s post dialog. **Fully
+redesigned 2026-08-02** (human follow-up after the first WoW-Accounts pass
+shipped: "this whole adding wow accounts needs a big UI/make sense update...
+its bad to list them... Infact remake the entire profile page"). The old
+single-narrow-column (`max-width: 420px`) stacked-rows layout is gone —
+`.shell` is now `max-width: 1100px`, and the top card is a compact horizontal
+"Account" summary (email + subscription badge + nickname inline, not one
+label-per-row) rather than a form-like list. Below it, a full-width **WoW
+Accounts** section with its own heading/lede, gated client-side on
+`subscription_status === "active" || is_superuser` (a non-subscribed account
+sees a one-line upsell instead of controls that would always 402).
+
+Key decisions confirmed via an AskUserQuestion round before building:
+**accounts are numbered, not freely named** ("Numbers will always be
+1,2,3,4,5,6,7, or 8" — matches Blizzard's real per-account WoW limit;
+`addAccount()` sends `label: "Account " + (currentAccounts.length + 1)` with
+no text input at creation time, still renameable afterward via each card's own
+inline input — "Press Save to save changes." makes the two-step explicit,
+since renaming doesn't auto-save on blur) and **side-by-side cards**, not a
+stacked list — `#wow-accounts-list` is a CSS grid (`repeat(auto-fill,
+minmax(260px, 1fr))`), with a dashed "+ Add account" tile as the grid's
+trailing element (becomes a disabled "Maximum 8 WoW accounts reached" tile at
+the cap, replacing the button entirely rather than just disabling it).
+
+**Loading state, added the same day** (human request: "wait on displaying a
+user's account, until the data is actually loaded"): three pulsing gray
+`.skeleton-card` placeholders (`@keyframes skeleton-pulse`) show from the
+moment the account is confirmed subscribed until both `/api/wow-accounts` and
+`/api/realms/eu` resolve (`Promise.all`) — the grid/add-tile never flashes
+empty or renders before real data is in.
+
+**Realm search, replacing the original `<select>` dropdown same day** (human
+request: "the list should be searchable with a clear searchbar"): each card
+gets its own `<input>` + absolutely-positioned `.realm-search-results`
+dropdown, filtered live via `realmSearchMatches()` (substring match against
+`realmSearchEntries`, capped at 8, sorted by name) as the user types; `Enter`
+picks the top match, `Escape`/blur closes the dropdown. Result-item clicks use
+`mousedown` (not `click`) specifically so the pick fires before the search
+input's own `blur` handler could race the dropdown closed — `blur` still hides
+it, but only after a `setTimeout(150)` grace window. Realm chips and search-
+result items deliberately have **no truncation anywhere** (`white-space:
+normal; word-break: break-word`, no `overflow:hidden`/`text-
+overflow:ellipsis`) — human request: "make sure we always can see the full
+realm name."
+
+Uses the same regex-based `escapeHtml()` as `dashboard.html`/`snipeboard.html`
+(not the `div.textContent`→`innerHTML` trick that caused this project's one
+real stored-XSS incident, see `snipeboard.html`'s row) since account labels
+and Blizzard realm names are interpolated into `innerHTML` templates here.
+`subscribe.html` explains what a subscription changes vs the free tier, links
+to `/pricing`. `pricing.html` — public Free-vs-Subscriber comparison + FAQ,
+doesn't advertise the internal superuser/10000 tier (founder/admin headroom,
+not purchasable, raised from 5000 2026-07-26). `snipeboard.html` (added
+2026-07-29 as `forum.html`, renamed the same day — human request, "Forum"
+undersold what it actually is) — public feed of user-posted snipes (see
+`forum.py`'s row above); checks `/api/me` on load to swap between a "+ Post a
+snipe" button (logged in) and a "log in to post" link (logged out), same
+client-side-gate pattern `landing.html` uses for its CTA swap, not a hard
+redirect — the feed itself is never gated. **Header/nav fixed 2026-07-30**
+(human report: the page "felt all over the place"): added an `<h2>Snipe
+Board</h2>` + `.lede` line ("Community feed of snipes.", trimmed the same day
+per human request from a longer first draft) above the feed (this page was the
+one content page missing the title+lede convention every sibling, e.g.
+`log.html`, already used) and put it in a `.page-head` flex row alongside the
+`+ Post a snipe`/`Log in to post` control instead of that button floating
+alone in a right-aligned bar with no heading to anchor it. **Widened the same
+day** (human follow-up: "it only uses the middle of the screen") from
+`log.html`'s 640px column (a copy-paste that made sense for that page's plain
+timestamp list, not for a photo board) to a 1400px `.wrap` (matching
+`dashboard.html`'s shell), and `.posts` changed from a single-file flex column
+to a no-JS CSS-`columns` masonry layout (`columns: 320px`, `.post { break-
+inside: avoid }`) so it actually fills the width with multiple cards per row
+on a wide screen instead of one narrow centered strip — chosen over a CSS grid
+because posted screenshots vary wildly in aspect ratio and a grid would leave
+ragged gaps next to short cards. Separately, a real bug: the nav
+(`Dashboard`/`Log`/`Pricing`/`Log in`) only ever removed `#nav-login` on
+login, leaving a logged-in visitor with no way back to Profile or to log out
+from this page at all. Nav now swaps by auth state in `init()`: logged out
+keeps the public-page set (`Dashboard`/`Log`/`Pricing`/`Log in`, matching
+`landing.html`'s convention for a page logged-out visitors can browse); logged
+in removes Pricing and shows `Profile`/`Log out` instead (mirroring
+`dashboard.html`'s authenticated nav and its 2026-07-26 Pricing-removal
+decision below), with the same `/auth/logout` → `/login` handler
+`dashboard.html`'s `#logout` button uses. **`Snipe Board` self-link added
+2026-07-30** as part of the same nav-unification pass described in
+`dashboard.html`'s row (`.nav a.active`) — was previously omitted like every
+other page's self-link, one more source of the nav-width-shifts-per-page
+report. **Site-wide nav/auth pass, same day**: `login.html`/`register.html`
+previously had no check at all for an already-authenticated visitor — hitting
+either page while logged in just showed the form again instead of redirecting
+to `/snipes` (human request); both now run the mirror-image of the check every
+logged-in-only page already does (`fetch /api/me`, redirect on the result)
+before rendering anything else. `log.html`'s nav used to be entirely static
+(`Dashboard`/`Snipe Board`/`Pricing`, regardless of auth) — a logged-in
+visitor had no way to reach Profile/Log out from it and still saw `Pricing`
+despite every other logged-in page dropping it, and a logged-out visitor had
+no `Log in` link at all; it now swaps by auth state exactly like
+`snipeboard.html` does (same ids/pattern: `#nav-pricing`/`#nav-profile`/`#nav-
+login`/`#nav-logout`). `profile.html` had no `Log out` button at all (a real
+gap — the profile page you'd go to *to* manage your account had no way to end
+your session from it) and still showed `Pricing`; both fixed, and its nav now
+matches the unified 5-link set/order. The post form lives in a native
+`<dialog>` (`showModal()`), opened only by that button, so browsing the feed
+never shows the form unasked; a second `<dialog>` (`#lightbox`) opens full-
+size on clicking any posted screenshot (`cursor: zoom-in`) and closes on a
+click anywhere inside it or Escape (native `<dialog>` behavior) — no separate
+full-resolution asset, it's the same upload just unconstrained by the feed's
+`max-height`. The post dialog's `#nickname-field` only shows when
+`currentNickname` (set from `/api/me` at page load) is falsy — a real, unset
+`PATCH /api/me/nickname` call happens before the post itself if it's visible;
+`profile.html` is where an already-set nickname gets changed later (a plain
+input + Save button, same endpoint), so the dialog isn't the only place this
+can be edited. Every page's brand mark links to `/` now (`.brand-link`, see
+`dashboard.html`'s row above for the mechanism); `profile.html`'s "Dashboard"
+nav link points to `/snipes` (changed 2026-07-26 along with the routing move);
+`pricing.html`'s "Dashboard" nav link was removed outright (human request)
+rather than repointed; `subscribe.html`'s "← Back to dashboard" link was
+removed the same way. `login.html`'s post-login redirect goes to `/snipes`,
+not `/`. `pricing.html`'s "Log in" nav link (`#nav-login`) is unconditionally
+shown by default but removed on load if `/api/me` confirms an active session
+(2026-07-26, human request — the page previously always showed "Log in" even
+to an already-authenticated visitor) — no nav link put back in its place,
+since the "Dashboard" link here was deliberately removed already, not an
+oversight to restore. **Stored XSS fixed in `snipeboard.html`'s
+`escapeHtml()`** (2026-07-31, real bug fix found during a repo-wide audit,
+live-verified with a real Chrome DOM test): the `div.textContent ->
+div.innerHTML` trick only escapes what a browser escapes when serializing
+*text content* (`&`/`</>`) — not quotes — but its output was interpolated
+straight into a double-quoted `alt="..."` attribute (post titles), so a title
+containing `"` broke out of the attribute and injected live markup, executing
+for every visitor since the feed is public and posting only needs a free
+account. Replaced with a real regex-based escaper (`&`/`<`/`>`/`"`/`'` all
+mapped) that's correct in any interpolation context, not just text nodes —
+`dashboard.html`'s own `escapeHtml()` (see that row above) was written the
+same way specifically because of this incident. **`subscribe.html`'s
+pitch/steps copy rewritten** (2026-07-31, same audit): the paid checkout page
+still described the *retired* sold-price-inference pricing model ("we show
+what things actually sold for," "validated snipe") — the 2026-07-25 pricing
+model change rewrote `landing.html`'s hero the same day, but this page was
+missed. Now matches `landing.html`'s accurate framing (a listing-to-listing
+price difference, explicitly not every gap being a genuine bargain) instead of
+promising a capability the shipped code doesn't have. **`watchlist.html`**
+(added 2026-07-31 as a public "Coming soon" placeholder, **rebuilt into the
+real feature 2026-08-02** — see `watchlist.py`'s row for the backend): logged-
+out visitors and non-subscribers still see a public page (a "log in"/"see
+plans" upsell card, gated client-side same as every other subscriber-only
+page's convention), but a subscribed, logged-in user gets the real UI — a
+Discord-webhook-URL field, an add-by-item-id form, a paste-a-TSM-group-export
+textarea, and a table of watched items with an inline-editable gold trigger
+price per row and a Remove button. Reuses `profile.html`/`dashboard.html`'s
+exact visual system (topbar/nav/theme-toggle boilerplate, `escapeHtml()`,
+`.item-icon`/quality-color-ring convention) rather than inventing a new one.
+Verified end-to-end in a real browser against a real (throwaway-SQLite-backed,
+auth-bypassed) local server, not just by reading the diff, per this project's
+own frontend-verification convention: added an item by id (resolved a real
+live Blizzard item name/icon/quality color), imported the real 300-item TSM
+sample string used to build `tsm_import.py` (both flat `group/items` and
+nested `group/subcategory/items` paths rendered correctly), edited and saved a
+trigger price, removed an item, and confirmed a malformed Discord URL surfaces
+its validation error inline — zero console errors throughout. Every other
+authenticated page's nav (`dashboard.html`/`snipeboard.html`/`profile.html`)
+already had a `Watchlist` link from the placeholder's original addition;
+unchanged by this rebuild.

@@ -134,7 +134,7 @@ class WowAccountRealm(Base):
 
 class WatchlistItem(Base):
     """A single item a subscribed user wants notified about, independent of
-    any sell realm (see FEATURE_WATCHLIST.md -- Watchlist has no sell realm
+    any sell realm (see .claude/docs/feature-watchlist.md -- Watchlist has no sell realm
     at all, unlike the main snipe flow). Matching is item_id-only (2026-08-02
     human decision, matching the rest of the product's 2026-07-26 call to
     drop bonus/ilvl-aware matching rather than reopen it here) --
@@ -209,7 +209,7 @@ _sessionmaker = None
 def engine():
     """Pool sizing tuned 2026-08-01 (real incident: QueuePool exhausted,
     login failing, with a single account doing light browsing -- see
-    HISTORY.md). Root cause: every route gated by auth.current_active_user
+    .claude/docs/history.md). Root cause: every route gated by auth.current_active_user
     checks out a connection for the *entire* request via FastAPI's
     Depends()-generator lifetime, including dashboard.py's api_snipes()
     route, whose actual work (a DuckDB query, documented elsewhere as

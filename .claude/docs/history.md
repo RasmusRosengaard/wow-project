@@ -1,8 +1,8 @@
 # HISTORY — detailed session log
 
 This file holds the full, session-by-session narrative that used to live
-inline in `CLAUDE.md`/`PROGRESS.md`: what was reported, how it was traced,
-what was tried and rejected, what shipped. `CLAUDE.md` and `PROGRESS.md`
+inline in `CLAUDE.md`/`progress.md`: what was reported, how it was traced,
+what was tried and rejected, what shipped. `CLAUDE.md` and `progress.md`
 were both growing past the size of the entire codebase because every
 incident's full investigation stayed inline forever — split out 2026-07-25
 so those two files can stay scannable current-state references while this
@@ -687,11 +687,11 @@ design work done, not scheduled.
 
 After the pricing-model replacement shipped, the human asked for a full
 cleanup: fix other known open gaps, remove dead code, trim the CLAUDE.md/
-PROGRESS.md narrative, review the code for architectural cleanliness. A
+progress.md narrative, review the code for architectural cleanliness. A
 dead-code audit (Explore agent, cross-referencing every defined function/
 class against repo-wide usage) found no genuine dead code from the pricing
 refactor itself — that removal was already complete. The real bloat was in
-the docs: `CLAUDE.md` (1,661 lines) + `PROGRESS.md` (988 lines), more than
+the docs: `CLAUDE.md` (1,661 lines) + `progress.md` (988 lines), more than
 the entire ~3,000-line codebase combined.
 
 Shipped, each as its own tested/deployed commit:
@@ -845,7 +845,7 @@ separate gap, not just a missing `to_thread`). Both `ensure_many()` and
 batch's distinct item ids before the per-row translation, so a cold realm's
 first query resolves its items in parallel instead of one blocking call at
 a time. Addresses the "no test coverage for 'does an async route block the
-event loop'" gap noted in `PROGRESS.md`'s "Known gaps" partially — added
+event loop'" gap noted in `progress.md`'s "Known gaps" partially — added
 unit coverage for `ensure_icons_many()`'s concurrency/dedup/cache-skip
 behavior in `tests/test_item_names.py`, though a true event-loop-blocking
 regression test (a slow stub proving a concurrent lightweight request still
@@ -1132,7 +1132,7 @@ listing from another player, not real value.
 
 This is a genuine accuracy fix, not just copy polish: the old wording
 ("If it's flagged, it's already validated") oversold the product relative
-to a real, still-open, already-documented gap -- `PROGRESS.md`'s "Known
+to a real, still-open, already-documented gap -- `progress.md`'s "Known
 gaps" section has tracked since earlier today that a genuinely live troll/
 decoy listing can become a market's reference price, with no
 classification layer to catch it (see the "decoy-listing crowd-out"
@@ -1235,7 +1235,7 @@ would otherwise repaint with a flag that never shows until it happened to
 expire). Dashboard-only for now, not wired into the bare CLI — the bare CLI
 path never touches `NameCache` today outside `_filter_by_appearance()`; a
 future `--hide-legacy-jewelry` flag is cheap to add later precisely because
-the predicate already lives in `snipe_check.py`, tracked in `PROGRESS.md`'s
+the predicate already lives in `snipe_check.py`, tracked in `progress.md`'s
 "Next up."
 
 New tests: `tests/test_snipe_check.py` (pure-function, no DuckDB) covers the
@@ -1339,7 +1339,7 @@ label text "Hide flagged (sus items)", `.legacy-flag` CSS class ->
 `.sus-flag`. `CACHE_VERSION` bumped 4 -> 5 (the row-shape field name
 changed again). All tests and docs renamed to match. Also fixed a real
 count error found while renaming: the class-starter-armor tooltip copy and
-one PROGRESS.md bullet said "~54 confirmed" pieces; the actual verified
+one progress.md bullet said "~54 confirmed" pieces; the actual verified
 count is 52 (Rogue and Druid each get 5 slots, not 6 -- no WRIST piece,
 confirmed real via gap-checking and name search, see the previous entry).
 `pytest -q` and `env -u DATABASE_URL pytest -q`: 306 passing.
@@ -1989,7 +1989,7 @@ Python coverage -- browser-verify instead). CI runs all 441 on every push and
 gates the Railway deploy, so it is the real full-suite gate; `/ship` still
 waits for it to go green. A local pass now genuinely predicts CI, which is
 what makes the narrower local run safe. Updated: `/ship`, `CLAUDE.md`'s
-`tests/` row and definition-of-done, `PROGRESS.md`, the `project-review`
+`tests/` row and definition-of-done, `progress.md`, the `project-review`
 skill, and two now-dead `env -u DATABASE_URL` entries in
 `.claude/settings.local.json`.
 
@@ -2134,10 +2134,10 @@ column. (
 **`sell_price_suspect`**, a 500x-region-mean scam-price flag that used to
 live alongside this — added 2026-07-27, traced live to Draenor item
 36519/Moonlit Katana — was removed 2026-07-31, human decision;
-`region_stats` used to also compute the mean this needed. See `HISTORY.md`.)
+`region_stats` used to also compute the mean this needed. See `history.md`.)
 
 **`class_quotas`** (added 2026-07-27, human request, resolves the "decoy
-listings crowd out entire categories" issue tracked in `PROGRESS.md`'s
+listings crowd out entire categories" issue tracked in `progress.md`'s
 "Known gaps/risks" and "Next up" since 2026-07-26): an optional `{bucket:
 max_rows}` dict (bucket keys match `dashboard.html`'s `ITEM_CLASS_FILTERS` —
 `weapon`/`armor`/`container`/`profession`/`housing`/`battlepet`/`quest`/`mou
@@ -2648,7 +2648,7 @@ redundant `Set-Cookie` every call.
 
 Single static file, vanilla JS, no build step. Light "assay ledger" visual
 identity with a dark-mode toggle (`localStorage`-backed, shared pre-paint
-`<head>` script across all six pages) — see `HISTORY.md`'s "UI design pass"
+`<head>` script across all six pages) — see `history.md`'s "UI design pass"
 for how this was chosen. Quality-colored item-icon rings, gold/silver/copper
 coin-icon formatting, a hover tooltip, click-icon-for-Undermine-Exchange-
 link.
@@ -2694,7 +2694,7 @@ fail-soft `catch`, so caching was permanently broken with no visible error,
 every load painting from nothing and reading as a cold "Loading latest
 data…" forever. (2) Even with that purged, the *current* payload alone
 measured 11.12MB for 10,000 rows on Draenor (its huge near-100%-discount
-decoy-listing pool, see "Known gaps/risks" in `PROGRESS.md` — likely over
+decoy-listing pool, see "Known gaps/risks" in `progress.md` — likely over
 quota on its own for any account hitting a large chunk of that pool), so
 `saveCache()` now retries with progressively fewer rows (halving up to 6
 times) instead of giving up outright — a partial cache still serves the
