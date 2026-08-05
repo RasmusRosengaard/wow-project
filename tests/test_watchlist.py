@@ -1018,7 +1018,10 @@ async def _make_superuser(session_factory, discord_webhook_url):
         user = User(email=f"su-{uuid.uuid4()}@example.com", hashed_password="x",
                     is_active=True, is_superuser=True, is_verified=True,
                     subscription_status="active",
-                    discord_webhook_url=discord_webhook_url)
+                    discord_webhook_url=discord_webhook_url,
+                    # Explicit: the column defaults to off since 2026-08-05,
+                    # so a rule-delivery test has to opt in like a real user.
+                    default_sniper_list_enabled=True)
         session.add(user)
         await session.commit()
         await session.refresh(user)
@@ -1044,10 +1047,13 @@ def test_rule_notifies_a_superuser(listings_dir, rule_caches, superuser, monkeyp
     result = watchlist.check_triggers()
     assert result["rule_notified"] == 1
     assert len(posted) == 1
-    assert embed_field(posted[0], "Price") == "**50.00g**"
-    assert embed_field(posted[0], "TSM sale avg") == "5,000g"
-    assert embed_field(posted[0], "Multiple") == "100x"
-    assert embed_of(posted[0])["url"] == "https://undermine.exchange/#eu-realm-1/111"
+    embed = embed_of(posted[0])
+    assert embed["title"] == "1 snipe"
+    # One line per find, carrying only what the human asked for: name (as
+    # the undermine link), buy price, sale average, realm.
+    assert embed["description"] == (
+        "**[Item 111](https://undermine.exchange/#eu-realm-1/111)** · "
+        "**50g** · avg 5,000g · Realm 1")
 
 
 def test_rule_notifies_any_active_subscriber(listings_dir, rule_caches, real_user,
@@ -1145,7 +1151,11 @@ def test_rule_caps_notifications_per_cycle(listings_dir, rule_caches, superuser,
     assert result["rule_hits"] == 4
     assert result["rule_notified"] == 2
     assert result["rule_suppressed_by_cap"] == 2
-    assert len(posted) == 2
+    # One message, not one per find (2026-08-05) -- the cap now bounds how
+    # many *lines* it carries, not how many messages get sent.
+    assert len(posted) == 1
+    assert embed_of(posted[0])["title"] == "2 snipes"
+    assert len(embed_of(posted[0])["description"].splitlines()) == 2
 
 
 def test_rule_failure_does_not_break_the_per_item_trigger_path(listings_dir, real_user,
@@ -1174,10 +1184,11 @@ def test_rule_failure_does_not_break_the_per_item_trigger_path(listings_dir, rea
 
 # ---- "Default sniper list" per-user toggle (2026-08-05) ----
 
-def test_default_sniper_list_is_enabled_by_default(bypass_get_async_session):
-    """Defaults ON, deliberately: the standing rule shipped earlier the same
-    day already delivering to every subscriber with a webhook, so defaulting
-    to off would silently switch a live feature off for everyone.
+def test_default_sniper_list_is_disabled_by_default(bypass_get_async_session):
+    """Defaults OFF (changed 2026-08-05, human request). It shipped
+    defaulting on so an already-live feature would not vanish for accounts
+    that had it; as a standing opt-in it should not enrol new accounts into
+    unsolicited Discord messages.
 
     Asserted against a **persisted** row, not the module-level FAKE_USER --
     SQLAlchemy applies a column default on INSERT, so an object merely
@@ -1191,7 +1202,7 @@ def test_default_sniper_list_is_enabled_by_default(bypass_get_async_session):
             await session.commit()
             await session.refresh(user)
             return user.default_sniper_list_enabled
-    assert asyncio.run(_make()) is True
+    assert asyncio.run(_make()) is False
 
 
 def test_default_sniper_list_can_be_toggled_off_and_back_on(real_user):

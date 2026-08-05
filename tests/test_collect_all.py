@@ -355,3 +355,66 @@ def test_collect_all_survives_tsm_refresh_failure(env, monkeypatch):
 
     summary = collect_all.collect_all()  # must not raise
     assert summary["tsm_refreshed"] is False
+
+
+def test_prewarm_item_details_converges_stale_cache_entries(tmp_path, monkeypatch):
+    """An entry cached before item_purchase_price existed is incomplete, so
+    the background prewarm re-resolves it and the vendor rule starts
+    applying to it. Without this the rule only ever covered items seen for
+    the first time after the deploy -- confirmed live, item 45673 was still
+    being sent after it shipped."""
+    import duckdb, item_names, pyarrow as pa, pyarrow.parquet as pq
+    from scan_region import LISTING_SCHEMA
+
+    monkeypatch.setattr(item_names, "CACHE_PATH", tmp_path / "names.json")
+    listings = tmp_path / "listings"; listings.mkdir()
+    monkeypatch.setattr(collect_all, "DATA", tmp_path)
+    pq.write_table(pa.Table.from_pylist([{
+        "cr_id": 1, "fetched_ts": 1, "auction_id": 1, "item_id": 45673,
+        "bonus_key": "", "pet_species_id": None, "pet_quality_id": None,
+        "pet_level": None, "buyout": 100, "bid": None, "quantity": 1,
+        "time_left": "VERY_LONG"}], schema=LISTING_SCHEMA), listings / "1.parquet")
+
+    fetched = []
+    def fake_details(item_id):
+        fetched.append(item_id)
+        return {"name": "Thunder Bluff Doublet", "quality": "UNCOMMON", "level": 1,
+                "inventory_type": "BODY", "item_class": 4, "item_subclass": 0,
+                "purchase_price": 1000}
+    monkeypatch.setattr(item_names, "_fetch_item_details", fake_details)
+
+    # Seed a stale entry: every pre-purchase_price field present.
+    c = item_names.NameCache()
+    for section, value in (("items", "Thunder Bluff Doublet"), ("item_quality", "UNCOMMON"),
+                            ("item_level", 1), ("item_inventory_type", "BODY"),
+                            ("item_class", 4), ("item_subclass", 0)):
+        c._set(section, "45673", value)
+    c.save()
+
+    assert collect_all._prewarm_item_details() == 1
+    assert 45673 in fetched          # re-resolved despite looking cached
+    assert item_names.NameCache().purchase_price(45673) == 1000
+
+
+def test_prewarm_item_details_respects_its_cap(tmp_path, monkeypatch):
+    """~20,000 stale entries must not become one burst of Blizzard calls --
+    the 2026-08-01 rate-limit incident was exactly that shape."""
+    import item_names, pyarrow as pa, pyarrow.parquet as pq
+    from scan_region import LISTING_SCHEMA
+
+    monkeypatch.setattr(item_names, "CACHE_PATH", tmp_path / "names.json")
+    listings = tmp_path / "listings"; listings.mkdir()
+    monkeypatch.setattr(collect_all, "DATA", tmp_path)
+    rows = [{"cr_id": 1, "fetched_ts": 1, "auction_id": i, "item_id": 1000 + i,
+             "bonus_key": "", "pet_species_id": None, "pet_quality_id": None,
+             "pet_level": None, "buyout": 100, "bid": None, "quantity": 1,
+             "time_left": "VERY_LONG"} for i in range(25)]
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA), listings / "1.parquet")
+
+    fetched = []
+    monkeypatch.setattr(item_names, "_fetch_item_details", lambda i: (
+        fetched.append(i) or {"name": "x", "quality": "RARE", "level": 1,
+                              "inventory_type": None, "item_class": 4,
+                              "item_subclass": 0, "purchase_price": 0}))
+    collect_all._prewarm_item_details(cap=5)
+    assert len(fetched) == 5

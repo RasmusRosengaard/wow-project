@@ -59,6 +59,15 @@ DEEP_COLLECT_POPULATION_TIERS = {"FULL", "HIGH"}
 # cycle can't run long enough to meaningfully delay the next poll.
 PREWARM_BASE_LEVEL_CAP = 1000
 
+# Per-cycle cap for _prewarm_item_details(). Deliberately below
+# PREWARM_BASE_LEVEL_CAP: that one targets a subset that matters for a
+# specific request path, this one sweeps every item in the region and is
+# pure background convergence with nothing waiting on it, so it should be
+# the more polite of the two. At ~20,000 stale entries this converges in
+# roughly a day of cycles while adding ~500 requests to a budget of 36,000
+# per hour.
+PREWARM_DETAILS_CAP = 500
+
 _deep_collect_realm_ids: list[int] | None = None
 
 
@@ -95,6 +104,37 @@ def prune_to_latest(cr: int) -> int:
         p.unlink()
         removed += 1
     return removed
+
+
+def _prewarm_item_details(cap: int = PREWARM_DETAILS_CAP) -> int:
+    """Converges the whole NameCache over every item in the region sweep,
+    not just the type-28 subset _prewarm_item_base_levels() covers.
+
+    Added 2026-08-05 for the same reason its sibling exists, one field
+    later: NameCache._is_complete() now includes item_purchase_price, so
+    every entry cached before that field existed is incomplete and needs
+    re-resolving before the sniper list's vendor-item rule can apply to it.
+    Roughly 20,000 such items existed at the time, and resolving them on
+    demand from a live /api/snipes request is precisely the shape that
+    caused the 2026-08-01 rate-limit incident.
+
+    So it rides the background cycle with a hard per-cycle cap instead:
+    ensure_many() skips anything already complete and stops after `cap` new
+    lookups, so the cache converges over hours rather than in one burst,
+    and no user request ever waits on it. Returns the candidate count
+    considered, same convention as the sibling."""
+    listings_dir = DATA / "listings"
+    if not any(listings_dir.glob("*.parquet")):
+        return 0
+    con = duckdb.connect()
+    ids = [item_id for (item_id,) in con.execute(
+        f"SELECT DISTINCT item_id FROM read_parquet('{(listings_dir / '*.parquet').as_posix()}')"
+    ).fetchall()]
+    con.close()
+    if not ids:
+        return 0
+    item_names.NameCache().ensure_many(ids, max_workers=24, limit=cap)
+    return len(ids)
 
 
 def _prewarm_item_base_levels(cap: int = PREWARM_BASE_LEVEL_CAP) -> int:
@@ -164,6 +204,15 @@ def collect_all() -> dict:
     except Exception:
         log.exception("collect_all: item base-level prewarm failed")
 
+    # Separate try/except from the base-level prewarm above: one converging
+    # the cache must not stop the other, same "one subsystem's failure
+    # doesn't abort the rest" convention as every other block here.
+    details_prewarmed = 0
+    try:
+        details_prewarmed = _prewarm_item_details()
+    except Exception:
+        log.exception("collect_all: item detail prewarm failed")
+
     # TSM sale-rate refresh (added 2026-08-01, human request) -- its own
     # tsm.REFRESH_INTERVAL_SECONDS (6h) internally no-ops most cycles, since
     # TSM's region data only updates ~daily; this call itself is cheap
@@ -191,7 +240,8 @@ def collect_all() -> dict:
 
     summary = {"realms": len(realm_ids), "polled": polled,
               "pruned_snapshots": pruned, "failed": failed,
-              "base_level_candidates": prewarmed, "tsm_refreshed": tsm_refreshed,
+              "base_level_candidates": prewarmed,
+              "detail_candidates": details_prewarmed, "tsm_refreshed": tsm_refreshed,
               "watchlist": watchlist_result}
     log.info("collect_all: %s", summary)
     return summary

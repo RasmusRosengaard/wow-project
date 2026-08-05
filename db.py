@@ -18,7 +18,8 @@ from fastapi import Depends
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users_db_sqlalchemy.generics import GUID
 from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String,
-                        UniqueConstraint, true as sa_true)
+                        UniqueConstraint, false as sa_false,
+                        true as sa_true)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -63,13 +64,13 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # of the things that sends them. A user can keep their per-item triggers
     # and turn only the standing rule off.
     #
-    # NOT NULL, server_default true: the rule shipped earlier the same day
-    # already delivering to every subscriber with a webhook, so defaulting
-    # existing rows to false would silently switch off a live feature for
-    # everyone who currently has it. New accounts get the same default via
-    # the model-level default.
+    # Defaults to **off** (changed 2026-08-05, human request). It shipped
+    # defaulting on, so that an already-live feature would not be silently
+    # switched off for accounts that had it -- but as an opt-in it should
+    # not enrol new accounts into unsolicited Discord messages. Existing
+    # rows keep whatever they currently hold; only new accounts get False.
     default_sniper_list_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default=sa_true())
+        Boolean, nullable=False, default=False, server_default=sa_false())
     # Per-user overrides for the standing rule's two thresholds (added
     # 2026-08-05). **NULL means "use the current default"**, deliberately,
     # rather than backfilling every row with today's numbers: the defaults

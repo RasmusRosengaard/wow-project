@@ -730,31 +730,56 @@ def _rule_state_save(state: dict) -> None:
     tmp.replace(path)
 
 
-def _rule_send(webhook_url: str, cand: dict, name_cache: NameCache,
-               account_labels: list[tuple[str, str | None]] | None = None) -> None:
+# One line per find inside a single embed, rather than one embed per find
+# (2026-08-05, human request: "can we send all snipes for a user in 1
+# message instead ... only carries relevant stuff"). Five facts, in the
+# order a decision actually gets made: what it is, what it costs, what it's
+# worth, where it is, and which of your accounts can reach it.
+#
+# Discord caps an embed description at 4096 characters. At roughly 110
+# characters a line that is far more than RULE_MAX_NOTIFICATIONS_PER_CYCLE
+# could ever produce, but the cap is enforced rather than assumed -- a
+# silently-rejected webhook POST would look exactly like "no snipes today".
+EMBED_DESCRIPTION_MAX = 4096
+
+
+def _rule_line(cand: dict, name_cache: NameCache,
+               account_labels: list[tuple[str, str | None]] | None) -> str:
     name = name_cache.get(cand["item_id"], cand["pet_species_id"])
-    buy_g = cand["buy_copper"] / 10000
-    avg_g = cand["region_sale_avg_copper"] / 10000
-    fields = [
-        ("Price", f"**{buy_g:,.2f}g**", True),
-        ("TSM sale avg", f"{avg_g:,.0f}g", True),
-        # The number that actually decides whether it's worth the trip, and
-        # the one a reader would otherwise recompute from the other two
-        # every single time.
-        ("Multiple", f"{avg_g / buy_g:,.0f}x" if buy_g > 0 else "-", True),
-        ("Realm", _realm_label(cand["cr_id"]), False),
-    ]
+    url = _undermine_url(cand["cr_id"], cand["item_id"])
+    # Markdown link on the name only -- the whole line as a link would make
+    # the prices look clickable too.
+    label = f"[{name}]({url})" if url else name
+    parts = [f"**{label}**",
+             f"**{cand['buy_copper'] / 10000:,.0f}g**",
+             f"avg {cand['region_sale_avg_copper'] / 10000:,.0f}g",
+             _realm_label(cand["cr_id"])]
     if account_labels:
-        parts = [f"{label} ({realm_name})" if realm_name else label
-                 for label, realm_name in account_labels]
-        fields.append(("Log in on", ", ".join(parts), False))
-    payload = _embed_message(f"\U0001F4B0 {name}",
-                             _undermine_url(cand["cr_id"], cand["item_id"]),
-                             EMBED_COLOR_RULE, fields, footer="Default sniper list")
+        parts.append(", ".join(lbl for lbl, _realm in account_labels))
+    return " · ".join(parts)
+
+
+def _rule_send_batch(webhook_url: str, cands: list[dict], name_cache: NameCache,
+                     account_labels_by_realm: dict[int, list[tuple[str, str | None]]]) -> None:
+    """All of one user's finds for this cycle, as a single Discord message."""
+    if not cands:
+        return
+    lines = []
+    for cand in cands:
+        line = _rule_line(cand, name_cache, account_labels_by_realm.get(cand["cr_id"]))
+        if sum(len(x) + 1 for x in lines) + len(line) > EMBED_DESCRIPTION_MAX:
+            break
+        lines.append(line)
+    payload = {"embeds": [{
+        "title": f"{len(lines)} snipe{'' if len(lines) == 1 else 's'}",
+        "color": EMBED_COLOR_RULE,
+        "description": "\n".join(lines),
+        "footer": {"text": "Default sniper list"},
+    }]}
     try:
         requests.post(webhook_url, json=payload, timeout=10)
     except Exception:
-        log.exception("watchlist: rule Discord webhook POST failed for item %s", cand["item_id"])
+        log.exception("watchlist: rule Discord webhook POST failed (%s finds)", len(lines))
 
 
 # undermine.exchange URL shape, taken from the human's own link
@@ -766,14 +791,12 @@ UNDERMINE_URL = "https://undermine.exchange/#eu-{slug}/{item_id}"
 
 def _undermine_url(cr_id: int, item_id: int) -> str | None:
     """Deep link to the item's undermine.exchange page for the realm the
-    listing is actually on (2026-08-05, human request). Returns None rather
-    than a guessed URL when the realm lookup fails -- a dead link in a
-    notification is worse than no link.
+    listing is actually on. Returns None rather than a guessed URL when the
+    realm lookup fails -- a dead link in a notification is worse than no
+    link.
 
     A connected realm can bundle several named realms; any member's slug
-    resolves to the same auction house, so the first is used (the same
-    assumption _realm_label() already documents, just picking one rather
-    than listing them all)."""
+    resolves to the same auction house, so the first is used."""
     try:
         import blizz
         for m in blizz.connected_realm_realms(cr_id):
@@ -795,15 +818,9 @@ def _embed_message(title: str, url: str | None, color: int,
                    fields: list[tuple[str, str, bool]],
                    footer: str | None = None) -> dict:
     """Discord webhook payload as a single embed rather than a run-on
-    `content` string (2026-08-05, human request with a real screenshot --
-    the plain-text form ran every fact into one long sentence per line,
-    "not intuitive and easy to read"). `fields` is [(name, value, inline)].
-
-    An embed rather than markdown inside `content` specifically because
-    inline fields give Discord a grid to lay out: price/sale-avg/multiple
-    line up column-wise across consecutive messages, which is what makes a
-    stack of finds scannable instead of a wall of prose. The title carries
-    the item link, so the item name itself is the clickable thing."""
+    `content` string. `fields` is [(name, value, inline)]. Still used by the
+    per-item trigger path; the standing rule batches instead, see
+    _rule_send_batch()."""
     embed = {
         "title": title,
         "color": color,
@@ -966,36 +983,64 @@ async def _check_rule_async() -> dict:
             # starts from a clean slate rather than a backlog.
             return {"rule_recipients": 0, "rule_hits": 0, "rule_notified": 0}
 
-        hits = await asyncio.to_thread(_rule_scan)
-        if not hits:
+        # One DuckDB pass, shared by everyone -- it depends on nothing
+        # user-specific. Only the cheap per-threshold filtering repeats.
+        candidates = await asyncio.to_thread(_rule_candidates)
+        if not candidates:
             return {"rule_recipients": len(recipients), "rule_hits": 0, "rule_notified": 0}
+
+        # Grouped by threshold pair so the scan runs once per *distinct*
+        # setting rather than once per user; in practice almost everyone is
+        # on the defaults, so this is usually a single pass.
+        by_thresholds: dict[tuple[int, float], list[User]] = {}
+        for user in recipients:
+            by_thresholds.setdefault(_rule_thresholds_for(user), []).append(user)
 
         state = await asyncio.to_thread(_rule_state_load)
         now = time.time()
         name_cache = NameCache()
         notified = 0
         suppressed_by_cap = 0
-        for cand in hits:
-            # Keyed per (item, pet), not per (item, pet, user): a hit is a
-            # fact about the region, so one hit fires one round of messages
-            # to every recipient. Keying per user would let a message to
-            # one recipient start a cooldown that silences another.
-            key = f"{cand['item_id']}:{cand['pet_species_id']}"
-            last = state.get(key)
-            if last is not None and (now - last) < NOTIFY_COOLDOWN_SECONDS:
-                continue
-            if notified >= RULE_MAX_NOTIFICATIONS_PER_CYCLE:
-                # Not marked notified -- reconsidered next cycle.
-                suppressed_by_cap += 1
-                continue
-            for user in recipients:
-                account_labels = await _account_labels_for_realm(user.id, cand["cr_id"], session)
-                await asyncio.to_thread(_rule_send, user.discord_webhook_url, cand,
-                                        name_cache, account_labels)
-            state[key] = now
-            notified += 1
+        total_hits = 0
+        for (min_avg, frac), group in by_thresholds.items():
+            hits = await asyncio.to_thread(_rule_scan, min_avg, frac, candidates)
+            total_hits += len(hits)
+            for user in group:
+                # Collect this user's whole cycle first, then send once.
+                to_send = []
+                for cand in hits:
+                    # Keyed per (user, item, pet). It used to be per item
+                    # alone, on the reasoning that a hit is a fact about the
+                    # region -- but thresholds are per-user now, so an item
+                    # can be a hit for one account and not another, and a
+                    # shared key would let one user's message start a
+                    # cooldown that silences someone else's first-ever
+                    # notification for the same item.
+                    key = f"{user.id}:{cand['item_id']}:{cand['pet_species_id']}"
+                    last = state.get(key)
+                    if last is not None and (now - last) < NOTIFY_COOLDOWN_SECONDS:
+                        continue
+                    if len(to_send) >= RULE_MAX_NOTIFICATIONS_PER_CYCLE:
+                        # Not marked notified -- reconsidered next cycle.
+                        suppressed_by_cap += 1
+                        continue
+                    to_send.append(cand)
+                if not to_send:
+                    continue
+                labels_by_realm = {}
+                for cand in to_send:
+                    if cand["cr_id"] not in labels_by_realm:
+                        labels_by_realm[cand["cr_id"]] = await _account_labels_for_realm(
+                            user.id, cand["cr_id"], session)
+                await asyncio.to_thread(_rule_send_batch, user.discord_webhook_url,
+                                        to_send, name_cache, labels_by_realm)
+                # Marked only after the send is attempted, so a crash before
+                # this point leaves them to be retried next cycle.
+                for cand in to_send:
+                    state[f"{user.id}:{cand['item_id']}:{cand['pet_species_id']}"] = now
+                notified += len(to_send)
         await asyncio.to_thread(_rule_state_save, state)
-        return {"rule_recipients": len(recipients), "rule_hits": len(hits),
+        return {"rule_recipients": len(recipients), "rule_hits": total_hits,
                 "rule_notified": notified, "rule_suppressed_by_cap": suppressed_by_cap}
 
 

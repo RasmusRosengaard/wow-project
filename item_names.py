@@ -166,9 +166,18 @@ class NameCache:
         self._dirty = True
 
     def _is_complete(self, key: str) -> bool:
+        # item_purchase_price added 2026-08-05. Leaving it out meant every
+        # entry cached before the field existed counted as complete and was
+        # never re-resolved, so purchase_price stayed None forever and the
+        # sniper list's vendor-item rule silently applied to newly-seen
+        # items only -- confirmed live, item 45673 was still being sent
+        # after the rule shipped. Including it here is what makes stale
+        # entries re-resolve; collect_all's prewarm is what stops that
+        # becoming a burst (see _prewarm_item_details there).
         return key in self._cache["items"] and key in self._cache["item_quality"] \
             and key in self._cache["item_level"] and key in self._cache["item_inventory_type"] \
-            and key in self._cache["item_class"] and key in self._cache["item_subclass"]
+            and key in self._cache["item_class"] and key in self._cache["item_subclass"] \
+            and key in self._cache["item_purchase_price"]
 
     def has_class_info(self, item_id: int) -> bool:
         """Whether item_class/item_subclass are already resolved for
