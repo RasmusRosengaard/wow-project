@@ -1456,15 +1456,25 @@ def test_is_sus_item_flags_old_jewelry_slots():
     assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "TRINKET", 100) is True
 
 
-def test_is_sus_item_ilvl_boundary():
+def test_is_sus_item_ilvl_boundary_no_longer_applies_to_jewellery():
+    """The ilvl cutoff used to be the whole jewellery rule. Since 2026-08-05
+    every NECK/FINGER/TRINKET is flagged regardless of item level (human
+    request, after two false positives at ilvl 610 and 151 that no single
+    cutoff could have caught), so both sides of the old boundary are now
+    True. LEGACY_JEWELRY_ILVL_MAX is kept as the documented record of why
+    the rule started as a threshold -- see is_sus_item()'s docstring."""
     assert snipe_check.is_sus_item(
         NON_STARTER_ITEM_ID, "TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX) is True
     assert snipe_check.is_sus_item(
-        NON_STARTER_ITEM_ID, "TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX + 1) is False
+        NON_STARTER_ITEM_ID, "TRINKET", snipe_check.LEGACY_JEWELRY_ILVL_MAX + 1) is True
 
 
-def test_is_sus_item_false_for_current_tier_jewelry():
-    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NECK", 610) is False
+def test_is_sus_item_flags_current_tier_jewelry_too():
+    """Reversed 2026-08-05 (human request). "Seal of Cosmic Embrace" at
+    ilvl 610 was reported as a false positive precisely because this
+    returned False -- jewellery carries no transmog appearance, so the
+    slots are excluded outright rather than thresholded."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NECK", 610) is True
 
 
 def test_is_sus_item_false_for_non_jewelry_slot():
@@ -1476,7 +1486,10 @@ def test_is_sus_item_false_for_non_jewelry_slot():
 
 def test_is_sus_item_none_safe():
     assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, None, 26) is False
-    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NECK", None) is False
+    # NECK is now flagged on the slot alone, so base_level=None no longer
+    # makes it safe -- None-safety here means "does not raise", which the
+    # non-jewellery case above still pins.
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NECK", None) is True
 
 
 def test_is_sus_item_class_starter_armor_flags_regardless_of_slot():
@@ -1583,3 +1596,92 @@ def test_is_sus_item_class_args_are_optional_and_default_to_not_flagging():
     assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1) is False
     assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, 15, None) is False
     assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, None, 0) is False
+
+
+# ---- exclusions added 2026-08-05 from real delivered Discord messages ----
+# Every one of these came from the human reading actual output and naming a
+# specific item, so each test carries the item that motivated it.
+
+def test_is_sus_item_flags_containers():
+    """Item 70138 "Luxurious Silk Gem Bag", class 1 Container (confirmed
+    live). "also nenver sent bags(contaiers)"."""
+    assert snipe_check.is_sus_item(70138, "BAG", 33, 1, 5) is True
+
+
+def test_is_sus_item_flags_explosives_and_devices():
+    """Item 7148 "Goblin Jumper Cables", class 0 / subclass 0 (confirmed
+    live). Only this subclass, not all consumables -- flasks and potions are
+    genuinely flippable."""
+    assert snipe_check.is_sus_item(7148, "NON_EQUIP", 14, 0, 0) is True
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 14, 0, 1) is False
+
+
+def test_is_sus_item_flags_grey_and_white_quality():
+    for q in ("POOR", "COMMON", "poor", "common"):
+        assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "SHOULDER", 250, 4, 1,
+                                       quality=q) is True
+
+
+def test_is_sus_item_keeps_uncommon_and_above():
+    for q in ("UNCOMMON", "RARE", "EPIC", "LEGENDARY"):
+        assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "SHOULDER", 250, 4, 1,
+                                       quality=q) is False
+
+
+def test_is_sus_item_flags_all_jewellery_regardless_of_ilvl():
+    """Two real false positives the old ilvl cutoff could not catch:
+    "Seal of Cosmic Embrace" at ilvl 610, and "Quick Oxxein Ring" at ilvl
+    151 -- one point past the 150 cutoff. No single ilvl separates legacy
+    from current jewellery across an expansion boundary, and jewellery has
+    no transmog appearance, so the slots are excluded outright."""
+    for slot in ("NECK", "FINGER", "TRINKET"):
+        assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, slot, 610, 4, 0) is True
+        assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, slot, 151, 4, 0) is True
+        assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, slot, 9999, 4, 0) is True
+
+
+def test_is_sus_item_flags_darkmoon_cards_and_decks():
+    """"of all types" -- a live check found these spread across Junk (15/0),
+    TRINKET (4/0), weapons (class 2) and armour (class 4), so no class rule
+    can express it. The product line's naming is what's consistent."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, 15, 0,
+                                   name="Darkmoon Card: Tsunami") is True
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "HAND", 200, 4, 1,
+                                   name="Darkmoon Deck: Symbiosis") is True
+
+
+def test_is_sus_item_darkmoon_rule_does_not_catch_other_darkmoon_items():
+    """Only cards and decks. "Darkmoon Rabbit" (a pet) and the faire's
+    transmog weapons/armour are ordinary items."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, 15, 2,
+                                   name="Darkmoon Rabbit") is False
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "TWOHWEAPON", 60, 2, 5,
+                                   name="Darkmoon Hammer") is False
+
+
+def test_is_sus_item_flags_vendor_purchasable_items():
+    """Item 45673 "Thunder Bluff Doublet" -- buyable from a vendor, so a
+    cheap listing is not a find. "just all vendoritems"."""
+    assert snipe_check.is_sus_item(45673, "BODY", 1, 4, 0, quality="UNCOMMON",
+                                   purchase_price=1000) is True
+
+
+def test_is_sus_item_zero_purchase_price_is_not_vendor_sold():
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "SHOULDER", 250, 4, 1,
+                                   quality="UNCOMMON", purchase_price=0) is False
+
+
+def test_is_sus_item_unknown_purchase_price_does_not_flag():
+    """"unknown isn't a claim" -- an entry cached before purchase_price
+    existed returns None, and must not silently hide finds while the cache
+    converges."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "SHOULDER", 250, 4, 1,
+                                   quality="UNCOMMON", purchase_price=None) is False
+
+
+def test_is_sus_item_still_keeps_a_genuine_transmog_find():
+    """Item 204925 "Moonless Shoulderpads" -- the real item this whole
+    investigation started from. None of the new rules may touch it."""
+    assert snipe_check.is_sus_item(204925, "SHOULDER", 250, 4, 1,
+                                   quality="UNCOMMON", name="Moonless Shoulderpads",
+                                   purchase_price=0) is False

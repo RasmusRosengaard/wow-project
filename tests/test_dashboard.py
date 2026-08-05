@@ -796,13 +796,15 @@ def test_api_snipes_flags_sus_item_for_old_neck_item(data_dir, monkeypatch):
     assert row["sus_item_suspect"] is True
 
 
-def test_api_snipes_sus_item_false_for_current_tier_jewelry(data_dir, monkeypatch):
+def test_api_snipes_sus_item_true_for_jewellery_at_any_ilvl(data_dir, monkeypatch):
+    """Reversed 2026-08-05 with snipe_check.is_sus_item() -- every jewellery
+    slot is flagged regardless of item level, so the API surfaces it too."""
     run_diff(monkeypatch)
     stub_item_details(monkeypatch, inventory_type="NECK", level=610)
     r = client.get("/api/snipes", params={"sell": SELL_CR, "min_discount": 0.3,
                                           "names": True})
     row = r.json()["rows"][0]
-    assert row["sus_item_suspect"] is False
+    assert row["sus_item_suspect"] is True
 
 
 def test_api_snipes_sus_item_false_for_non_jewelry_slot(data_dir, monkeypatch):

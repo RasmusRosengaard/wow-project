@@ -395,7 +395,9 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # as inventory_type/base_level, so this stays free.
         out["sus_item_suspect"] = snipe_check.is_sus_item(
             r["item_id"], names.inventory_type(r["item_id"]), names.base_level(r["item_id"]),
-            names.item_class(r["item_id"]), names.item_subclass(r["item_id"]))
+            names.item_class(r["item_id"]), names.item_subclass(r["item_id"]),
+            names.quality(r["item_id"]), names.get(r["item_id"]),
+            names.purchase_price(r["item_id"]))
     return out
 
 

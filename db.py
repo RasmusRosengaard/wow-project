@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 from fastapi import Depends
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users_db_sqlalchemy.generics import GUID
-from sqlalchemy import (Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint,
-                        true as sa_true)
+from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String,
+                        UniqueConstraint, true as sa_true)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -70,6 +70,16 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # the model-level default.
     default_sniper_list_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=sa_true())
+    # Per-user overrides for the standing rule's two thresholds (added
+    # 2026-08-05). **NULL means "use the current default"**, deliberately,
+    # rather than backfilling every row with today's numbers: the defaults
+    # live in watchlist.py (RULE_MIN_SALE_AVG_COPPER /
+    # RULE_BUY_FRACTION_OF_SALE_AVG) and will be retuned again, and a
+    # backfill would silently freeze every existing account at whatever the
+    # value happened to be on migration day. Only a user who has actually
+    # tuned these gets a stored number.
+    sniper_min_sale_avg_copper: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sniper_buy_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Signup timestamp (added 2026-08-04 for the admin page's signup list --
     # FastAPI-Users' base table has no such column, and uuid4 ids carry no
     # embedded time, so there was no way to order accounts by age).

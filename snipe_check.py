@@ -279,9 +279,61 @@ CURATED_SUS_ITEM_IDS = (CLASS_STARTER_ARMOR_ITEM_IDS | SLITHERSHELL_ARMOR_ITEM_I
 # which the human did NOT object to.
 JUNK_CLASS_SUBCLASS = (15, 0)
 
+# Whole item classes that never belong in a snipe/find list, by Blizzard's
+# own classification (added 2026-08-05, human request from real delivered
+# messages: "also nenver sent bags(contaiers)" -- item 70138 "Luxurious Silk
+# Gem Bag", class 1 Container). Containers have no transmog appearance and
+# no collection value; a cheap bag is just a cheap bag.
+SUS_ITEM_CLASSES = frozenset({
+    1,   # Container -- confirmed live on 70138 (subclass 5, Gem Bag)
+})
+
+# Narrower (class, subclass) pairs, for categories where the whole class is
+# too broad to exclude. Consumables at large include genuinely flippable
+# things, so only the reported subcategory goes here rather than class 0
+# wholesale (added 2026-08-05, human request: "useless enginering stuff" --
+# item 7148 "Goblin Jumper Cables", class 0 Consumable / subclass 0
+# Explosives and Devices, confirmed live).
+SUS_CLASS_SUBCLASS_PAIRS = frozenset({
+    JUNK_CLASS_SUBCLASS,   # (15, 0) Miscellaneous / Junk
+    (0, 0),                # Consumable / Explosives and Devices
+})
+
+# Grey/white items (2026-08-05, human request: "honestly ignore all
+# grey/white items"). Blizzard's own quality types. Poor and Common are the
+# vendor-trash and starter tiers -- nothing at those qualities is worth a
+# notification, and this subsumes several individually-reported cases
+# ("Undelivered Love Letter" was POOR, "Goblin Jumper Cables" COMMON).
+LOW_QUALITY_TYPES = frozenset({"POOR", "COMMON"})
+
+# All jewellery slots, regardless of item level (2026-08-05, human request
+# after two separate false positives the ilvl rule could not catch:
+# "Seal of Cosmic Embrace" at ilvl 610 and "Quick Oxxein Ring" at ilvl 151,
+# one copper-width past the 150 cutoff). No ilvl cutoff can separate legacy
+# from current jewellery across an expansion boundary without also
+# flagging current-tier pieces, and jewellery carries no transmog
+# appearance at all -- which is what this product is actually about. So the
+# slots are excluded outright rather than thresholded.
+#
+# LEGACY_JEWELRY_ILVL_MAX and LEGACY_JEWELRY_INVENTORY_TYPES are kept and
+# still used: this is a superset of the old rule, and the constants remain
+# the documented record of why it started as an ilvl cutoff.
+JEWELRY_INVENTORY_TYPES = LEGACY_JEWELRY_INVENTORY_TYPES
+
+# Darkmoon Faire cards and decks (2026-08-05, human request: "these darkmoon
+# faire cards of all types, should never be sent"). A **name** rule, which
+# this project otherwise avoids in favour of Blizzard classifications or
+# curated ids -- justified here because a live check showed these items
+# genuinely span unrelated classes (Junk 15/0, TRINKET 4/0, weapons class 2,
+# armour class 4), so no class rule can express "of all types", while the
+# naming of the product line itself is completely consistent.
+DARKMOON_NAME_PREFIXES = ("darkmoon card:", "darkmoon deck:")
+
 
 def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None,
-                item_class: int | None = None, item_subclass: int | None = None) -> bool:
+                item_class: int | None = None, item_subclass: int | None = None,
+                quality: str | None = None, name: str | None = None,
+                purchase_price: int | None = None) -> bool:
     """True for a "sus" (suspect) item worth a second look before trusting a
     "100% discount" snipe: an old neck/ring/trinket item (see
     LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified examples and the
@@ -325,7 +377,25 @@ def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None
     # Both default to None so existing callers keep working unchanged; a
     # caller that can't resolve the class simply doesn't get this rule,
     # rather than getting a wrong answer from a half-known pair.
-    if (item_class, item_subclass) == JUNK_CLASS_SUBCLASS:
+    if item_class is not None and item_class in SUS_ITEM_CLASSES:
+        return True
+    if (item_class, item_subclass) in SUS_CLASS_SUBCLASS_PAIRS:
+        return True
+    if quality is not None and quality.upper() in LOW_QUALITY_TYPES:
+        return True
+    if inventory_type in JEWELRY_INVENTORY_TYPES:
+        return True
+    if name is not None and name.strip().lower().startswith(DARKMOON_NAME_PREFIXES):
+        return True
+    # Vendor-buyable (human's call 2026-08-05, "just all vendoritems"):
+    # anything a vendor sells is obtainable without the auction house, so a
+    # cheap listing of it is not a find. purchase_price > 0 is Blizzard's
+    # own "a vendor charges this much" figure; 0 means no vendor sells it.
+    # None means we simply don't know yet (an item resolved before this
+    # field was cached) -- treated as not-sus, the same "unknown isn't a
+    # claim" convention used throughout, so the cache converges rather than
+    # silently hiding finds in the meantime.
+    if purchase_price is not None and purchase_price > 0:
         return True
     return (inventory_type in LEGACY_JEWELRY_INVENTORY_TYPES
             and base_level is not None

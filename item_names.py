@@ -54,6 +54,10 @@ PET_QUALITY_NAMES = ["POOR", "COMMON", "UNCOMMON", "RARE", "EPIC", "LEGENDARY"]
 CACHE_SECTIONS = (
     "items", "pets", "item_icons", "pet_icons", "item_quality",
     "item_level", "item_inventory_type", "item_class", "item_subclass",
+    # purchase_price = what a vendor charges for the item. Added 2026-08-05
+    # for the sniper list's vendor-item exclusion; rides along free on the
+    # same /item/{id} response every other field here already needs.
+    "item_purchase_price",
 )
 
 
@@ -83,6 +87,7 @@ def _fetch_item_details(item_id: int) -> dict | None:
             "inventory_type": (j.get("inventory_type") or {}).get("type"),
             "item_class": (j.get("item_class") or {}).get("id"),
             "item_subclass": (j.get("item_subclass") or {}).get("id"),
+            "purchase_price": j.get("purchase_price"),
         }
     except (Exception, SystemExit):
         return None
@@ -199,6 +204,7 @@ class NameCache:
             self._set("items", key, details["name"])
         if details.get("quality"):
             self._set("item_quality", key, details["quality"])
+            self._set("item_purchase_price", key, details.get("purchase_price"))
         if details.get("level") is not None:
             self._set("item_level", key, details["level"])
         # Unlike quality/level above, always record inventory_type/class/
@@ -425,6 +431,18 @@ class NameCache:
         itself, so this works for pets too without needing pet_species_id."""
         self._ensure_item_details(item_id)
         return self._cache["item_class"].get(str(item_id))
+
+    def purchase_price(self, item_id: int) -> int | None:
+        """What a vendor charges for this item, in copper, or None if
+        unknown. 0 means "no vendor sells it"; anything above 0 means the
+        item is buyable from a vendor somewhere, which is the signal the
+        sniper list uses to skip it (a thing you can just buy is not a
+        find). Backfills onto older cache entries the same way every other
+        detail here does -- an entry written before this field existed
+        returns None until it is next resolved."""
+        self._ensure_item_details(item_id)
+        v = self._cache["item_purchase_price"].get(str(item_id))
+        return int(v) if v is not None else None
 
     def item_subclass(self, item_id: int) -> int | None:
         """Blizzard's official item_subclass id, scoped within item_class

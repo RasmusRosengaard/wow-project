@@ -118,14 +118,39 @@ RULE_MIN_SALE_AVG_COPPER = 2_000 * 10_000      # below this, ignored entirely
 RULE_BUY_FRACTION_OF_SALE_AVG = 0.10           # buy ceiling, as a fraction of it
 
 
-def _rule_max_buy_copper(sale_avg_copper: float) -> float:
+# Bounds on what a user may tune the two numbers to (2026-08-05). Not
+# taste-policing -- these stop a setting that would make the feature behave
+# pathologically: a fraction at or above 1.0 means "any price at all counts
+# as a snipe", and a minimum of 0 reopens the sub-1g trade-goods flood that
+# 6,580-hit measurement found. The upper fraction bound is deliberately
+# generous; the point is to exclude nonsense, not to second-guess.
+RULE_MIN_SALE_AVG_FLOOR_COPPER = 100 * 10_000      # can't tune below 100g
+RULE_BUY_FRACTION_MIN = 0.001                      # 0.1%
+RULE_BUY_FRACTION_MAX = 0.9                        # 90%
+
+
+def _rule_max_buy_copper(sale_avg_copper: float, fraction: float | None = None) -> float:
     """Highest buy price that still counts as a find for an item with this
-    TSM sale average. Callers must reject anything below
-    RULE_MIN_SALE_AVG_COPPER first -- this function deliberately does not,
-    since "what is the ceiling" and "does this item qualify at all" are two
-    different questions and folding them together here would make a
-    too-cheap item look like it had a valid, very small ceiling."""
-    return sale_avg_copper * RULE_BUY_FRACTION_OF_SALE_AVG
+    TSM sale average. Callers must reject anything below the minimum sale
+    average first -- this function deliberately does not, since "what is
+    the ceiling" and "does this item qualify at all" are two different
+    questions, and folding them together would make a too-cheap item look
+    like it had a valid, very small ceiling."""
+    if fraction is None:
+        fraction = RULE_BUY_FRACTION_OF_SALE_AVG
+    return sale_avg_copper * fraction
+
+
+def _rule_thresholds_for(user: User) -> tuple[int, float]:
+    """This user's (min sale average, buy fraction), falling back to the
+    module defaults. A NULL column means "follow the current default", not
+    "was never set to anything" -- so retuning the defaults moves every
+    untouched account with it, which is the whole reason the migration
+    deliberately did not backfill."""
+    min_avg = user.sniper_min_sale_avg_copper
+    frac = user.sniper_buy_fraction
+    return (int(min_avg) if min_avg is not None else RULE_MIN_SALE_AVG_COPPER,
+            float(frac) if frac is not None else RULE_BUY_FRACTION_OF_SALE_AVG)
 
 # Deliberately **sell-realm-free** (human's call, 2026-08-05, choosing
 # between this and reusing snipe_check.find_snipes() with the user's
@@ -592,9 +617,17 @@ def _rule_cluster_suspect(cand: dict) -> bool:
     return cand["cluster_median"] <= cand["buy_copper"] * RULE_CLUSTER_CLOSE_MULTIPLE
 
 
-def _rule_scan() -> list[dict]:
-    """The standing rule, applied end to end. Filter order is deliberate and
-    load-bearing: the two cheap, purely-local tests (SQL, then the TSM cache)
+def _rule_scan(min_sale_avg_copper: int | None = None, buy_fraction: float | None = None,
+               candidates: list[dict] | None = None) -> list[dict]:
+    """The standing rule, applied end to end, for one pair of thresholds.
+
+    Both are per-user now (see _rule_thresholds_for()), so `candidates` can
+    be passed in pre-computed: the DuckDB pass depends on nothing
+    user-specific and is by far the most expensive step, so the caller runs
+    it once and reuses it across every distinct threshold pair rather than
+    re-querying per user.
+
+    Filter order is deliberate and load-bearing: the two cheap, purely-local tests (SQL, then the TSM cache)
     run first and cut the candidate set to a handful, so the later
     NameCache lookups -- which can make a *live Blizzard call* for an item
     nobody has resolved before -- only ever see a small set. Resolving
@@ -602,7 +635,10 @@ def _rule_scan() -> list[dict]:
     that caused the 2026-08-01 rate-limit incident (see blizz.py's
     _TokenBucket comment); this ordering is what keeps that from recurring
     rather than any cap here."""
-    candidates = _rule_candidates()
+    if min_sale_avg_copper is None:
+        min_sale_avg_copper = RULE_MIN_SALE_AVG_COPPER
+    if candidates is None:
+        candidates = _rule_candidates()
     if not candidates:
         return []
 
@@ -620,14 +656,16 @@ def _rule_scan() -> list[dict]:
         # ikke findes på item'en så ignore for nu"), and below the minimum
         # -> ignored however cheap it is, which is what stops the rule
         # drowning in sub-1g trade goods.
-        if avg is None or avg < RULE_MIN_SALE_AVG_COPPER:
+        if avg is None or avg < min_sale_avg_copper:
             continue
-        if cand["buy_copper"] >= _rule_max_buy_copper(avg):
+        if cand["buy_copper"] >= _rule_max_buy_copper(avg, buy_fraction):
             continue
         if _rule_cluster_suspect(cand):
             continue
-        cand["region_sale_avg_copper"] = avg
-        hits.append(cand)
+        # dict(cand), not cand: the candidate list is shared across every
+        # threshold pair, so annotating the original would leak one user's
+        # computed fields into another user's pass.
+        hits.append(dict(cand, region_sale_avg_copper=avg))
 
     if not hits:
         return []
@@ -639,7 +677,9 @@ def _rule_scan() -> list[dict]:
         item_id = cand["item_id"]
         inventory_type = names.inventory_type(item_id)
         if snipe_check.is_sus_item(item_id, inventory_type, names.base_level(item_id),
-                                   names.item_class(item_id), names.item_subclass(item_id)):
+                                   names.item_class(item_id), names.item_subclass(item_id),
+                                   names.quality(item_id), names.get(item_id),
+                                   names.purchase_price(item_id)):
             continue
         # "hvis det er transmog test imod unique transmog - hvis ikke unique
         # --> ignore item". source_count() is None for anything with no

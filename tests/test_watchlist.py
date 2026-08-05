@@ -690,11 +690,23 @@ class FakeAppearances:
 
 class FakeNames:
     def __init__(self, inventory_types=None, base_levels=None,
-                 item_classes=None, item_subclasses=None):
+                 item_classes=None, item_subclasses=None,
+                 qualities=None, purchase_prices=None):
         self._inv = inventory_types or {}
         self._base = base_levels or {}
         self._class = item_classes or {}
         self._subclass = item_subclasses or {}
+        # Default UNCOMMON / no vendor price: the grey-white and vendor
+        # rules would otherwise drop every fixture item, so a test that
+        # is not about those two stays about what it says it is.
+        self._quality = qualities or {}
+        self._pp = purchase_prices or {}
+
+    def quality(self, item_id, pet_species_id=None, pet_quality_id=None):
+        return self._quality.get(item_id, "UNCOMMON")
+
+    def purchase_price(self, item_id):
+        return self._pp.get(item_id, 0)
 
     def item_class(self, item_id):
         return self._class.get(item_id)
@@ -720,14 +732,16 @@ def rule_caches(monkeypatch):
     """Stubs the three caches _rule_scan() reads. Returns a setter so each
     test states only the data it cares about."""
     def _configure(avgs=None, sources=None, inventory_types=None, base_levels=None,
-                   item_classes=None, item_subclasses=None):
+                   item_classes=None, item_subclasses=None, qualities=None,
+                   purchase_prices=None):
         monkeypatch.setattr(watchlist.tsm, "SaleRateCache",
                             lambda: FakeSaleRates(avgs or {}))
         monkeypatch.setattr(watchlist, "AppearanceCache",
                             lambda: FakeAppearances(sources or {}))
         monkeypatch.setattr(watchlist, "NameCache",
                             lambda: FakeNames(inventory_types, base_levels,
-                                              item_classes, item_subclasses))
+                                              item_classes, item_subclasses,
+                                              qualities, purchase_prices))
     return _configure
 
 
