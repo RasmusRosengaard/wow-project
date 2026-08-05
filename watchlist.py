@@ -125,8 +125,15 @@ RULE_BUY_FRACTION_OF_SALE_AVG = 0.10           # buy ceiling, as a fraction of i
 # 6,580-hit measurement found. The upper fraction bound is deliberately
 # generous; the point is to exclude nonsense, not to second-guess.
 RULE_MIN_SALE_AVG_FLOOR_COPPER = 100 * 10_000      # can't tune below 100g
-RULE_BUY_FRACTION_MIN = 0.001                      # 0.1%
-RULE_BUY_FRACTION_MAX = 0.9                        # 90%
+
+# The buy ceiling a user may pick, as whole percentages of the TSM sale
+# average (human's call 2026-08-05: "maybe users to be able to choose
+# 10-20-30-40-50-60%"). A fixed set rather than a free number, deliberately:
+# it is the difference between "how aggressive do you want this" -- a
+# question with a handful of sensible answers -- and a text box inviting
+# 0.001% or 95%, neither of which produces a usable feed. The list doubles
+# as the validation rule, so the API cannot drift from the dropdown.
+RULE_BUY_PERCENT_CHOICES = (10, 20, 30, 40, 50, 60)
 
 
 def _rule_max_buy_copper(sale_avg_copper: float, fraction: float | None = None) -> float:
@@ -229,6 +236,7 @@ def _item_json(item: WatchlistItem, name_cache: NameCache | None = None) -> dict
         "item_id": item.item_id,
         "pet_species_id": item.pet_species_id,
         "trigger_price_g": (item.trigger_price_copper / 10000) if item.trigger_price_copper is not None else None,
+        "trigger_percent": item.trigger_percent,
         "label": item.label,
     }
     if name_cache is not None:
@@ -249,7 +257,7 @@ async def _get_owned_item(item_id: int, user: User, session: AsyncSession) -> Wa
 
 async def _insert_item_atomic(owner_id: uuid.UUID, item_id: int, pet_species_id: int | None,
                               trigger_price_copper: int | None, label: str | None,
-                              session: AsyncSession) -> bool:
+                              session: AsyncSession, trigger_percent: int | None = None) -> bool:
     """Same atomic INSERT...SELECT...WHERE cap pattern as
     wow_accounts._insert_account_atomic -- see that function's docstring for
     why this isn't a Python-side SELECT COUNT(*) then INSERT."""
@@ -260,7 +268,8 @@ async def _insert_item_atomic(owner_id: uuid.UUID, item_id: int, pet_species_id:
     )
     insert_stmt = insert(WatchlistItem).from_select(
         [WatchlistItem.owner_id, WatchlistItem.item_id, WatchlistItem.pet_species_id,
-         WatchlistItem.trigger_price_copper, WatchlistItem.label, WatchlistItem.created_at],
+         WatchlistItem.trigger_price_copper, WatchlistItem.label, WatchlistItem.created_at,
+         WatchlistItem.trigger_percent],
         select(
             literal(owner_id, type_=WatchlistItem.owner_id.type),
             literal(item_id, type_=WatchlistItem.item_id.type),
@@ -268,6 +277,7 @@ async def _insert_item_atomic(owner_id: uuid.UUID, item_id: int, pet_species_id:
             literal(trigger_price_copper, type_=WatchlistItem.trigger_price_copper.type),
             literal(label, type_=WatchlistItem.label.type),
             literal(datetime.now(timezone.utc), type_=WatchlistItem.created_at.type),
+            literal(trigger_percent, type_=WatchlistItem.trigger_percent.type),
         ).where(count_subq < MAX_WATCHLIST_ITEMS_PER_USER),
     )
     result = await session.execute(insert_stmt)
@@ -296,6 +306,12 @@ async def list_watchlist(user: User = Depends(current_subscribed_user),
     item_rows = await asyncio.to_thread(_build)
     return {"items": item_rows, "discord_webhook_url": user.discord_webhook_url,
            "default_sniper_list_enabled": user.default_sniper_list_enabled,
+           # The *resolved* percentage, not the raw column: NULL means
+           # "follow the current default", so a user who never picked one
+           # sees the live default rather than an empty control.
+           "sniper_buy_percent": round(_rule_thresholds_for(user)[1] * 100),
+           "sniper_buy_percent_choices": list(RULE_BUY_PERCENT_CHOICES),
+           "sniper_buy_percent_default": round(RULE_BUY_FRACTION_OF_SALE_AVG * 100),
            "max_items": MAX_WATCHLIST_ITEMS_PER_USER}
 
 
@@ -324,6 +340,9 @@ async def update_discord_webhook(payload: DiscordWebhookUpdate,
 
 class DefaultSniperListUpdate(BaseModel):
     enabled: bool
+    # None means "leave the threshold alone", so the toggle and the
+    # percentage can be saved independently.
+    buy_percent: int | None = None
 
 
 # Same registration-order constraint as /discord-webhook above: this must
@@ -339,8 +358,14 @@ async def update_default_sniper_list(payload: DefaultSniperListUpdate,
     user should be able to keep their per-item triggers while turning only
     the standing rule off."""
     user.default_sniper_list_enabled = bool(payload.enabled)
+    if payload.buy_percent is not None:
+        if payload.buy_percent not in RULE_BUY_PERCENT_CHOICES:
+            raise HTTPException(400, "buy percentage must be one of "
+                                + ", ".join(f"{p}%" for p in RULE_BUY_PERCENT_CHOICES))
+        user.sniper_buy_fraction = payload.buy_percent / 100
     await session.commit()
-    return {"default_sniper_list_enabled": user.default_sniper_list_enabled}
+    return {"default_sniper_list_enabled": user.default_sniper_list_enabled,
+            "sniper_buy_percent": round(_rule_thresholds_for(user)[1] * 100)}
 
 
 class WatchlistBatchUpdateItem(BaseModel):
@@ -394,6 +419,8 @@ async def batch_update_items(payload: WatchlistBatchUpdateRequest,
 
 
 class WatchlistItemCreate(BaseModel):
+    # Alternative to trigger_price_g, never both -- see db.WatchlistItem.
+    trigger_percent: int | None = None
     item_id: int
     pet_species_id: int | None = None
     trigger_price_g: float | None = None
@@ -411,15 +438,23 @@ async def add_item(payload: WatchlistItemCreate, user: User = Depends(current_su
     # _insert_item_atomic() directly rather than through this model, since
     # a TSM export carries no per-item price data to require in the first
     # place -- see that function's own docstring.
-    if payload.trigger_price_g is None or payload.trigger_price_g <= 0:
-        raise HTTPException(400, "trigger price is required and must be greater than 0")
+    if payload.trigger_percent is not None:
+        if payload.trigger_percent not in RULE_BUY_PERCENT_CHOICES:
+            raise HTTPException(400, "trigger percentage must be one of "
+                                + ", ".join(f"{p}%" for p in RULE_BUY_PERCENT_CHOICES))
+    elif payload.trigger_price_g is None or payload.trigger_price_g <= 0:
+        raise HTTPException(400, "a trigger price or percentage is required")
     label = (payload.label or "").strip() or None
     if label and len(label) > LABEL_MAX_LEN:
         raise HTTPException(400, f"label must be {LABEL_MAX_LEN} characters or fewer")
-    trigger_copper = round(payload.trigger_price_g * 10000) if payload.trigger_price_g is not None else None
+    # Mutually exclusive: a percentage add stores no gold price at all.
+    trigger_copper = (None if payload.trigger_percent is not None
+                      else (round(payload.trigger_price_g * 10000)
+                            if payload.trigger_price_g is not None else None))
 
     inserted = await _insert_item_atomic(user.id, payload.item_id, payload.pet_species_id,
-                                         trigger_copper, label, session)
+                                         trigger_copper, label, session,
+                                         trigger_percent=payload.trigger_percent)
     await session.commit()
     if not inserted:
         raise HTTPException(400, f"maximum {MAX_WATCHLIST_ITEMS_PER_USER} watchlist items")
@@ -433,6 +468,7 @@ async def add_item(payload: WatchlistItemCreate, user: User = Depends(current_su
 
 class WatchlistItemUpdate(BaseModel):
     trigger_price_g: float | None = None
+    trigger_percent: int | None = None
 
 
 @router.patch("/{item_id}")
@@ -440,11 +476,23 @@ async def update_item(item_id: int, payload: WatchlistItemUpdate,
                       user: User = Depends(current_subscribed_user),
                       session: AsyncSession = Depends(get_async_session)) -> dict:
     item = await _get_owned_item(item_id, user, session)
-    if payload.trigger_price_g is not None and payload.trigger_price_g < 0:
-        raise HTTPException(400, "trigger price can't be negative")
-    item.trigger_price_copper = (
-        round(payload.trigger_price_g * 10000) if payload.trigger_price_g is not None else None
-    )
+    if payload.trigger_percent is not None:
+        if payload.trigger_percent not in RULE_BUY_PERCENT_CHOICES:
+            raise HTTPException(400, "trigger percentage must be one of "
+                                + ", ".join(f"{p}%" for p in RULE_BUY_PERCENT_CHOICES))
+        # Switching mode clears the other side rather than leaving a stale
+        # value that would reappear if the user switched back -- the two are
+        # mutually exclusive, see db.WatchlistItem.
+        item.trigger_percent = payload.trigger_percent
+        item.trigger_price_copper = None
+    else:
+        if payload.trigger_price_g is not None and payload.trigger_price_g < 0:
+            raise HTTPException(400, "trigger price can't be negative")
+        item.trigger_price_copper = (
+            round(payload.trigger_price_g * 10000) if payload.trigger_price_g is not None else None
+        )
+        if payload.trigger_price_g is not None:
+            item.trigger_percent = None
     await session.commit()
     return _item_json(item)
 
@@ -901,11 +949,16 @@ def _send_discord_notification(webhook_url: str, item: WatchlistItem, price_copp
                                account_labels: list[tuple[str, str | None]] | None = None) -> None:
     name = name_cache.get(item.item_id, item.pet_species_id)
     price_g = price_copper / 10000
-    trigger_g = item.trigger_price_copper / 10000
     title = f"\U0001F514 {name}" + (f" ({item.label})" if item.label else "")
+    # Reads back in whichever mode the user actually set, so the message
+    # explains why it fired rather than restating a number they never chose.
+    if item.trigger_percent is not None:
+        trigger_text = f"under {item.trigger_percent}% of sale avg"
+    else:
+        trigger_text = f"{item.trigger_price_copper / 10000:,.2f}g"
     fields = [
         ("Price", f"**{price_g:,.2f}g**", True),
-        ("Your trigger", f"{trigger_g:,.2f}g", True),
+        ("Your trigger", trigger_text, True),
         ("Realm", _realm_label(cr_id), False),
     ]
     if account_labels:
@@ -929,7 +982,8 @@ async def _check_triggers_async() -> dict:
         rows = (await session.execute(
             select(WatchlistItem, User)
             .join(User, WatchlistItem.owner_id == User.id)
-            .where(WatchlistItem.trigger_price_copper.isnot(None))
+            .where(WatchlistItem.trigger_price_copper.isnot(None)
+                   | WatchlistItem.trigger_percent.isnot(None))
         )).all()
         if not rows:
             return {"watched": 0, "notified": 0}
@@ -940,12 +994,25 @@ async def _check_triggers_async() -> dict:
             return {"watched": len(rows), "notified": 0}
 
         name_cache = NameCache()
+        sale_rates = tsm.SaleRateCache()
         now = datetime.now(timezone.utc)
         notified = 0
         for item, user in rows:
             key = (item.item_id, item.pet_species_id)
             hit = cheapest.get(key)
-            if hit is None or hit[0] > item.trigger_price_copper:
+            if hit is None:
+                continue
+            if item.trigger_percent is not None:
+                # Percentage mode: the threshold is derived from the item's
+                # TSM region sale average, exactly as the standing rule
+                # does. No TSM data means no threshold to compare against,
+                # so the item stays silent rather than being guessed at --
+                # the same "unknown isn't a claim" resolution used there.
+                entry = sale_rates.get(item.item_id)
+                avg = entry.get("avg_sale_price") if entry else None
+                if avg is None or hit[0] >= avg * (item.trigger_percent / 100):
+                    continue
+            elif hit[0] > item.trigger_price_copper:
                 continue
             if item.last_notified_at is not None:
                 # SQLite (tests) returns a naive datetime for a

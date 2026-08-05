@@ -183,6 +183,17 @@ class WatchlistItem(Base):
     trigger wasn't asked for and would add matching granularity the rest of
     this model doesn't have.
 
+    trigger_percent (added 2026-08-05) is the alternative to
+    trigger_price_copper: notify when the cheapest listing anywhere drops
+    below that percentage of the item's TSM region sale average, the same
+    shape the standing sniper list uses. The two are **mutually exclusive**
+    per item -- setting one clears the other -- because "under 500g" and
+    "under 20% of average" can disagree, and a row that silently obeys
+    whichever fires first would be impossible to reason about. This does not
+    reopen the 2026-08-02 decision below: an absolute price is still
+    available and still the default; this adds a second explicit mode the
+    human asked for, rather than replacing the first with inference.
+
     trigger_price_copper is a plain user-chosen absolute price, not a
     discount vs region_median_cheapest (human explicitly rejected an
     "auto-price" discount-threshold design during a 2026-08-02 conversation
@@ -205,6 +216,7 @@ class WatchlistItem(Base):
     item_id: Mapped[int] = mapped_column(Integer, nullable=False)
     pet_species_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     trigger_price_copper: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trigger_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     label: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=lambda: datetime.now(timezone.utc))

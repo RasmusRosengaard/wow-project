@@ -272,11 +272,18 @@
             <input type="checkbox" id="sniper-list-enabled">
             <label for="sniper-list-enabled">Watch every item automatically</label>
           </div>
+          <div class="field" style="margin-top:0.7rem;">
+            <label for="sniper-buy-percent">Alert me under</label>
+            <select id="sniper-buy-percent"></select>
+          </div>
           <div class="explain">
             Scans every item on every EU realm as new auction data lands, and messages you when
-            one is worth <strong>2,000g+</strong> (TSM average) and listed at <strong>under 10%</strong> of that.
+            one is worth <strong>2,000g+</strong> (TSM average) and listed under
+            <strong><span id="sniper-pct-label">10</span>%</strong> of that.
+            Lower is stricter and quieter; higher finds more but closer to the going rate.
             Skips known decoys and shared-appearance transmog; mounts, pets and recipes still come through.
             Max 10 per scan, same item at most every 4 hours.
+            <em>Takes effect from the next auction data.</em>
           </div>
           <div class="error" id="sniper-list-error"></div>
           <div class="status-msg" id="sniper-list-status"></div>
@@ -291,8 +298,19 @@
               <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
             </div>
             <div class="field grow">
+              <label for="add-trigger-mode">Alert when</label>
+              <select id="add-trigger-mode">
+                <option value="price">under a gold price</option>
+                <option value="percent">under % of sale average</option>
+              </select>
+            </div>
+            <div class="field grow" id="add-trigger-price-field">
               <label for="add-trigger">Trigger price (g)</label>
-              <input type="number" id="add-trigger" min="0.01" step="0.01" placeholder="e.g. 50" required>
+              <input type="number" id="add-trigger" min="0.01" step="0.01" placeholder="e.g. 50">
+            </div>
+            <div class="field grow" id="add-trigger-percent-field" style="display:none;">
+              <label for="add-trigger-percent">Percentage</label>
+              <select id="add-trigger-percent"></select>
             </div>
           </div>
           <div class="card-actions">
@@ -327,7 +345,7 @@
       </div>
       <div id="items-empty" class="empty-state" style="display:none;">Nothing watched yet. Add an item ID or import a TSM group to start.</div>
       <table id="items-table" style="display:none;">
-        <thead><tr><th>Item</th><th>Group</th><th>Trigger price</th><th></th></tr></thead>
+        <thead><tr><th>Item</th><th>Group</th><th>Trigger</th><th></th></tr></thead>
         <tbody id="items-body"></tbody>
       </table>
       <div class="error" id="items-error"></div>
@@ -379,6 +397,20 @@ async function loadWatchlist() {
   for (const id of pendingChanges.keys()) if (!liveIds.has(id)) pendingChanges.delete(id);
   $("webhook-url").value = data.discord_webhook_url || "";
   $("sniper-list-enabled").checked = !!data.default_sniper_list_enabled;
+  // Options come from the server so the dropdown can't drift from what the
+  // API will actually accept.
+  const pctSelect = $("sniper-buy-percent");
+  if (!pctSelect.options.length) {
+    for (const pct of (data.sniper_buy_percent_choices || [])) {
+      const opt = document.createElement("option");
+      opt.value = pct;
+      opt.textContent = `${pct}% of sale average` + (pct === data.sniper_buy_percent_default ? " (default)" : "");
+      pctSelect.appendChild(opt);
+    }
+  }
+  if (data.sniper_buy_percent_choices) PERCENT_CHOICES = data.sniper_buy_percent_choices;
+  pctSelect.value = data.sniper_buy_percent;
+  $("sniper-pct-label").textContent = data.sniper_buy_percent;
   $("item-cap").textContent = data.max_items;
   renderItems();
 }
@@ -389,6 +421,10 @@ function updateSaveBar() {
   bar.style.display = "flex";
   $("save-bar-text").textContent = `${pendingChanges.size} unsaved trigger-price change${pendingChanges.size === 1 ? "" : "s"} -- remember to click Save.`;
 }
+
+// Filled from /api/watchlist so the row dropdowns can't offer a value the
+// API would reject.
+let PERCENT_CHOICES = [10, 20, 30, 40, 50, 60];
 
 function renderItems() {
   $("items-loading").style.display = "none";
@@ -410,14 +446,26 @@ function renderItems() {
     const isDirty = pendingChanges.has(item.id);
     const displayValue = isDirty ? pendingChanges.get(item.id) : item.trigger_price_g;
     const triggerValue = displayValue != null ? displayValue : "";
+    const isPct = item.trigger_percent != null;
+    // A row is on exactly one mode -- gold price or percent-of-sale-average
+    // -- so the cell shows one control, not both.
+    const triggerCell = isPct
+      ? `<select data-percent-input="${item.id}">${PERCENT_CHOICES.map(p =>
+           `<option value="${p}"${p === item.trigger_percent ? " selected" : ""}>${p}%</option>`).join("")}
+         </select>`
+      : `<input type="number" min="0" step="0.01" value="${triggerValue}" data-trigger-input="${item.id}" placeholder="none">
+         <span class="unit">g</span>`;
     return `
       <tr data-item-id="${item.id}" class="${isDirty ? "dirty" : ""}">
         <td><div class="item-cell">${icon}<span class="item-name" title="${name}">${name}</span></div></td>
         <td><span class="item-label" title="${label}">${label}</span></td>
         <td>
           <div class="trigger-cell">
-            <input type="number" min="0" step="0.01" value="${triggerValue}" data-trigger-input="${item.id}" placeholder="none">
-            <span class="unit">g</span>
+            ${triggerCell}
+            <button class="secondary" data-mode="${item.id}" data-to="${isPct ? "price" : "percent"}"
+                    title="Switch to ${isPct ? "a gold price" : "a percentage of the TSM sale average"}">
+              ${isPct ? "use g" : "use %"}
+            </button>
           </div>
         </td>
         <td><button class="danger" data-remove="${item.id}">Remove</button></td>
@@ -492,8 +540,13 @@ async function addItem() {
   const itemIdRaw = $("add-item-id").value.trim();
   const triggerRaw = $("add-trigger").value.trim();
   if (!itemIdRaw) { err.textContent = "Enter an item id."; return; }
-  if (!triggerRaw || Number(triggerRaw) <= 0) { err.textContent = "Enter a trigger price."; return; }
-  const payload = { item_id: Number(itemIdRaw), trigger_price_g: Number(triggerRaw) };
+  const usePercent = $("add-trigger-mode").value === "percent";
+  if (!usePercent && (!triggerRaw || Number(triggerRaw) <= 0)) {
+    err.textContent = "Enter a trigger price."; return;
+  }
+  const payload = usePercent
+    ? { item_id: Number(itemIdRaw), trigger_percent: Number($("add-trigger-percent").value) }
+    : { item_id: Number(itemIdRaw), trigger_price_g: Number(triggerRaw) };
   const r = await fetch("/api/watchlist", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -535,10 +588,11 @@ async function saveSniperList() {
   err.textContent = "";
   status.textContent = "";
   const enabled = $("sniper-list-enabled").checked;
+  const buyPercent = Number($("sniper-buy-percent").value) || null;
   const r = await fetch("/api/watchlist/default-sniper-list", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify({ enabled, buy_percent: buyPercent }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -549,7 +603,9 @@ async function saveSniperList() {
     $("sniper-list-enabled").checked = !enabled;
     return;
   }
-  status.textContent = enabled ? "Enabled." : "Disabled.";
+  const body = await r.json().catch(() => ({}));
+  if (body.sniper_buy_percent != null) $("sniper-pct-label").textContent = body.sniper_buy_percent;
+  status.textContent = (enabled ? "Saved." : "Disabled.") + " Applies from the next auction data.";
   setTimeout(() => { status.textContent = ""; }, 2500);
 }
 
@@ -601,6 +657,49 @@ $("webhook-save").addEventListener("click", saveWebhook);
 // boolean, and the Save button next to the webhook field belongs to the
 // webhook URL, not to this.
 $("sniper-list-enabled").addEventListener("change", saveSniperList);
+$("sniper-buy-percent").addEventListener("change", saveSniperList);
+
+$("add-trigger-mode").addEventListener("change", () => {
+  const pct = $("add-trigger-mode").value === "percent";
+  $("add-trigger-price-field").style.display = pct ? "none" : "";
+  $("add-trigger-percent-field").style.display = pct ? "" : "none";
+  const sel = $("add-trigger-percent");
+  if (!sel.options.length) {
+    for (const p of PERCENT_CHOICES) {
+      const o = document.createElement("option");
+      o.value = p; o.textContent = `${p}% of sale average`;
+      sel.appendChild(o);
+    }
+  }
+});
+
+// Row-level changes go straight to the server rather than through the
+// pending-changes save bar: that bar batches one editable number per row,
+// and a mode switch changes which number the row even has.
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-mode]");
+  if (!btn) return;
+  const id = Number(btn.dataset.mode);
+  const body = btn.dataset.to === "percent"
+    ? { trigger_percent: PERCENT_CHOICES[0] }
+    : { trigger_price_g: 0 };
+  await fetch(`/api/watchlist/${id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  pendingChanges.delete(id);
+  await loadWatchlist();
+});
+
+document.addEventListener("change", async (e) => {
+  const sel = e.target.closest("[data-percent-input]");
+  if (!sel) return;
+  await fetch(`/api/watchlist/${Number(sel.dataset.percentInput)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trigger_percent: Number(sel.value) }),
+  });
+  await loadWatchlist();
+});
 $("tsm-import-btn").addEventListener("click", importTsmGroup);
 $("save-changes-btn").addEventListener("click", saveChanges);
 

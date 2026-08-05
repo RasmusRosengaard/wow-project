@@ -1280,3 +1280,134 @@ def test_rule_scan_keeps_uncommon_items(listings_dir, rule_caches):
     rule_caches(avgs={111: 5_000}, qualities={111: "UNCOMMON"})
     write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
     assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+# ---- custom buy-percentage threshold (2026-08-05) ----
+
+def test_watchlist_exposes_the_percentage_choices(real_user):
+    real_user()
+    body = client.get("/api/watchlist").json()
+    assert body["sniper_buy_percent_choices"] == [10, 20, 30, 40, 50, 60]
+    assert body["sniper_buy_percent_default"] == 10
+    # Resolved, not raw: an untouched account follows the current default
+    # rather than showing an empty control.
+    assert body["sniper_buy_percent"] == 10
+
+
+def test_buy_percent_can_be_changed(real_user):
+    real_user()
+    r = client.patch("/api/watchlist/default-sniper-list",
+                     json={"enabled": True, "buy_percent": 30})
+    assert r.status_code == 200
+    assert r.json()["sniper_buy_percent"] == 30
+    assert client.get("/api/watchlist").json()["sniper_buy_percent"] == 30
+
+
+def test_buy_percent_rejects_values_outside_the_choices(real_user):
+    real_user()
+    for bad in (5, 15, 100, 0, -10):
+        r = client.patch("/api/watchlist/default-sniper-list",
+                         json={"enabled": True, "buy_percent": bad})
+        assert r.status_code == 400, bad
+
+
+def test_buy_percent_omitted_leaves_the_threshold_alone(real_user):
+    """The toggle and the percentage save independently -- flipping the
+    checkbox must not silently reset a tuned threshold."""
+    real_user()
+    client.patch("/api/watchlist/default-sniper-list",
+                 json={"enabled": True, "buy_percent": 40})
+    client.patch("/api/watchlist/default-sniper-list", json={"enabled": False})
+    assert client.get("/api/watchlist").json()["sniper_buy_percent"] == 40
+
+
+def test_rule_honours_a_users_own_buy_percent(listings_dir, rule_caches, real_user,
+                                               monkeypatch, stub_realm_lookup):
+    """A 5,000g item at 2,000g is 40% of the sale average: over the 10%
+    default, under a 50% setting. The scan has to use the user's number,
+    not the module constant."""
+    user = real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    user.sniper_buy_fraction = 0.5
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=2_000 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    assert watchlist._rule_scan(buy_fraction=0.5) != []      # qualifies at 50%
+    assert watchlist._rule_scan(buy_fraction=0.1) == []      # not at the 10% default
+
+
+# ---- per-item percentage triggers (2026-08-05) ----
+
+def test_add_item_with_a_percentage_trigger():
+    r = client.post("/api/watchlist", json={"item_id": 111, "trigger_percent": 20})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["trigger_percent"] == 20
+    # Mutually exclusive -- a percentage add stores no gold price at all.
+    assert body["trigger_price_g"] is None
+
+
+def test_add_item_rejects_a_percentage_outside_the_choices():
+    for bad in (5, 15, 100):
+        r = client.post("/api/watchlist", json={"item_id": 111, "trigger_percent": bad})
+        assert r.status_code == 400, bad
+
+
+def test_add_item_still_requires_one_of_the_two():
+    assert client.post("/api/watchlist", json={"item_id": 111}).status_code == 400
+
+
+def test_switching_to_percentage_clears_the_gold_price():
+    added = client.post("/api/watchlist", json={"item_id": 111, "trigger_price_g": 50}).json()
+    r = client.patch(f"/api/watchlist/{added['id']}", json={"trigger_percent": 30})
+    assert r.status_code == 200
+    assert r.json()["trigger_percent"] == 30
+    assert r.json()["trigger_price_g"] is None
+
+
+def test_switching_back_to_a_gold_price_clears_the_percentage():
+    added = client.post("/api/watchlist", json={"item_id": 111, "trigger_percent": 30}).json()
+    r = client.patch(f"/api/watchlist/{added['id']}", json={"trigger_price_g": 75})
+    assert r.status_code == 200
+    assert r.json()["trigger_price_g"] == 75
+    assert r.json()["trigger_percent"] is None
+
+
+def test_percentage_trigger_fires_against_the_tsm_average(listings_dir, real_user,
+                                                          monkeypatch, stub_realm_lookup):
+    """20% of a 5,000g average is 1,000g, so a 900g listing fires and a
+    1,100g one does not."""
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    monkeypatch.setattr(watchlist.tsm, "SaleRateCache", lambda: FakeSaleRates({555: 5_000}))
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_percent": 20})
+    write_listings(listings_dir, [listing_row(cr=99, item_id=555, buyout=900 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    assert watchlist.check_triggers()["notified"] == 1
+    assert embed_field(posted[0], "Your trigger") == "under 20% of sale avg"
+
+
+def test_percentage_trigger_does_not_fire_above_the_threshold(listings_dir, real_user,
+                                                              monkeypatch, stub_realm_lookup):
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    monkeypatch.setattr(watchlist.tsm, "SaleRateCache", lambda: FakeSaleRates({555: 5_000}))
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_percent": 20})
+    write_listings(listings_dir, [listing_row(cr=99, item_id=555, buyout=1_100 * G, auction_id=1)])
+    monkeypatch.setattr(watchlist.requests, "post", lambda url, json, timeout: None)
+    assert watchlist.check_triggers()["notified"] == 0
+
+
+def test_percentage_trigger_stays_silent_without_tsm_data(listings_dir, real_user,
+                                                          monkeypatch, stub_realm_lookup):
+    """No sale average means no threshold to compare against -- silence
+    rather than a guess, the same convention the standing rule uses."""
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    monkeypatch.setattr(watchlist.tsm, "SaleRateCache", lambda: FakeSaleRates({}))
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_percent": 20})
+    write_listings(listings_dir, [listing_row(cr=99, item_id=555, buyout=1, auction_id=1)])
+    monkeypatch.setattr(watchlist.requests, "post", lambda url, json, timeout: None)
+    assert watchlist.check_triggers()["notified"] == 0
