@@ -19,11 +19,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import appearance
 import auth
 import blizz
 import dashboard
 import db
 import item_names
+import snipe_check
+import tsm
 import watchlist
 from db import Base, User, WatchlistItem, WowAccount, WowAccountRealm, get_async_session
 from scan_region import LISTING_SCHEMA
@@ -101,6 +104,15 @@ def stub_realm_lookup(monkeypatch):
 @pytest.fixture
 def listings_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(watchlist, "DATA", tmp_path)
+    # check_triggers() now also runs the standing rule scan, which reads the
+    # TSM sale-rate and appearance caches. Point both at the tmp dir so no
+    # test can read the developer's real data/ files: without this, an
+    # unrelated test's assertion on how many Discord posts happened would
+    # depend on whether a real TSM refresh had happened to add the fixture's
+    # item id with a high enough sale average. Same hermeticity principle as
+    # conftest.py's hard fail on any test reaching a real database engine.
+    monkeypatch.setattr(tsm, "CACHE_PATH", tmp_path / "tsm_sale_rates.json")
+    monkeypatch.setattr(appearance, "CACHE_PATH", tmp_path / "appearances.json")
     d = tmp_path / "listings"
     d.mkdir(parents=True)
     return d
@@ -617,3 +629,408 @@ def test_check_triggers_no_webhook_still_tracks_silently(listings_dir, real_user
     result = watchlist.check_triggers()
     assert result["notified"] == 1  # counted as "notified" (cooldown updated) even with no delivery
     assert posted == []
+
+
+# ------------------------------------------------- standing rule scan ----
+# The experimental "all items under 100g whose TSM sale avg is over 3000g"
+# rule (2026-08-05). Sell-realm-free by the human's explicit choice, so the
+# only two heuristics it can apply are sus_item and the sniper filter's
+# cluster comparison -- see watchlist.py's RULE_* comment block.
+
+G = 10_000  # copper per gold, spelled out so the vectors below read in gold
+
+
+class FakeSaleRates:
+    """Stands in for tsm.SaleRateCache. `avgs` is {item_id: gold}; an item
+    absent from it has no TSM average at all, which the rule treats as
+    "ignore" rather than as a pass."""
+    def __init__(self, avgs):
+        self._avgs = avgs
+
+    def get(self, item_id):
+        if item_id not in self._avgs:
+            return None
+        return {"sale_rate": 0.1, "sold_per_day": 1.0,
+                "avg_sale_price": self._avgs[item_id] * G}
+
+
+class FakeAppearances:
+    def __init__(self, sources):
+        self._sources = sources
+
+    def source_count(self, item_id):
+        return self._sources.get(item_id)
+
+
+class FakeNames:
+    def __init__(self, inventory_types=None, base_levels=None):
+        self._inv = inventory_types or {}
+        self._base = base_levels or {}
+
+    def get(self, item_id, pet_species_id=None):
+        return f"Item {item_id}"
+
+    def inventory_type(self, item_id):
+        return self._inv.get(item_id)
+
+    def base_level(self, item_id):
+        return self._base.get(item_id)
+
+    def save(self):
+        pass
+
+
+@pytest.fixture
+def rule_caches(monkeypatch):
+    """Stubs the three caches _rule_scan() reads. Returns a setter so each
+    test states only the data it cares about."""
+    def _configure(avgs=None, sources=None, inventory_types=None, base_levels=None):
+        monkeypatch.setattr(watchlist.tsm, "SaleRateCache",
+                            lambda: FakeSaleRates(avgs or {}))
+        monkeypatch.setattr(watchlist, "AppearanceCache",
+                            lambda: FakeAppearances(sources or {}))
+        monkeypatch.setattr(watchlist, "NameCache",
+                            lambda: FakeNames(inventory_types, base_levels))
+    return _configure
+
+
+def write_listings(listings_dir, rows):
+    """One parquet per realm, matching how scan_region.py actually writes
+    them -- a single combined file would let a bug that ignores cr_id
+    still pass."""
+    by_realm = {}
+    for r in rows:
+        by_realm.setdefault(r["cr_id"], []).append(r)
+    for cr, realm_rows in by_realm.items():
+        pq.write_table(pa.Table.from_pylist(realm_rows, schema=LISTING_SCHEMA),
+                       listings_dir / f"{cr}.parquet")
+
+
+def test_rule_candidates_only_returns_items_under_the_buy_ceiling(listings_dir):
+    write_listings(listings_dir, [
+        listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1),    # under 100g
+        listing_row(cr=2, item_id=222, buyout=150 * G, auction_id=2),   # over  100g
+    ])
+    got = {c["item_id"] for c in watchlist._rule_candidates()}
+    assert got == {111}
+
+
+def test_rule_candidates_uses_unit_price_not_stack_price(listings_dir):
+    """buyout is the whole-stack price. A 5-stack at 250g total is 50g/unit
+    and must qualify -- the copper/unit-price distinction CLAUDE.md calls
+    out as a repeat source of real bugs."""
+    row = listing_row(cr=1, item_id=111, buyout=250 * G, auction_id=1)
+    row["quantity"] = 5
+    write_listings(listings_dir, [row])
+    cands = watchlist._rule_candidates()
+    assert len(cands) == 1
+    assert cands[0]["buy_copper"] == 50 * G
+
+
+def test_rule_candidates_cluster_uses_the_five_cheapest_other_realms(listings_dir, monkeypatch):
+    """Real vector, measured live 2026-08-05: item 204925's per-realm floors
+    across EU. Cheapest realm 8,496g, next five 20,000/29,701/29,999/
+    50,000/59,999 -> cluster median 29,999g."""
+    # The real floors are far above the production 100g ceiling, which is a
+    # separate filter from the cluster maths this test is about -- raise it
+    # so the real numbers can be used rather than inventing small ones.
+    monkeypatch.setattr(watchlist, "RULE_MAX_BUY_COPPER", 1_000_000 * G)
+    floors_g = [8_496, 20_000, 29_701, 29_999, 50_000, 59_999, 65_000, 90_001]
+    write_listings(listings_dir, [
+        listing_row(cr=i + 1, item_id=204925, buyout=f * G, auction_id=i + 1)
+        for i, f in enumerate(floors_g)
+    ])
+    cands = watchlist._rule_candidates()
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["buy_copper"] == 8_496 * G
+    assert c["cluster_realms"] == 5
+    assert c["cluster_median"] == 29_999 * G
+    # 29,999 > 8,496 * 1.7 (= 14,443) -> a genuine outlier, not flagged.
+    assert watchlist._rule_cluster_suspect(c) is False
+
+
+def test_rule_candidates_realm_floor_ignores_a_realms_own_duplicate_listings(listings_dir):
+    """One realm spamming copies must not fill the cluster -- the cluster is
+    over per-realm floors, mirroring snipe_check's region_realm_floor."""
+    rows = [listing_row(cr=1, item_id=111, buyout=10 * G, auction_id=1)]
+    rows += [listing_row(cr=2, item_id=111, buyout=(11 + i) * G, auction_id=10 + i)
+             for i in range(6)]
+    write_listings(listings_dir, rows)
+    c = watchlist._rule_candidates()[0]
+    assert c["cluster_realms"] == 1  # realm 2 contributes exactly one floor
+    assert watchlist._rule_cluster_suspect(c) is False  # below RULE_CLUSTER_MIN_REALMS
+
+
+def test_rule_cluster_suspect_flags_a_corroborated_price():
+    """Cluster median within RULE_CLUSTER_CLOSE_MULTIPLE of the buy price:
+    several realms independently agree this is just what the item costs."""
+    cand = {"buy_copper": 100 * G, "cluster_median": 150 * G, "cluster_realms": 5}
+    assert watchlist._rule_cluster_suspect(cand) is True
+
+
+def test_rule_cluster_suspect_boundary_is_inclusive():
+    exactly = {"buy_copper": 100 * G,
+               "cluster_median": 100 * G * watchlist.RULE_CLUSTER_CLOSE_MULTIPLE,
+               "cluster_realms": 5}
+    assert watchlist._rule_cluster_suspect(exactly) is True
+    just_over = dict(exactly, cluster_median=exactly["cluster_median"] + 1)
+    assert watchlist._rule_cluster_suspect(just_over) is False
+
+
+def test_rule_cluster_suspect_needs_enough_realms_to_judge():
+    """Too few other realms is "not enough data", which must resolve to
+    not-flagged -- the same "unknown isn't a claim" convention the original
+    sniper_filter_suspect uses, not an assumed pass."""
+    thin = {"buy_copper": 100 * G, "cluster_median": 100 * G,
+            "cluster_realms": watchlist.RULE_CLUSTER_MIN_REALMS - 1}
+    assert watchlist._rule_cluster_suspect(thin) is False
+
+
+def test_rule_scan_skips_items_with_no_tsm_sale_average(listings_dir, rule_caches):
+    """Human's call 2026-08-05: an item TSM has no average for is ignored,
+    not passed through."""
+    rule_caches(avgs={})  # TSM knows nothing about item 111
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_skips_items_below_the_sale_average_floor(listings_dir, rule_caches):
+    rule_caches(avgs={111: 2_999})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_keeps_a_cheap_high_value_item(listings_dir, rule_caches):
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    hits = watchlist._rule_scan()
+    assert [h["item_id"] for h in hits] == [111]
+    assert hits[0]["region_sale_avg_copper"] == 5_000 * G
+
+
+def test_rule_scan_drops_a_cluster_flagged_item(listings_dir, rule_caches):
+    """Flagged items must never be sent -- a buy price several other realms
+    corroborate never reaches the notification step."""
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [
+        listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1),
+        listing_row(cr=2, item_id=111, buyout=55 * G, auction_id=2),
+        listing_row(cr=3, item_id=111, buyout=60 * G, auction_id=3),
+        listing_row(cr=4, item_id=111, buyout=65 * G, auction_id=4),
+    ])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_drops_a_sus_item(listings_dir, rule_caches):
+    """snipe_check.is_sus_item's legacy-jewelry rule, applied unchanged."""
+    rule_caches(avgs={111: 5_000},
+                inventory_types={111: "FINGER"},
+                base_levels={111: snipe_check.LEGACY_JEWELRY_ILVL_MAX})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_drops_non_unique_transmog(listings_dir, rule_caches):
+    rule_caches(avgs={111: 5_000}, sources={111: 4}, inventory_types={111: "SHOULDER"})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_keeps_unique_transmog(listings_dir, rule_caches):
+    rule_caches(avgs={111: 5_000}, sources={111: 1}, inventory_types={111: "SHOULDER"})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+def test_rule_scan_keeps_a_non_transmog_item_without_applying_the_unique_test(
+        listings_dir, rule_caches):
+    """An item with no appearance at all (mount, recipe, caged pet) is simply
+    not transmog, so the uniqueness test does not apply to it. This is the
+    opposite disposition from snipe_check._filter_by_appearance(), which
+    answers a different question -- see _rule_scan()'s comment."""
+    rule_caches(avgs={111: 5_000}, sources={})  # source_count -> None
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+def test_rule_scan_treats_profession_gear_as_not_transmog(listings_dir, rule_caches):
+    """A profession tool carries an appearance but isn't part of the visible
+    paperdoll system, so the unique test doesn't apply -- it passes even
+    with several appearance sources."""
+    rule_caches(avgs={111: 5_000}, sources={111: 7},
+                inventory_types={111: "PROFESSION_TOOL"})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+def test_rule_scan_matches_caged_pets_by_species(listings_dir, rule_caches):
+    """pet_species_id is NULL for every non-pet row, so the cluster join has
+    to use IS NOT DISTINCT FROM -- a plain equality join silently drops
+    every ordinary item."""
+    rule_caches(avgs={82800: 5_000})
+    write_listings(listings_dir, [
+        listing_row(cr=1, item_id=82800, buyout=50 * G, auction_id=1, pet_species_id=42),
+    ])
+    hits = watchlist._rule_scan()
+    assert len(hits) == 1
+    assert hits[0]["pet_species_id"] == 42
+
+
+# ---- delivery: who gets told, how often, and how many at once ----
+
+async def _make_superuser(session_factory, discord_webhook_url):
+    async with session_factory() as session:
+        user = User(email=f"su-{uuid.uuid4()}@example.com", hashed_password="x",
+                    is_active=True, is_superuser=True, is_verified=True,
+                    subscription_status="active",
+                    discord_webhook_url=discord_webhook_url)
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+@pytest.fixture
+def superuser(bypass_get_async_session):
+    def _factory(discord_webhook_url="https://discord.com/api/webhooks/1/su"):
+        return asyncio.run(_make_superuser(bypass_get_async_session, discord_webhook_url))
+    return _factory
+
+
+def test_rule_notifies_a_superuser(listings_dir, rule_caches, superuser, monkeypatch,
+                                   stub_realm_lookup):
+    superuser()
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    result = watchlist.check_triggers()
+    assert result["rule_notified"] == 1
+    assert len(posted) == 1
+    assert "50.00g" in posted[0]["content"]
+    assert "5,000g" in posted[0]["content"]
+
+
+def test_rule_notifies_any_active_subscriber(listings_dir, rule_caches, real_user,
+                                             monkeypatch, stub_realm_lookup):
+    """Human's call 2026-08-05: "Every sub should be able to use it" -- an
+    ordinary subscribed (non-superuser) account is a recipient."""
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    result = watchlist.check_triggers()
+    assert result["rule_recipients"] == 1
+    assert result["rule_notified"] == 1
+    assert len(posted) == 1
+
+
+def test_rule_does_not_notify_an_unsubscribed_account(listings_dir, rule_caches,
+                                                      bypass_get_async_session,
+                                                      monkeypatch, stub_realm_lookup):
+    """Premium-only, same audience as every other Watchlist route. Gated
+    through auth.has_active_subscription() rather than a re-expressed SQL
+    predicate, so this also pins that the helper is what decides."""
+    async def _make():
+        async with bypass_get_async_session() as session:
+            session.add(User(email=f"lapsed-{uuid.uuid4()}@example.com", hashed_password="x",
+                             is_active=True, is_superuser=False, is_verified=True,
+                             subscription_status="canceled",
+                             discord_webhook_url="https://discord.com/api/webhooks/1/x"))
+            await session.commit()
+    asyncio.run(_make())
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    result = watchlist.check_triggers()
+    assert result["rule_recipients"] == 0
+    assert result["rule_notified"] == 0
+    assert posted == []
+
+
+def test_rule_respects_the_cooldown_across_cycles(listings_dir, rule_caches, superuser,
+                                                  monkeypatch, stub_realm_lookup):
+    """The cooldown lives in a state file, not on a DB row, so it has to
+    survive a second call within the window."""
+    superuser()
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    assert watchlist.check_triggers()["rule_notified"] == 1
+    assert watchlist.check_triggers()["rule_notified"] == 0
+    assert len(posted) == 1
+
+
+def test_rule_cooldown_state_is_written_under_the_patched_data_dir(listings_dir, rule_caches,
+                                                                   superuser, monkeypatch,
+                                                                   stub_realm_lookup):
+    """Hermeticity: the state file must land in the test's tmp_path, never
+    in the developer's real data/ directory."""
+    superuser()
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    monkeypatch.setattr(watchlist.requests, "post", lambda url, json, timeout: None)
+
+    watchlist.check_triggers()
+    state_path = watchlist._rule_state_path()
+    assert state_path.parent.parent == listings_dir.parent
+    assert state_path.exists()
+
+
+def test_rule_caps_notifications_per_cycle(listings_dir, rule_caches, superuser,
+                                           monkeypatch, stub_realm_lookup):
+    """A first run against a full sweep must not fire hundreds of messages.
+    Over-cap hits are not marked notified, so they come back next cycle."""
+    monkeypatch.setattr(watchlist, "RULE_MAX_NOTIFICATIONS_PER_CYCLE", 2)
+    superuser()
+    item_ids = [111, 222, 333, 444]
+    rule_caches(avgs={i: 5_000 for i in item_ids})
+    write_listings(listings_dir, [
+        listing_row(cr=1, item_id=i, buyout=50 * G, auction_id=n)
+        for n, i in enumerate(item_ids)
+    ])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    result = watchlist.check_triggers()
+    assert result["rule_hits"] == 4
+    assert result["rule_notified"] == 2
+    assert result["rule_suppressed_by_cap"] == 2
+    assert len(posted) == 2
+
+
+def test_rule_failure_does_not_break_the_per_item_trigger_path(listings_dir, real_user,
+                                                               monkeypatch):
+    """The experimental rule runs in its own try/except -- a crash in it must
+    leave the established per-item notification path working."""
+    # A recipient has to exist, otherwise _check_rule_async() short-circuits
+    # before _rule_scan() and the crash never happens -- the test would pass
+    # while exercising nothing. real_user is subscribed, so it is one.
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a")
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 10})
+    write_listings(listings_dir, [listing_row(cr=99, item_id=555, buyout=5 * G, auction_id=1)])
+
+    def _boom():
+        raise RuntimeError("rule exploded")
+    monkeypatch.setattr(watchlist, "_rule_scan", _boom)
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    result = watchlist.check_triggers()
+    assert result["notified"] == 1      # per-item path unaffected
+    assert result.get("rule_error") is True
+    assert len(posted) == 1

@@ -3244,3 +3244,118 @@ that passes while checking nothing.
 Per-realm learned offsets are now the more likely endgame than another
 hand-aimed window: a slot that re-phases once will re-phase again, and one
 shared window cannot fit every deep-collected realm's own offset.
+
+
+---
+
+## Watchlist standing rule scan (2026-08-05, experimental)
+
+Human's spec, verbatim: "Alle items, med buy under 100g og sale avg på over
+3000 (brug flagged filter stadig - flagged items skal aldrig sendes) + hvis
+det er transmog test imod unique transmog - hvis ikke unique --> ignore
+item", with the note "vigtigt: HUSK at bruge sniper filter (kræver måske den
+laves i backend også?, samt unqietransmog filter)".
+
+**That parenthetical turned out half right, which shaped the whole design.**
+All three dashboard flags are *already* computed server-side in
+`find_snipes()` — nothing to build. What genuinely did not exist server-side
+was (a) any sale-avg *filter* (`region_sale_avg_copper` is only annotated;
+the filtering is client-side in `dashboard.html`) and (b) any *hiding*, since
+this project's standing convention is that heuristics flag and never silently
+filter server-side — "Hide flagged" is purely the checkbox's job. A
+notification path wants the opposite, so the rule needed its own drop step.
+
+**The sell-realm fork.** The human was offered two options and chose the
+sell-realm-free one: reuse `find_snipes()` with `locked_sell_realm` (all
+three flags free, but results become sell-realm-relative), versus a
+region-only scanner. The cost of the choice is recorded honestly in the code
+rather than hidden: `price_suspect` is `sell_p_g >= 10 * region_median_g` and
+simply **cannot be computed** with no sell realm, so it is not applied. Given
+the requirement was "flagged items must never be sent", substituting an
+invented number for `sell_p_g` would have been worse than saying so plainly.
+The two computable heuristics — `is_sus_item()` and the sniper filter's
+cluster comparison — are applied, with the cluster thresholds *imported* from
+`snipe_check` rather than re-declared so the two can never drift.
+`SNIPER_FILTER_HIGH_VALUE_EXEMPT_G` is deliberately not honored, since it
+only ever suppresses the flag and the requirement runs the other way.
+
+**The unique-transmog test is inverted relative to
+`_filter_by_appearance()`, on purpose.** That function answers "give me
+unique-transmog items", so it excludes profession tools and drops anything
+with no appearance. The rule asks "*if* this is transmog, is it unique?", so
+a mount/recipe/caged pet (no appearance) and a profession tool both fall
+outside the test and pass. Same two inputs, different question — worth
+knowing before someone "fixes" the apparent inconsistency.
+
+**Filter ordering is a rate-limit safeguard, not cosmetics.** `NameCache`
+can make a live Blizzard call for an unresolved item, and resolving
+thousands of them from a background loop is exactly the shape that caused
+the 2026-08-01 rate-limit incident. The two cheap local tests run first.
+Measured on real production data via `railway ssh` before shipping: 7,872
+items under 100g, **14** surviving the 3000g sale-avg floor, 0 cluster-
+flagged, 14 reaching `NameCache`, **0** needing a live call. The DuckDB pass
+is 0.12s over 92 realm files / 40 MB — cheap enough for the 45s-cadence
+cycles inside the publish window, which mattered because the human's
+follow-up requirement was that the rule run right after new data arrives.
+It already does: `collect_all()` calls `scan_region.sweep()` then
+`watchlist.check_triggers()` in the same cycle, sweep first.
+
+**Audience.** The assistant defaulted to superuser-only (an experimental
+feature that sends outbound Discord messages reaching ordinary subscribers
+who never opted in is hard to walk back); the human overrode that same
+session — "Every sub should be able to use it" — so recipients are now every
+subscriber with a webhook. Gated through `auth.has_active_subscription()`
+in Python rather than an equivalent SQL predicate, so this app keeps exactly
+one definition of "subscribed". `RULE_MAX_NOTIFICATIONS_PER_CYCLE=10` caps a first-run
+flood (the first cycle sees an empty cooldown file against the whole
+region); over-cap hits are not marked notified, so they return next cycle
+rather than being silently lost. The rule runs in its own `asyncio.run()`
+and its own try/except so it can never take the established per-item trigger
+path down with it, and as a *separate coroutine* rather than folded into
+`_check_triggers_async()` — which returns early when no user has any
+`WatchlistItem`, the exact state this would first be tested in.
+
+Cooldown state is a JSON file rather than a DB row (a standing rule owns no
+rows) written temp-then-rename, keyed per `(item_id, pet_species_id)` rather
+than per user: a hit is a fact about the region, and per-user keying would
+let a message to one recipient start a cooldown that silences another.
+`_rule_state_path()` is a function, not a module constant, so the tests'
+monkeypatched `DATA` is honored — a constant would have written into the
+developer's real `data/` directory during a test run.
+
+23 new tests. Two failed on first run, both test bugs worth recording: the
+real-vector cluster test used item 204925's live EU floors (8,496g cheapest,
+cluster median 29,999g) which are far above the 100g ceiling, so it needed
+the ceiling raised to exercise the cluster maths at all; and the
+rule-crash-isolation test originally had no superuser, so
+`_check_rule_async()` short-circuited on "no recipients" before ever calling
+the function that was supposed to explode — it passed while exercising
+nothing.
+
+
+### Follow-up clarifications the same day
+
+The human confirmed three things after first review, two of which the
+implementation already matched and one of which changed it:
+
+1. **Unique transmog applies only to actual transmog** — "we still want
+   mounts/pets/recipes". Already the behavior: `source_count() is None`
+   means no appearance at all, so the test does not apply and the item
+   passes. Profession tools/gear are treated the same way.
+2. **The existing sus-item rules must stay** — "ignore old necklace/rings/
+   trinkets (check the code)". Verified rather than asserted:
+   `snipe_check.is_sus_item()` covers `LEGACY_JEWELRY_INVENTORY_TYPES`
+   (`NECK`/`FINGER`/`TRINKET`) at `base_level <= LEGACY_JEWELRY_ILVL_MAX`
+   (150), plus `CURATED_SUS_ITEM_IDS` — the 52 class-starter armor pieces,
+   the Slithershell set and the Black Tooth Grunt set. The rule calls that
+   function directly, so all of it applies unchanged and any future
+   addition to those sets is picked up for free.
+3. **Every subscriber, not just superusers** — see "Audience" above.
+
+Closing the hermeticity gap this opened: `check_triggers()` now runs the
+rule scan on every call, so the pre-existing per-item trigger tests were
+suddenly reading the developer's real `data/tsm_sale_rates.json` and
+`data/appearances.json`. Harmless today, but it meant an unrelated test's
+"how many Discord posts happened" assertion depended on whether a real TSM
+refresh had happened to add its fixture item id with a high enough sale
+average. The `listings_dir` fixture now points both caches at `tmp_path`.

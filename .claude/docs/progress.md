@@ -458,6 +458,12 @@ does now, and `history.md`'s "Hosted SaaS pivot" entry for how it shipped.
   live-verified id set, not a threshold. See `history.md` for the
   live-verified examples of both, and for `sell_price_suspect`'s removal
   the same day.
+- The Watchlist standing rule scan (2026-08-05) cannot apply
+  `price_suspect` at all — that flag needs a sell realm and the rule is
+  deliberately sell-realm-free. Two of the three dashboard flags
+  (`sus_item_suspect`, the sniper filter's cluster comparison) are
+  enforced, not three. Open to every subscriber with a Discord webhook.
+  See `modules-web.md`.
 - The tightened background-poll window (`:38-:48` past the hour, re-aimed
   2026-08-05 from `:18-:26` after Blizzard re-phased Draenor's publish slot
   outright — see `history.md`) is still a shared, global schedule, not

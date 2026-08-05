@@ -447,3 +447,74 @@ real sample string from `tests/test_tsm_import.py`, ownership, and
 `check_triggers()`'s trigger/cooldown/no-webhook-still-tracks-silently
 behavior against a real fixture `data/listings/*.parquet`) -- the cooldown
 tests found the tz-naive/aware SQLite gap documented in `db.py`'s row above.
+
+### Standing rule scan (experimental, 2026-08-05)
+
+A **second, entirely different trigger shape** alongside the per-item
+`trigger_price_copper` above: a standing rule over *every item in the region
+sweep* rather than a user's curated list. Human's spec: "alle items, med buy
+under 100g og sale avg på over 3000 (brug flagged filter stadig - flagged
+items skal aldrig sendes) + hvis det er transmog test imod unique transmog -
+hvis ikke unique --> ignore item."
+
+`RULE_MAX_BUY_COPPER` (100g) and `RULE_MIN_SALE_AVG_COPPER` (3000g) are
+human-specified. An item TSM has **no** `avg_sale_price` for is ignored, not
+passed through (human's follow-up call: "hvis sale avg ikke findes på item'en
+så ignore for nu") -- the conservative resolution of "unknown isn't a claim"
+for an outbound notification.
+
+**Sell-realm-free, by the human's explicit choice** when offered the
+alternative of reusing `snipe_check.find_snipes()` with the user's
+`locked_sell_realm`. The consequence is stated rather than papered over: of
+the three flags the dashboard's "Hide flagged (sniper filter)" checkbox ORs
+together, only two are computable without a sell realm.
+
+| flag | on this path |
+|---|---|
+| `sus_item_suspect` | applied unchanged (`snipe_check.is_sus_item()`, a pure function) |
+| sniper filter's cluster comparison | applied (`_rule_cluster_suspect()`, needs only other realms' floors) |
+| `price_suspect` | **not applied — not computable**, it is `sell_p_g >= 10 * region_median_g` and there is no `sell_p_g` here |
+
+`RULE_CLUSTER_N`/`_CLOSE_MULTIPLE`/`_MIN_REALMS` are **imported from
+`snipe_check`, never re-declared**, so this rule and the dashboard checkbox
+cannot drift apart — the human's explicit worry ("kræver måske den laves i
+backend også?"). `SNIPER_FILTER_HIGH_VALUE_EXEMPT_G` is deliberately *not*
+honored: it only ever suppresses the flag (sends more), and the hard
+requirement here runs the other way.
+
+The unique-transmog test is the **opposite disposition** from
+`snipe_check._filter_by_appearance()`, deliberately: that function answers
+"give me unique-transmog items" (so a profession tool must be excluded),
+whereas this rule asks "*if* this is transmog, is it unique?" — so an item
+with no appearance at all (mount, recipe, caged pet) and a profession
+tool/gear piece are both simply not transmog, the test does not apply, and
+they pass. Different predicate, not an inconsistency.
+
+**Filter order is load-bearing, not cosmetic.** The two cheap purely-local
+tests (the DuckDB pass, then the TSM cache) run first so the later
+`NameCache` lookups — which can make a *live Blizzard call* for an
+unresolved item — only ever see a handful. Measured against real production
+data 2026-08-05: 7,872 items under 100g → **14** after the sale-avg floor →
+0 cluster-flagged → 14 reaching `NameCache`, of which **0** needed a live
+call. The DuckDB pass itself is 0.12s over 92 realm files / 40 MB, which is
+what makes it safe to run on the 45s-cadence cycles inside the publish
+window.
+
+Runs in its own `asyncio.run()` + `db.isolated_session()` and its own
+try/except (`rule_error` in the result dict), so an experimental rule can
+never take the established per-item path down with it — and as a separate
+coroutine rather than folded into `_check_triggers_async()`, which returns
+early when no user has any `WatchlistItem` at all, the exact state this
+feature is most likely to be tested in. Cooldown state lives in a JSON file
+(`_rule_state_path()`, a *function* so the tests' monkeypatched `DATA` is
+honored) keyed per `(item_id, pet_species_id)` — a hit is a fact about the
+region, so one hit fires one round of messages to every recipient; keying
+per user would let a message to one recipient silence another.
+`RULE_MAX_NOTIFICATIONS_PER_CYCLE=10` caps a first-run flood, and over-cap
+hits are **not** marked notified so they return next cycle.
+Recipients are **every subscriber with a webhook set** (human's call,
+2026-08-05, widening the assistant's more cautious superuser-only default),
+gated through `auth.has_active_subscription()` in Python rather than an
+equivalent SQL `WHERE` — that helper is this app's single definition of
+"subscribed" (`is_superuser or subscription_status == "active"`), and
+re-expressing it as SQL would be a second copy free to drift.

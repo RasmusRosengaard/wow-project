@@ -32,6 +32,7 @@ rides the existing ~10-minute cycle (.claude/docs/feature-watchlist.md's open qu
 #6, resolved: no new scan cadence).
 """
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -46,7 +47,10 @@ from sqlalchemy import delete, func, insert, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import db
-from auth import current_subscribed_user
+import snipe_check
+import tsm
+from appearance import AppearanceCache
+from auth import current_subscribed_user, has_active_subscription
 from db import User, WatchlistItem, WowAccount, WowAccountRealm, get_async_session
 from item_names import LIVE_RESOLVE_DEADLINE_SECONDS, NameCache
 from tsm_import import TsmImportError, decode_group_export
@@ -74,6 +78,87 @@ WEBHOOK_URL_MAX_LEN = 500
 # forever. Not human-specified -- a reasonable default (a few times a day at
 # most for a persistently-cheap item), worth tuning with real usage.
 NOTIFY_COOLDOWN_SECONDS = 4 * 60 * 60
+
+
+# ---------------------------------------------------------------------------
+# Standing rule scan (experimental, added 2026-08-05, human request)
+# ---------------------------------------------------------------------------
+# A second, entirely different trigger shape from the per-item
+# trigger_price_copper above: instead of "tell me when *this* item drops
+# below *this* price", it is a standing rule over **every item in the region
+# sweep** -- "anything cheap that TSM says is actually worth a lot".
+#
+# Both thresholds are human-specified (2026-08-05), per this project's
+# convention for calibrating anything on the pricing path:
+RULE_MAX_BUY_COPPER = 100 * 10_000            # buy under 100g
+RULE_MIN_SALE_AVG_COPPER = 3_000 * 10_000     # TSM region sale avg over 3000g
+
+# Deliberately **sell-realm-free** (human's call, 2026-08-05, choosing
+# between this and reusing snipe_check.find_snipes() with the user's
+# locked_sell_realm). Watchlist has no sell realm by design -- see
+# _region_cheapest_by_item() -- so the two heuristics that survive here are
+# exactly the two computable from region data alone:
+#
+#   - sus_item_suspect    -> snipe_check.is_sus_item(), a pure function
+#   - sniper_filter's cluster comparison -> needs only other realms' floors
+#
+# price_suspect is **not** computable and is therefore not applied: it is
+# `sell_p_g >= PRICE_SUSPECT_MULTIPLE * region_median_g`, and with no sell
+# realm there is no sell_p_g at all. Stated plainly rather than silently
+# approximated, because the human's requirement was "flagged items must
+# never be sent" -- one of the three dashboard flags simply cannot be
+# evaluated on this path, and pretending otherwise with a substituted
+# number would be worse than saying so.
+#
+# The cluster thresholds are *imported*, never re-declared, so this rule and
+# the dashboard's "Hide flagged (sniper filter)" checkbox can never drift
+# apart -- the human explicitly worried about exactly that ("kræver måske
+# den laves i backend også?").
+#
+# snipe_check.SNIPER_FILTER_HIGH_VALUE_EXEMPT_G is deliberately NOT honored
+# here. That exemption only ever *suppresses* the flag (i.e. sends more),
+# and on this path the hard requirement runs the other way -- never send a
+# flagged item -- so the conservative reading wins. Worth revisiting if it
+# turns out to be suppressing genuinely good high-value hits.
+RULE_CLUSTER_N = snipe_check.SNIPER_FILTER_N
+RULE_CLUSTER_CLOSE_MULTIPLE = snipe_check.SNIPER_FILTER_CLOSE_MULTIPLE
+RULE_CLUSTER_MIN_REALMS = snipe_check.SNIPER_FILTER_MIN_REALMS
+
+# Safety valve. The very first cycle after this ships evaluates the rule
+# against the whole region sweep with an empty cooldown file, so without a
+# cap a single cycle could fire hundreds of Discord messages at once (and
+# Discord rate-limits a webhook hard enough that the overflow would be
+# dropped anyway, just messily). Hits above the cap are simply not sent
+# *and not marked notified*, so they are reconsidered next cycle rather
+# than silently lost.
+RULE_MAX_NOTIFICATIONS_PER_CYCLE = 10
+
+# Per-(item, pet) cooldown state. The per-item path stores this on the
+# WatchlistItem row, but a standing rule owns no rows -- and an in-memory
+# dict would reset on every deploy/restart, re-notifying the same items.
+# Lives on the Railway volume next to the collector's own cursors.
+#
+# A function, not a module-level constant: DATA is monkeypatched by the
+# tests' `listings_dir` fixture, and a path computed at import time would
+# ignore that and write into the developer's real data/ directory. Same
+# reason conftest.py hard-fails any test that reaches a real database --
+# a test must not be able to touch production-shaped state.
+def _rule_state_path() -> Path:
+    return DATA / "state" / "watchlist_rule.json"
+
+# Every subscriber gets the rule (human's call, 2026-08-05, widening the
+# assistant's more cautious superuser-only default) -- same premium-only
+# audience as the rest of Watchlist, whose routes all sit behind
+# Depends(current_subscribed_user).
+#
+# Deliberately gated through auth.has_active_subscription() in Python
+# rather than an equivalent SQL WHERE clause: that helper is the single
+# definition of "subscribed" in this app (`is_superuser or
+# subscription_status == "active"` -- superusers pass without a real Stripe
+# subscription, founder/admin access), and re-expressing it as SQL here
+# would be a second copy free to drift from it. The recipient list is
+# bounded by "has a webhook set at all", so filtering in Python costs
+# nothing.
 
 
 def _item_json(item: WatchlistItem, name_cache: NameCache | None = None) -> dict:
@@ -364,6 +449,193 @@ def _region_cheapest_by_item(item_ids: list[int]) -> dict[tuple[int, int | None]
     return best
 
 
+def _rule_candidates() -> list[dict]:
+    """Every (item_id, pet_species_id) whose region-wide cheapest listing is
+    under RULE_MAX_BUY_COPPER, with the cluster numbers the sniper-filter
+    comparison needs, in one DuckDB pass over the region sweep.
+
+    The cluster mirrors snipe_check.py's `sniper_filter_cluster` exactly:
+    per-realm floors first (so one realm spamming N copies of the same
+    auction can't inflate the cluster), then the RULE_CLUSTER_N cheapest
+    *other* realms by price, then their median. Because the buy candidate
+    here is by construction the region-wide cheapest (rank 1), "the N
+    cheapest other realms" is simply ranks 2..N+1 -- no separate anti-join
+    against the buy realm is needed the way find_snipes() needs one, since
+    there a candidate can be any realm's listing, not just the cheapest.
+
+    Returns [] if no sweep has run yet."""
+    listings_dir = DATA / "listings"
+    if not any(listings_dir.glob("*.parquet")):
+        return []
+    con = duckdb.connect()
+    try:
+        rows = con.execute(f"""
+            WITH realm_floor AS (
+                -- Per-realm floor, unit price (buyout is for the whole
+                -- stack -- the copper-vs-unit-price distinction this
+                -- project has been bitten by before, see CLAUDE.md).
+                SELECT item_id, pet_species_id, cr_id,
+                       min(CAST(buyout AS DOUBLE) / greatest(quantity, 1)) AS realm_cheapest
+                FROM read_parquet('{(listings_dir / "*.parquet").as_posix()}')
+                WHERE buyout IS NOT NULL
+                GROUP BY item_id, pet_species_id, cr_id
+            ),
+            ranked AS (
+                SELECT *, ROW_NUMBER() OVER (
+                           PARTITION BY item_id, pet_species_id
+                           ORDER BY realm_cheapest ASC
+                       ) AS rk
+                FROM realm_floor
+            ),
+            cluster AS (
+                SELECT item_id, pet_species_id,
+                       median(realm_cheapest) AS cluster_median,
+                       count(*) AS cluster_realms
+                FROM ranked
+                WHERE rk BETWEEN 2 AND {int(RULE_CLUSTER_N) + 1}
+                GROUP BY item_id, pet_species_id
+            )
+            SELECT r.item_id, r.pet_species_id, r.cr_id, r.realm_cheapest,
+                   c.cluster_median, c.cluster_realms
+            FROM ranked r
+            LEFT JOIN cluster c
+                   ON r.item_id = c.item_id
+                  -- IS NOT DISTINCT FROM, not `=`/USING: pet_species_id is
+                  -- NULL for every non-pet item, and a plain equality join
+                  -- drops every one of those rows.
+                  AND r.pet_species_id IS NOT DISTINCT FROM c.pet_species_id
+            WHERE r.rk = 1 AND r.realm_cheapest < {int(RULE_MAX_BUY_COPPER)}
+        """).fetchall()
+    finally:
+        con.close()
+    return [{"item_id": int(item_id), "pet_species_id": pet_species_id,
+             "cr_id": int(cr_id), "buy_copper": int(round(buy)),
+             "cluster_median": cluster_median, "cluster_realms": int(cluster_realms or 0)}
+            for item_id, pet_species_id, cr_id, buy, cluster_median, cluster_realms in rows]
+
+
+def _rule_cluster_suspect(cand: dict) -> bool:
+    """snipe_check.py's sniper_filter_suspect, region-only. Same
+    "unknown isn't a claim" convention as the original: fewer than
+    RULE_CLUSTER_MIN_REALMS other realms listing the item at all means
+    there is not enough data to judge clustering, which is treated as
+    *not* flagged rather than as an assumed pass."""
+    if cand["cluster_realms"] < RULE_CLUSTER_MIN_REALMS or cand["cluster_median"] is None:
+        return False
+    return cand["cluster_median"] <= cand["buy_copper"] * RULE_CLUSTER_CLOSE_MULTIPLE
+
+
+def _rule_scan() -> list[dict]:
+    """The standing rule, applied end to end. Filter order is deliberate and
+    load-bearing: the two cheap, purely-local tests (SQL, then the TSM cache)
+    run first and cut the candidate set to a handful, so the later
+    NameCache lookups -- which can make a *live Blizzard call* for an item
+    nobody has resolved before -- only ever see a small set. Resolving
+    thousands of unknown items in a background loop is precisely the shape
+    that caused the 2026-08-01 rate-limit incident (see blizz.py's
+    _TokenBucket comment); this ordering is what keeps that from recurring
+    rather than any cap here."""
+    candidates = _rule_candidates()
+    if not candidates:
+        return []
+
+    sale_rates = tsm.SaleRateCache()
+    hits = []
+    for cand in candidates:
+        entry = sale_rates.get(cand["item_id"])
+        # No TSM average at all -> skip (human's call, 2026-08-05: "hvis sale
+        # avg ikke findes på item'en så ignore for nu"). Same
+        # "unknown isn't a claim" convention the rest of the pipeline uses,
+        # just resolved in the conservative direction for an outbound
+        # notification: silence, not a guess.
+        avg = entry.get("avg_sale_price") if entry else None
+        if avg is None or avg <= RULE_MIN_SALE_AVG_COPPER:
+            continue
+        if _rule_cluster_suspect(cand):
+            continue
+        cand["region_sale_avg_copper"] = avg
+        hits.append(cand)
+
+    if not hits:
+        return []
+
+    names = NameCache()
+    appearances = AppearanceCache()
+    kept = []
+    for cand in hits:
+        item_id = cand["item_id"]
+        inventory_type = names.inventory_type(item_id)
+        if snipe_check.is_sus_item(item_id, inventory_type, names.base_level(item_id)):
+            continue
+        # "hvis det er transmog test imod unique transmog - hvis ikke unique
+        # --> ignore item". source_count() is None for anything with no
+        # transmog appearance at all (caged pets, mounts, recipes,
+        # consumables) -- those are simply not transmog, so the test does
+        # not apply to them and they pass. Profession tools/gear are
+        # likewise treated as not-transmog here: they carry an appearance
+        # but are not part of the visible paperdoll system, which is the
+        # same reason snipe_check.NON_TRANSMOG_INVENTORY_TYPES exists.
+        # Note this is the *opposite* disposition from
+        # snipe_check._filter_by_appearance(), and deliberately so: that
+        # function answers "give me unique-transmog items" (so a profession
+        # tool must be excluded), whereas this rule asks "if this is
+        # transmog, is it unique?" (so a non-transmog item is simply not
+        # subject to the test). Different predicate, not an inconsistency.
+        sources = appearances.source_count(item_id)
+        is_transmog = (sources is not None
+                       and inventory_type not in snipe_check.NON_TRANSMOG_INVENTORY_TYPES)
+        if is_transmog and sources != 1:
+            continue
+        cand["appearance_sources"] = sources
+        kept.append(cand)
+    names.save()
+    return sorted(kept, key=lambda c: c["region_sale_avg_copper"], reverse=True)
+
+
+def _rule_state_load() -> dict:
+    try:
+        return json.loads(_rule_state_path().read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        # A truncated/corrupt state file must not take the collector cycle
+        # down with it -- worst case we re-notify once and rewrite it.
+        log.exception("watchlist: unreadable rule state, starting fresh")
+        return {}
+
+
+def _rule_state_save(state: dict) -> None:
+    """Temp-file-then-rename, same atomicity fix scan_region.py already
+    applies to its parquet writes -- a crash mid-write must not leave a
+    half-written JSON file that _rule_state_load() then throws away,
+    re-notifying everything."""
+    path = _rule_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state))
+    tmp.replace(path)
+
+
+def _rule_send(webhook_url: str, cand: dict, name_cache: NameCache,
+               account_labels: list[tuple[str, str | None]] | None = None) -> None:
+    name = name_cache.get(cand["item_id"], cand["pet_species_id"])
+    realm = _realm_label(cand["cr_id"])
+    account_note = ""
+    if account_labels:
+        parts = [f"**{label}** ({realm_name})" if realm_name else f"**{label}**"
+                 for label, realm_name in account_labels]
+        account_note = f" (log in on {', '.join(parts)})"
+    content = (
+        f"\U0001F4B0 **{name}** is at **{cand['buy_copper'] / 10000:,.2f}g** on "
+        f"{realm}{account_note} — TSM region sale avg "
+        f"**{cand['region_sale_avg_copper'] / 10000:,.0f}g**."
+    )
+    try:
+        requests.post(webhook_url, json={"content": content}, timeout=10)
+    except Exception:
+        log.exception("watchlist: rule Discord webhook POST failed for item %s", cand["item_id"])
+
+
 def _realm_label(cr_id: int) -> str:
     """Every member realm name of the connected realm, not just the first
     (2026-08-02, human request -- matches the fix already made for
@@ -494,6 +766,58 @@ async def _check_triggers_async() -> dict:
         return {"watched": len(rows), "notified": notified}
 
 
+async def _check_rule_async() -> dict:
+    """The standing rule's own pass. Deliberately *not* folded into
+    _check_triggers_async(): that function returns early when no user has
+    any WatchlistItem at all, and the rule owns no rows, so riding along
+    inside it would silently never run in exactly the state this feature
+    is most likely to be tested in."""
+    recipients_q = select(User).where(User.discord_webhook_url.isnot(None))
+
+    async with db.isolated_session() as session:
+        recipients = [u for u in (await session.execute(recipients_q)).scalars().all()
+                      if has_active_subscription(u)]
+        if not recipients:
+            # Nobody to tell -- skip the scan entirely rather than burning a
+            # DuckDB pass over the whole region sweep every 10 minutes for
+            # output that would be discarded. Note this also means the
+            # cooldown file stays untouched, so enabling a webhook later
+            # starts from a clean slate rather than a backlog.
+            return {"rule_recipients": 0, "rule_hits": 0, "rule_notified": 0}
+
+        hits = await asyncio.to_thread(_rule_scan)
+        if not hits:
+            return {"rule_recipients": len(recipients), "rule_hits": 0, "rule_notified": 0}
+
+        state = await asyncio.to_thread(_rule_state_load)
+        now = time.time()
+        name_cache = NameCache()
+        notified = 0
+        suppressed_by_cap = 0
+        for cand in hits:
+            # Keyed per (item, pet), not per (item, pet, user): a hit is a
+            # fact about the region, so one hit fires one round of messages
+            # to every recipient. Keying per user would let a message to
+            # one recipient start a cooldown that silences another.
+            key = f"{cand['item_id']}:{cand['pet_species_id']}"
+            last = state.get(key)
+            if last is not None and (now - last) < NOTIFY_COOLDOWN_SECONDS:
+                continue
+            if notified >= RULE_MAX_NOTIFICATIONS_PER_CYCLE:
+                # Not marked notified -- reconsidered next cycle.
+                suppressed_by_cap += 1
+                continue
+            for user in recipients:
+                account_labels = await _account_labels_for_realm(user.id, cand["cr_id"], session)
+                await asyncio.to_thread(_rule_send, user.discord_webhook_url, cand,
+                                        name_cache, account_labels)
+            state[key] = now
+            notified += 1
+        await asyncio.to_thread(_rule_state_save, state)
+        return {"rule_recipients": len(recipients), "rule_hits": len(hits),
+                "rule_notified": notified, "rule_suppressed_by_cap": suppressed_by_cap}
+
+
 def check_triggers() -> dict:
     """Sync entry point -- called from collect_all.py's background loop
     (itself invoked via asyncio.to_thread(), a real OS thread with no
@@ -503,6 +827,16 @@ def check_triggers() -> dict:
     db.sessionmaker()'s shared engine even so."""
     start = time.monotonic()
     result = asyncio.run(_check_triggers_async())
+    # Own asyncio.run(), own isolated_session -- and its own try/except, so
+    # an experimental rule can never take the established per-item trigger
+    # path down with it. Same "one subsystem's failure doesn't abort the
+    # rest" convention collect_all.collect_all() already applies to every
+    # block it runs.
+    try:
+        result.update(asyncio.run(_check_rule_async()))
+    except Exception:
+        log.exception("watchlist: standing rule scan failed")
+        result["rule_error"] = True
     result["elapsed_seconds"] = round(time.monotonic() - start, 2)
     log.info("watchlist.check_triggers: %s", result)
     return result
