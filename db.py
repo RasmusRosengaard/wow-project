@@ -17,7 +17,8 @@ from datetime import datetime, timezone
 from fastapi import Depends
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users_db_sqlalchemy.generics import GUID
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint,
+                        true as sa_true)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -56,6 +57,19 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # pastes in themselves (no OAuth) -- NULL means Watchlist triggers are
     # tracked but never delivered anywhere for this account.
     discord_webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # "Default sniper list" -- opt-in to watchlist.py's standing rule scan
+    # (added 2026-08-05). Distinct from discord_webhook_url: the webhook is
+    # *where* notifications go, this is *whether* the standing rule is one
+    # of the things that sends them. A user can keep their per-item triggers
+    # and turn only the standing rule off.
+    #
+    # NOT NULL, server_default true: the rule shipped earlier the same day
+    # already delivering to every subscriber with a webhook, so defaulting
+    # existing rows to false would silently switch off a live feature for
+    # everyone who currently has it. New accounts get the same default via
+    # the model-level default.
+    default_sniper_list_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sa_true())
     # Signup timestamp (added 2026-08-04 for the admin page's signup list --
     # FastAPI-Users' base table has no such column, and uuid4 ids carry no
     # embedded time, so there was no way to order accounts by age).

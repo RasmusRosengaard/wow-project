@@ -90,8 +90,42 @@ NOTIFY_COOLDOWN_SECONDS = 4 * 60 * 60
 #
 # Both thresholds are human-specified (2026-08-05), per this project's
 # convention for calibrating anything on the pricing path:
-RULE_MAX_BUY_COPPER = 100 * 10_000            # buy under 100g
-RULE_MIN_SALE_AVG_COPPER = 3_000 * 10_000     # TSM region sale avg over 3000g
+# The buy ceiling is **proportional to the item's TSM sale average**, not a
+# single flat number (human's call, 2026-08-05, replacing the original flat
+# 100g/3000g pair): "if item is over 5k sellavg, it can cost up to 500, and
+# so on so basicly 10%, but under3k sellavg its 100 hardcoded."
+#
+#   TSM sale avg < 2,000g  ->  ignored entirely, however cheap it is
+#   TSM sale avg >= 2,000g  ->  buy must be under 10% of the sale average
+#
+# So a 2,000g item qualifies up to 200g, a 5,000g item up to 500g, a
+# 50,000g item up to 5,000g. The ratio is the thing that actually matters:
+# "cheap" means cheap *relative to what the item sells for*, and the
+# original flat 100g ceiling got that wrong at both ends -- it admitted 40g
+# junk while hiding a 100g listing of an 11,000g item (real case, item
+# 29726 "Pattern: Hood of Primal Life", which the human found by hand and
+# which missed the old ceiling by a single copper: 100g is not < 100g).
+#
+# The minimum sale average is what keeps this from flooding, and it is not
+# theoretical: an intermediate version of this rule used a flat 100g cap
+# below the boundary *instead of* rejecting those items, and measuring it
+# against the live sweep produced **6,580 hits** rather than the previous
+# 7 -- almost all of them sub-1-gold stacked trade goods worth a few
+# hundred gold ("buy 0g, avg 2,851g, 285,086x"). A huge multiple on a tiny
+# absolute value is not a snipe. Same failure mode snipe_check.py's own
+# MIN_VALUE_FLOOR_G exists to prevent, arrived at independently here.
+RULE_MIN_SALE_AVG_COPPER = 2_000 * 10_000      # below this, ignored entirely
+RULE_BUY_FRACTION_OF_SALE_AVG = 0.10           # buy ceiling, as a fraction of it
+
+
+def _rule_max_buy_copper(sale_avg_copper: float) -> float:
+    """Highest buy price that still counts as a find for an item with this
+    TSM sale average. Callers must reject anything below
+    RULE_MIN_SALE_AVG_COPPER first -- this function deliberately does not,
+    since "what is the ceiling" and "does this item qualify at all" are two
+    different questions and folding them together here would make a
+    too-cheap item look like it had a valid, very small ceiling."""
+    return sale_avg_copper * RULE_BUY_FRACTION_OF_SALE_AVG
 
 # Deliberately **sell-realm-free** (human's call, 2026-08-05, choosing
 # between this and reusing snipe_check.find_snipes() with the user's
@@ -149,7 +183,10 @@ def _rule_state_path() -> Path:
 # Every subscriber gets the rule (human's call, 2026-08-05, widening the
 # assistant's more cautious superuser-only default) -- same premium-only
 # audience as the rest of Watchlist, whose routes all sit behind
-# Depends(current_subscribed_user).
+# Depends(current_subscribed_user) -- and each can turn it off individually
+# via User.default_sniper_list_enabled ("Default sniper list" on
+# watchlist.html), which defaults to on so the already-live behavior isn't
+# silently switched off for anyone.
 #
 # Deliberately gated through auth.has_active_subscription() in Python
 # rather than an equivalent SQL WHERE clause: that helper is the single
@@ -233,6 +270,7 @@ async def list_watchlist(user: User = Depends(current_subscribed_user),
     # even for a small, low-frequency route like this one.
     item_rows = await asyncio.to_thread(_build)
     return {"items": item_rows, "discord_webhook_url": user.discord_webhook_url,
+           "default_sniper_list_enabled": user.default_sniper_list_enabled,
            "max_items": MAX_WATCHLIST_ITEMS_PER_USER}
 
 
@@ -257,6 +295,27 @@ async def update_discord_webhook(payload: DiscordWebhookUpdate,
     user.discord_webhook_url = url
     await session.commit()
     return {"discord_webhook_url": user.discord_webhook_url}
+
+
+class DefaultSniperListUpdate(BaseModel):
+    enabled: bool
+
+
+# Same registration-order constraint as /discord-webhook above: this must
+# come before the "/{item_id}" routes or Starlette tries to parse
+# "default-sniper-list" as an int and 422s.
+@router.patch("/default-sniper-list")
+async def update_default_sniper_list(payload: DefaultSniperListUpdate,
+                                     user: User = Depends(current_subscribed_user),
+                                     session: AsyncSession = Depends(get_async_session)) -> dict:
+    """Toggle the standing rule scan for this account. Deliberately separate
+    from the webhook route: the webhook is *where* notifications go, this is
+    *whether* the standing rule is one of the things that sends them, and a
+    user should be able to keep their per-item triggers while turning only
+    the standing rule off."""
+    user.default_sniper_list_enabled = bool(payload.enabled)
+    await session.commit()
+    return {"default_sniper_list_enabled": user.default_sniper_list_enabled}
 
 
 class WatchlistBatchUpdateItem(BaseModel):
@@ -451,8 +510,16 @@ def _region_cheapest_by_item(item_ids: list[int]) -> dict[tuple[int, int | None]
 
 def _rule_candidates() -> list[dict]:
     """Every (item_id, pet_species_id) whose region-wide cheapest listing is
-    under RULE_MAX_BUY_COPPER, with the cluster numbers the sniper-filter
+    region-wide cheapest listing, with the cluster numbers the sniper-filter
     comparison needs, in one DuckDB pass over the region sweep.
+
+    Returns **every** item, not just cheap ones: the buy ceiling became
+    per-item when it started depending on the item's TSM sale average (see
+    _rule_max_buy_copper()), so it can no longer be expressed as a constant
+    in this query. _rule_scan() applies it right after the TSM lookup
+    instead. This costs nothing measurable -- the per-realm GROUP BY over
+    every listing already dominates, and the old ceiling only ever trimmed
+    the final result.
 
     The cluster mirrors snipe_check.py's `sniper_filter_cluster` exactly:
     per-realm floors first (so one realm spamming N copies of the same
@@ -504,7 +571,7 @@ def _rule_candidates() -> list[dict]:
                   -- NULL for every non-pet item, and a plain equality join
                   -- drops every one of those rows.
                   AND r.pet_species_id IS NOT DISTINCT FROM c.pet_species_id
-            WHERE r.rk = 1 AND r.realm_cheapest < {int(RULE_MAX_BUY_COPPER)}
+            WHERE r.rk = 1
         """).fetchall()
     finally:
         con.close()
@@ -549,7 +616,13 @@ def _rule_scan() -> list[dict]:
         # just resolved in the conservative direction for an outbound
         # notification: silence, not a guess.
         avg = entry.get("avg_sale_price") if entry else None
-        if avg is None or avg <= RULE_MIN_SALE_AVG_COPPER:
+        # No TSM average at all -> ignored (human's call: "hvis sale avg
+        # ikke findes på item'en så ignore for nu"), and below the minimum
+        # -> ignored however cheap it is, which is what stops the rule
+        # drowning in sub-1g trade goods.
+        if avg is None or avg < RULE_MIN_SALE_AVG_COPPER:
+            continue
+        if cand["buy_copper"] >= _rule_max_buy_copper(avg):
             continue
         if _rule_cluster_suspect(cand):
             continue
@@ -565,7 +638,8 @@ def _rule_scan() -> list[dict]:
     for cand in hits:
         item_id = cand["item_id"]
         inventory_type = names.inventory_type(item_id)
-        if snipe_check.is_sus_item(item_id, inventory_type, names.base_level(item_id)):
+        if snipe_check.is_sus_item(item_id, inventory_type, names.base_level(item_id),
+                                   names.item_class(item_id), names.item_subclass(item_id)):
             continue
         # "hvis det er transmog test imod unique transmog - hvis ikke unique
         # --> ignore item". source_count() is None for anything with no
@@ -619,21 +693,87 @@ def _rule_state_save(state: dict) -> None:
 def _rule_send(webhook_url: str, cand: dict, name_cache: NameCache,
                account_labels: list[tuple[str, str | None]] | None = None) -> None:
     name = name_cache.get(cand["item_id"], cand["pet_species_id"])
-    realm = _realm_label(cand["cr_id"])
-    account_note = ""
+    buy_g = cand["buy_copper"] / 10000
+    avg_g = cand["region_sale_avg_copper"] / 10000
+    fields = [
+        ("Price", f"**{buy_g:,.2f}g**", True),
+        ("TSM sale avg", f"{avg_g:,.0f}g", True),
+        # The number that actually decides whether it's worth the trip, and
+        # the one a reader would otherwise recompute from the other two
+        # every single time.
+        ("Multiple", f"{avg_g / buy_g:,.0f}x" if buy_g > 0 else "-", True),
+        ("Realm", _realm_label(cand["cr_id"]), False),
+    ]
     if account_labels:
-        parts = [f"**{label}** ({realm_name})" if realm_name else f"**{label}**"
+        parts = [f"{label} ({realm_name})" if realm_name else label
                  for label, realm_name in account_labels]
-        account_note = f" (log in on {', '.join(parts)})"
-    content = (
-        f"\U0001F4B0 **{name}** is at **{cand['buy_copper'] / 10000:,.2f}g** on "
-        f"{realm}{account_note} — TSM region sale avg "
-        f"**{cand['region_sale_avg_copper'] / 10000:,.0f}g**."
-    )
+        fields.append(("Log in on", ", ".join(parts), False))
+    payload = _embed_message(f"\U0001F4B0 {name}",
+                             _undermine_url(cand["cr_id"], cand["item_id"]),
+                             EMBED_COLOR_RULE, fields, footer="Default sniper list")
     try:
-        requests.post(webhook_url, json={"content": content}, timeout=10)
+        requests.post(webhook_url, json=payload, timeout=10)
     except Exception:
         log.exception("watchlist: rule Discord webhook POST failed for item %s", cand["item_id"])
+
+
+# undermine.exchange URL shape, taken from the human's own link
+# (2026-08-05): https://undermine.exchange/#eu-draenor/204925 -- region-
+# prefixed realm slug, then the item id. EU-only, matching this product's
+# scope.
+UNDERMINE_URL = "https://undermine.exchange/#eu-{slug}/{item_id}"
+
+
+def _undermine_url(cr_id: int, item_id: int) -> str | None:
+    """Deep link to the item's undermine.exchange page for the realm the
+    listing is actually on (2026-08-05, human request). Returns None rather
+    than a guessed URL when the realm lookup fails -- a dead link in a
+    notification is worse than no link.
+
+    A connected realm can bundle several named realms; any member's slug
+    resolves to the same auction house, so the first is used (the same
+    assumption _realm_label() already documents, just picking one rather
+    than listing them all)."""
+    try:
+        import blizz
+        for m in blizz.connected_realm_realms(cr_id):
+            if m.get("slug"):
+                return UNDERMINE_URL.format(slug=m["slug"], item_id=item_id)
+    except Exception:
+        log.exception("watchlist: undermine link lookup failed for %s", cr_id)
+    return None
+
+
+# Discord embed colors -- the two notification shapes stay visually
+# distinct at a glance in a busy channel: a per-item trigger the user set
+# themselves vs. a standing-rule find.
+EMBED_COLOR_TRIGGER = 0xC8912B   # bullion, matching the app's own accent
+EMBED_COLOR_RULE = 0x2E7D5B      # verified green
+
+
+def _embed_message(title: str, url: str | None, color: int,
+                   fields: list[tuple[str, str, bool]],
+                   footer: str | None = None) -> dict:
+    """Discord webhook payload as a single embed rather than a run-on
+    `content` string (2026-08-05, human request with a real screenshot --
+    the plain-text form ran every fact into one long sentence per line,
+    "not intuitive and easy to read"). `fields` is [(name, value, inline)].
+
+    An embed rather than markdown inside `content` specifically because
+    inline fields give Discord a grid to lay out: price/sale-avg/multiple
+    line up column-wise across consecutive messages, which is what makes a
+    stack of finds scannable instead of a wall of prose. The title carries
+    the item link, so the item name itself is the clickable thing."""
+    embed = {
+        "title": title,
+        "color": color,
+        "fields": [{"name": n, "value": v, "inline": i} for n, v, i in fields],
+    }
+    if url:
+        embed["url"] = url
+    if footer:
+        embed["footer"] = {"text": footer}
+    return {"embeds": [embed]}
 
 
 def _realm_label(cr_id: int) -> str:
@@ -697,19 +837,20 @@ def _send_discord_notification(webhook_url: str, item: WatchlistItem, price_copp
     name = name_cache.get(item.item_id, item.pet_species_id)
     price_g = price_copper / 10000
     trigger_g = item.trigger_price_copper / 10000
-    realm = _realm_label(cr_id)
-    label_suffix = f" ({item.label})" if item.label else ""
-    account_note = ""
+    title = f"\U0001F514 {name}" + (f" ({item.label})" if item.label else "")
+    fields = [
+        ("Price", f"**{price_g:,.2f}g**", True),
+        ("Your trigger", f"{trigger_g:,.2f}g", True),
+        ("Realm", _realm_label(cr_id), False),
+    ]
     if account_labels:
-        parts = [f"**{label}** ({realm_name})" if realm_name else f"**{label}**"
+        parts = [f"{label} ({realm_name})" if realm_name else label
                 for label, realm_name in account_labels]
-        account_note = f" (log in on {', '.join(parts)})"
-    content = (
-        f"\U0001F514 **{name}**{label_suffix} is at **{price_g:,.2f}g** on {realm}{account_note}. "
-        f"Your trigger: {trigger_g:,.2f}g."
-    )
+        fields.append(("Log in on", ", ".join(parts), False))
+    payload = _embed_message(title, _undermine_url(cr_id, item.item_id),
+                             EMBED_COLOR_TRIGGER, fields, footer="Watchlist trigger")
     try:
-        requests.post(webhook_url, json={"content": content}, timeout=10)
+        requests.post(webhook_url, json=payload, timeout=10)
     except Exception:
         log.exception("watchlist: Discord webhook POST failed for item %s", item.id)
 
@@ -776,7 +917,7 @@ async def _check_rule_async() -> dict:
 
     async with db.isolated_session() as session:
         recipients = [u for u in (await session.execute(recipients_q)).scalars().all()
-                      if has_active_subscription(u)]
+                      if has_active_subscription(u) and u.default_sniper_list_enabled]
         if not recipients:
             # Nobody to tell -- skip the scan entirely rather than burning a
             # DuckDB pass over the whole region sweep every 10 minutes for

@@ -457,8 +457,25 @@ under 100g og sale avg på over 3000 (brug flagged filter stadig - flagged
 items skal aldrig sendes) + hvis det er transmog test imod unique transmog -
 hvis ikke unique --> ignore item."
 
-`RULE_MAX_BUY_COPPER` (100g) and `RULE_MIN_SALE_AVG_COPPER` (3000g) are
-human-specified. An item TSM has **no** `avg_sale_price` for is ignored, not
+**The buy ceiling is proportional, not flat** (human's call, 2026-08-05,
+after seeing real output): an item needs a TSM region sale average of at
+least `RULE_MIN_SALE_AVG_COPPER` (2,000g) and must be listed under
+`RULE_BUY_FRACTION_OF_SALE_AVG` (10%) of it -- so 5,000g/500g,
+50,000g/5,000g. The original flat pair (buy < 100g, avg > 3,000g) got it
+wrong at both ends: it admitted 40g junk while missing item 29726 ("Pattern:
+Hood of Primal Life", TSM avg 11,111g, cheapest realm 100g) which the human
+found by hand -- that one lost by a *single copper*, since 100g is not
+< 100g. A regression test pins its real live figures.
+
+The 2,000g minimum is what stops a flood, measured not assumed: an
+intermediate version capped sub-3,000g items at a flat 100g instead of
+rejecting them, and measuring against the live sweep gave **6,580 hits**
+(vs 7 before), almost all sub-1g stacked trade goods -- "buy 0g, avg 2,851g,
+285,086x". A huge multiple on a tiny absolute value is not a snipe; same
+failure `snipe_check.MIN_VALUE_FLOOR_G` exists to prevent. With the 2,000g
+floor the live figure is **116**.
+
+An item TSM has **no** `avg_sale_price` for is ignored, not
 passed through (human's follow-up call: "hvis sale avg ikke findes på item'en
 så ignore for nu") -- the conservative resolution of "unknown isn't a claim"
 for an outbound notification.
@@ -484,11 +501,30 @@ requirement here runs the other way.
 
 The unique-transmog test is the **opposite disposition** from
 `snipe_check._filter_by_appearance()`, deliberately: that function answers
-"give me unique-transmog items" (so a profession tool must be excluded),
-whereas this rule asks "*if* this is transmog, is it unique?" — so an item
-with no appearance at all (mount, recipe, caged pet) and a profession
-tool/gear piece are both simply not transmog, the test does not apply, and
-they pass. Different predicate, not an inconsistency.
+"give me unique-transmog items", whereas this rule asks "*if* this is
+transmog, is it unique?" — so an item with no appearance at all (mount,
+recipe, caged pet) is simply not transmog, the test does not apply, and it
+passes. Different predicate, not an inconsistency.
+
+**Profession tools and Blizzard-"Junk" items are excluded outright**
+(2026-08-05, both from real delivered messages the human objected to:
+"Burnt Rolling Pin", a `PROFESSION_TOOL`, and "Undelivered Love Letter",
+item 67386). Both rules went into `snipe_check.is_sus_item()` rather than
+into this module, because that one predicate is what the dashboard's "Hide
+flagged" checkbox *and* this rule both already consult — the human asked for
+them in "both backend and filter version (frontend)", and one shared
+predicate is how that stays true. Junk uses Blizzard's own class 15 /
+subclass 0, confirmed live, and is subclass-specific so mounts (15/5) and
+recipes (class 9) survive. Note this means a profession tool now fails
+`is_sus_item()` *before* the transmog test it used to slip past.
+
+**Notifications are Discord embeds, not `content` strings** (2026-08-05,
+human request with a screenshot -- the plain-text form "is not intiative and
+easy to read"). `_embed_message()` builds one embed whose title links to
+**undermine.exchange** for the realm the listing is on (`_undermine_url()`,
+returning None rather than a guessed URL if the realm lookup fails), with
+Price / TSM sale avg / Multiple as inline fields so consecutive finds line up
+column-wise. Both notification shapes use it, in different colors.
 
 **Filter order is load-bearing, not cosmetic.** The two cheap purely-local
 tests (the DuckDB pass, then the TSM cache) run first so the later

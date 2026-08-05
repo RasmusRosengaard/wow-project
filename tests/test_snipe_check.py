@@ -1537,3 +1537,49 @@ def test_is_sus_item_black_tooth_face_splitter_not_included():
     # different quality tier (RARE, not UNCOMMON) -- deliberately excluded.
     assert 169290 not in snipe_check.BLACK_TOOTH_GRUNT_ARMOR_ITEM_IDS
     assert snipe_check.is_sus_item(169290, "WEAPON", None) is False
+
+
+# ---- profession tools + Blizzard "Junk" class (both added 2026-08-05) ----
+# Both live in is_sus_item() rather than in each caller, because that one
+# predicate is what the dashboard's "Hide flagged" checkbox and
+# watchlist.py's standing rule both already consult -- the human asked for
+# these in "both backend and filter version (frontend)".
+
+def test_is_sus_item_flags_profession_tools_and_gear():
+    """Real case: "Burnt Rolling Pin" (222577), a PROFESSION_TOOL, was
+    delivered as a Watchlist find -- "should never be sent/showed"."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "PROFESSION_TOOL", 486) is True
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "PROFESSION_GEAR", 486) is True
+
+
+def test_is_sus_item_profession_rule_is_not_ilvl_gated():
+    """Unlike the jewelry rule -- the reported case sat at base_level 486
+    (confirmed live), so any legacy-ilvl cutoff would have missed it."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "PROFESSION_TOOL", 1) is True
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "PROFESSION_TOOL", 9999) is True
+
+
+def test_is_sus_item_flags_blizzard_junk_class():
+    """Blizzard's own classification, confirmed live on item 67386
+    ("Undelivered Love Letter"): class 15 Miscellaneous / subclass 0 Junk."""
+    assert snipe_check.is_sus_item(67386, "NON_EQUIP", 1, 15, 0) is True
+
+
+def test_is_sus_item_junk_rule_does_not_swallow_mounts():
+    """Mounts are class 15 subclass 5 -- the rule is subclass-specific
+    precisely so a class-only check can't take out the whole category."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, 15, 5) is False
+
+
+def test_is_sus_item_junk_rule_does_not_swallow_recipes():
+    """Recipes are class 9 -- the recipe/technique/pattern items delivered
+    in the same real Discord batch were not objected to."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, 9, 8) is False
+
+
+def test_is_sus_item_class_args_are_optional_and_default_to_not_flagging():
+    """Every pre-existing call site omits them; a half-known pair must not
+    produce a wrong answer, so only the exact (15, 0) pair flags."""
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1) is False
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, 15, None) is False
+    assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 1, None, 0) is False

@@ -390,8 +390,12 @@ def _row_to_json(r: dict, names: NameCache | None) -> dict:
         # _fetch_item_details() call that already backs item_class/quality.
         # Never filters server-side -- dashboard.html's "Hide flagged
         # (sniper filter)" checkbox is the only thing that can hide it.
+        # item_class/item_subclass added 2026-08-05 for the Junk rule --
+        # both come from the same already-cached _fetch_item_details() call
+        # as inventory_type/base_level, so this stays free.
         out["sus_item_suspect"] = snipe_check.is_sus_item(
-            r["item_id"], names.inventory_type(r["item_id"]), names.base_level(r["item_id"]))
+            r["item_id"], names.inventory_type(r["item_id"]), names.base_level(r["item_id"]),
+            names.item_class(r["item_id"]), names.item_subclass(r["item_id"]))
     return out
 
 

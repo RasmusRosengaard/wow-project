@@ -141,6 +141,35 @@
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
   .status-msg { font-size: 0.8rem; color: var(--verified); min-height: 1em; }
   .cap-note { font-size: 0.75rem; color: var(--text-dim); }
+  /* Rail grouping. The eyebrow encodes something true about the page:
+     there is one delivery channel and two independent sources feeding it
+     (the standing rule, and your own watched items). Without it the rail
+     reads as four unrelated boxes stacked by accident. */
+  .rail-group { display: flex; flex-direction: column; gap: 0.9rem; }
+  .rail-group + .rail-group { margin-top: 1.6rem; }
+  .rail-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.09em;
+                color: var(--text-dim); font-weight: 700; display: flex;
+                align-items: center; gap: 0.55rem; }
+  .rail-label::after { content: ""; flex: 1; height: 1px; background: var(--hairline-strong); }
+  /* Secondary action. Two bullion buttons in one card read as two equally
+     primary paths; the import is the alternative route to the same goal,
+     so it recedes until you want it. */
+  button.secondary {
+    background: transparent; color: var(--text-dim);
+    border-color: var(--hairline-strong);
+  }
+  button.secondary:hover { color: var(--ink); border-color: var(--bullion); }
+  .sub-divider { margin: 1.1rem 0 0.9rem; padding-top: 0.9rem;
+                 border-top: 1px dashed var(--hairline-strong);
+                 font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+                 color: var(--text-dim); font-weight: 700; }
+  .toggle-row { display: flex; align-items: flex-start; gap: 0.55rem; }
+  .toggle-row input[type=checkbox] { margin-top: 0.15rem; flex-shrink: 0; }
+  .toggle-row label { font-weight: 600; cursor: pointer; }
+  .explain { font-size: 0.78rem; color: var(--text-dim); line-height: 1.5; margin-top: 0.5rem; }
+  .explain ul { margin: 0.35rem 0 0; padding-left: 1.1rem; }
+  .explain li { margin: 0.15rem 0; }
+  .explain code { font-size: 0.95em; background: var(--paper); padding: 0 0.2em; border-radius: 3px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th { text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--hairline-strong); }
@@ -217,45 +246,68 @@
   <div id="app" style="display:none;">
    <div class="page-grid">
     <div class="left-col">
-      <div class="card">
-        <h3>Discord notifications<span class="info-icon" tabindex="0">?<span class="info-tooltip">Paste a Discord webhook URL to get notified when a watched item clears its trigger price. Leave empty to track items without any delivery.</span></span></h3>
-        <div class="field">
-          <label for="webhook-url">Webhook URL</label>
-          <input type="text" id="webhook-url" placeholder="https://discord.com/api/webhooks/...">
+      <div class="rail-group">
+        <div class="rail-label">Delivery</div>
+        <div class="card">
+          <h3>Discord<span class="info-icon" tabindex="0">?<span class="info-tooltip">Everything on this page is delivered here. Create a webhook in your Discord server under Server Settings &rarr; Integrations &rarr; Webhooks, then paste its URL. Leave it empty to track items without any delivery.</span></span></h3>
+          <div class="field">
+            <label for="webhook-url">Webhook URL</label>
+            <input type="text" id="webhook-url" placeholder="https://discord.com/api/webhooks/...">
+          </div>
+          <div class="explain">Both sources below send here. Leave empty to track items silently.</div>
+          <div class="card-actions">
+            <button id="webhook-save">Save webhook</button>
+          </div>
+          <div class="error" id="webhook-error"></div>
+          <div class="status-msg" id="webhook-status"></div>
         </div>
-        <div class="card-actions">
-          <button id="webhook-save">Save</button>
-        </div>
-        <div class="error" id="webhook-error"></div>
-        <div class="status-msg" id="webhook-status"></div>
       </div>
 
-      <div class="card">
-        <h3>Add an item</h3>
-        <div class="row">
-          <div class="field">
-            <label for="add-item-id">Item ID</label>
-            <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
-          </div>
-          <div class="field">
-            <label for="add-trigger">Trigger price (g)</label>
-            <input type="number" id="add-trigger" min="0.01" step="0.01" placeholder="e.g. 50" required>
-          </div>
-        </div>
-        <div class="card-actions">
-          <button id="add-item-btn">Add</button>
-        </div>
-        <div class="error" id="add-item-error"></div>
-      </div>
+      <div class="rail-group">
+        <div class="rail-label">Sources</div>
 
-      <div class="card">
-        <h3>Import a TSM group<span class="info-icon" tabindex="0">?<span class="info-tooltip">Paste a TSM group export string (right-click a group in TSM &rarr; Export). Items are added without a trigger price set &mdash; fill one in per item in the table.</span></span></h3>
-        <textarea id="tsm-export" placeholder="Paste TSM group export string here (right-click a group in TSM -> Export)..."></textarea>
-        <div class="card-actions">
-          <button id="tsm-import-btn">Import</button>
+        <div class="card">
+          <h3>Default sniper list<span class="info-icon" tabindex="0">?<span class="info-tooltip">A standing rule over every item on every EU realm, not just the ones listed below. An item qualifies when TSM's region-wide average sale price is at least 2,000g and the cheapest listing anywhere is under 10% of that &mdash; so a 5,000g item under 500g, a 50,000g item under 5,000g. Excluded: old low-ilvl necklaces/rings/trinkets, curated junk sets, profession tools, anything Blizzard classes as Junk, gear whose transmog appearance is shared with other items, and prices several other realms already list at (not a find, just the going rate).</span></span></h3>
+          <div class="toggle-row">
+            <input type="checkbox" id="sniper-list-enabled">
+            <label for="sniper-list-enabled">Watch every item automatically</label>
+          </div>
+          <div class="explain">
+            Scans every item on every EU realm as new auction data lands, and messages you when
+            one is worth <strong>2,000g+</strong> (TSM average) and listed at <strong>under 10%</strong> of that.
+            Skips known decoys and shared-appearance transmog; mounts, pets and recipes still come through.
+            Max 10 per scan, same item at most every 4 hours.
+          </div>
+          <div class="error" id="sniper-list-error"></div>
+          <div class="status-msg" id="sniper-list-status"></div>
         </div>
-        <div class="error" id="tsm-error"></div>
-        <div class="import-result" id="tsm-result"></div>
+
+        <div class="card">
+          <h3>Your items</h3>
+          <div class="explain">Watch a specific item and name your own price. Shown in the table.</div>
+          <div class="row">
+            <div class="field grow">
+              <label for="add-item-id">Item ID</label>
+              <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
+            </div>
+            <div class="field grow">
+              <label for="add-trigger">Trigger price (g)</label>
+              <input type="number" id="add-trigger" min="0.01" step="0.01" placeholder="e.g. 50" required>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button id="add-item-btn">Add item</button>
+          </div>
+          <div class="error" id="add-item-error"></div>
+
+          <div class="sub-divider">Or import a TSM group<span class="info-icon" tabindex="0">?<span class="info-tooltip">Right-click a group in TSM &rarr; Export, then paste the string here. Items arrive without a trigger price &mdash; set one per item in the table.</span></span></div>
+          <textarea id="tsm-export" placeholder="Paste a TSM group export string..."></textarea>
+          <div class="card-actions">
+            <button id="tsm-import-btn" class="secondary">Import group</button>
+          </div>
+          <div class="error" id="tsm-error"></div>
+          <div class="import-result" id="tsm-result"></div>
+        </div>
       </div>
     </div>
 
@@ -273,7 +325,7 @@
         <div class="skeleton-row"></div>
         <div class="skeleton-row"></div>
       </div>
-      <div id="items-empty" class="empty-state" style="display:none;">No items watched yet.</div>
+      <div id="items-empty" class="empty-state" style="display:none;">Nothing watched yet. Add an item ID or import a TSM group to start.</div>
       <table id="items-table" style="display:none;">
         <thead><tr><th>Item</th><th>Group</th><th>Trigger price</th><th></th></tr></thead>
         <tbody id="items-body"></tbody>
@@ -326,6 +378,7 @@ async function loadWatchlist() {
   const liveIds = new Set(currentItems.map(i => i.id));
   for (const id of pendingChanges.keys()) if (!liveIds.has(id)) pendingChanges.delete(id);
   $("webhook-url").value = data.discord_webhook_url || "";
+  $("sniper-list-enabled").checked = !!data.default_sniper_list_enabled;
   $("item-cap").textContent = data.max_items;
   renderItems();
 }
@@ -476,6 +529,30 @@ async function saveWebhook() {
   setTimeout(() => { status.textContent = ""; }, 2500);
 }
 
+async function saveSniperList() {
+  const err = $("sniper-list-error");
+  const status = $("sniper-list-status");
+  err.textContent = "";
+  status.textContent = "";
+  const enabled = $("sniper-list-enabled").checked;
+  const r = await fetch("/api/watchlist/default-sniper-list", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || "Couldn't save that setting.";
+    // Put the box back where it was, so what's on screen keeps matching
+    // what's actually stored -- a checkbox that silently disagrees with
+    // the server is worse than the error message.
+    $("sniper-list-enabled").checked = !enabled;
+    return;
+  }
+  status.textContent = enabled ? "Enabled." : "Disabled.";
+  setTimeout(() => { status.textContent = ""; }, 2500);
+}
+
 async function importTsmGroup() {
   const err = $("tsm-error");
   const result = $("tsm-result");
@@ -520,6 +597,10 @@ function showLoggedOut() {
 
 $("add-item-btn").addEventListener("click", addItem);
 $("webhook-save").addEventListener("click", saveWebhook);
+// Saves on toggle rather than needing a separate button -- it's one
+// boolean, and the Save button next to the webhook field belongs to the
+// webhook URL, not to this.
+$("sniper-list-enabled").addEventListener("change", saveSniperList);
 $("tsm-import-btn").addEventListener("click", importTsmGroup);
 $("save-changes-btn").addEventListener("click", saveChanges);
 

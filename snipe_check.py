@@ -261,17 +261,71 @@ CURATED_SUS_ITEM_IDS = (CLASS_STARTER_ARMOR_ITEM_IDS | SLITHERSHELL_ARMOR_ITEM_I
                         | BLACK_TOOTH_GRUNT_ARMOR_ITEM_IDS)
 
 
-def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None) -> bool:
+# Blizzard's own "Junk" category -- item_class 15 (Miscellaneous),
+# item_subclass 0. Added 2026-08-05 (human request, from a real Watchlist
+# Discord message delivering "Undelivered Love Letter", item 67386:
+# "junk items such as ... never"). Confirmed live rather than assumed:
+# 67386 is class=15(Miscellaneous) subclass=0(Junk) quality=Poor. This is
+# Blizzard's own classification, not an ilvl/quality heuristic of ours,
+# which is why it's expressed as the exact (class, subclass) pair.
+#
+# Deliberately subclass-specific, not "all of class 15": mounts are class
+# 15 subclass 5 (already documented in CLASS_BUCKET_RULES above), so a
+# class-only rule would silently swallow every mount -- exactly the
+# category the human asked to keep.
+#
+# Recipes are class 9, untouched by this -- confirmed live on the four
+# recipe/technique/pattern/schematic items from the same Discord batch,
+# which the human did NOT object to.
+JUNK_CLASS_SUBCLASS = (15, 0)
+
+
+def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None,
+                item_class: int | None = None, item_subclass: int | None = None) -> bool:
     """True for a "sus" (suspect) item worth a second look before trusting a
     "100% discount" snipe: an old neck/ring/trinket item (see
     LEGACY_JEWELRY_ILVL_MAX's comment for the live-verified examples and the
     twink-market caveat) or one of the curated known-junk item ids (see
     CURATED_SUS_ITEM_IDS's comment -- currently the class-starter armor
-    pieces and the Slithershell/Black Tooth Grunt's leveling sets). None-safe: a caged pet or
+    pieces and the Slithershell/Black Tooth Grunt's leveling sets), or a
+    profession tool/accessory. None-safe: a caged pet or
     any item NameCache couldn't resolve yields inventory_type=None/
     base_level=None here, correctly returning False rather than raising --
-    same defensive pattern NON_TRANSMOG_INVENTORY_TYPES's callers use."""
+    same defensive pattern NON_TRANSMOG_INVENTORY_TYPES's callers use.
+
+    Profession tools/gear added 2026-08-05 (human request, from a real
+    Watchlist Discord message: "Burnt Rolling Pin", a PROFESSION_TOOL, was
+    delivered as a find -- "should never be sent/showed"). Deliberately
+    placed *here* rather than as a second filter in each caller, because
+    this one function is what both the dashboard's "Hide flagged" checkbox
+    and watchlist.py's standing rule already consult -- the human asked for
+    it in "both backend and filter version (frontend)", and one shared
+    predicate is how that stays true without two copies drifting.
+
+    Note this is a **different** rule from NON_TRANSMOG_INVENTORY_TYPES'
+    existing use in _filter_by_appearance(), even though it reads the same
+    set: there it means "not part of the visible paperdoll system, so it
+    can't count as a unique look", here it means "not worth surfacing at
+    all". Same set, two independent reasons -- if one reason ever changes,
+    they need separating rather than one edit serving both.
+
+    Unlike the jewelry rule this is **not** ilvl-gated: the reported case
+    sat at base_level 486 (confirmed live), i.e. current-expansion rather
+    than legacy, so an ilvl cutoff would not have caught it.
+
+    item_class/item_subclass (added 2026-08-05, same session) carry
+    Blizzard's own Junk classification -- see JUNK_CLASS_SUBCLASS above.
+    Both optional so every existing call site keeps compiling and keeps its
+    previous behavior; passing neither just means that one rule doesn't
+    apply."""
     if item_id in CURATED_SUS_ITEM_IDS:
+        return True
+    if inventory_type in NON_TRANSMOG_INVENTORY_TYPES:
+        return True
+    # Both default to None so existing callers keep working unchanged; a
+    # caller that can't resolve the class simply doesn't get this rule,
+    # rather than getting a wrong answer from a half-known pair.
+    if (item_class, item_subclass) == JUNK_CLASS_SUBCLASS:
         return True
     return (inventory_type in LEGACY_JEWELRY_INVENTORY_TYPES
             and base_level is not None

@@ -127,6 +127,29 @@ def listing_row(cr, item_id, buyout, auction_id, pet_species_id=None):
     }
 
 
+def embed_of(payload):
+    """The single embed from a webhook payload. Notifications moved from a
+    run-on `content` string to a Discord embed 2026-08-05 (human request
+    with a real screenshot) -- these helpers keep the assertions reading in
+    terms of what a user actually sees rather than payload plumbing."""
+    return payload["embeds"][0]
+
+
+def embed_field(payload, name):
+    for f in embed_of(payload)["fields"]:
+        if f["name"] == name:
+            return f["value"]
+    return None
+
+
+def embed_text(payload):
+    """Every rendered string in the embed, joined -- for assertions that
+    only care that a fact is present somewhere the reader can see it."""
+    e = embed_of(payload)
+    parts = [e.get("title", "")] + [f'{f["name"]} {f["value"]}' for f in e["fields"]]
+    return " | ".join(parts)
+
+
 # ---------------------------------------------------------------- CRUD ----
 
 def test_list_watchlist_empty_by_default():
@@ -360,11 +383,13 @@ def test_cannot_touch_another_users_item():
 # this reason). So these tests build a real, committed User row directly
 # and point current_subscribed_user at it instead of FAKE_USER.
 
-async def _make_real_user(session_factory, discord_webhook_url=None):
+async def _make_real_user(session_factory, discord_webhook_url=None,
+                          default_sniper_list_enabled=True):
     async with session_factory() as session:
         user = User(email=f"real-{uuid.uuid4()}@example.com", hashed_password="x",
                    is_active=True, is_superuser=False, is_verified=True,
-                   subscription_status="active", discord_webhook_url=discord_webhook_url)
+                   subscription_status="active", discord_webhook_url=discord_webhook_url,
+                   default_sniper_list_enabled=default_sniper_list_enabled)
         session.add(user)
         await session.commit()
         await session.refresh(user)
@@ -380,8 +405,9 @@ def real_user(bypass_get_async_session):
     section docstring above)."""
     session_factory = bypass_get_async_session
 
-    def _factory(discord_webhook_url=None):
-        user = asyncio.run(_make_real_user(session_factory, discord_webhook_url))
+    def _factory(discord_webhook_url=None, default_sniper_list_enabled=True):
+        user = asyncio.run(_make_real_user(session_factory, discord_webhook_url,
+                                           default_sniper_list_enabled))
         dashboard.app.dependency_overrides[auth.current_subscribed_user] = lambda: user
         return user
     return _factory
@@ -404,7 +430,7 @@ def test_check_triggers_notifies_when_price_clears_trigger(listings_dir, real_us
     assert result["watched"] == 1
     assert result["notified"] == 1
     assert len(posted) == 1
-    assert "5.00g" in posted[0][1]["content"] or "5.0" in posted[0][1]["content"]
+    assert "5.00g" in embed_field(posted[0][1], "Price")
 
 
 async def _add_wow_account_realm(session_factory, owner_id, label, cr_id, realm_name=None):
@@ -432,7 +458,7 @@ def test_check_triggers_notification_names_the_registered_wow_account(listings_d
                         lambda url, json, timeout: posted.append((url, json)))
 
     watchlist.check_triggers()
-    assert "log in on **Main**" in posted[0][1]["content"]
+    assert embed_field(posted[0][1], "Log in on") == "Main"
 
 
 def test_check_triggers_notification_names_every_matching_wow_account(listings_dir, real_user, monkeypatch,
@@ -455,7 +481,7 @@ def test_check_triggers_notification_names_every_matching_wow_account(listings_d
                         lambda url, json, timeout: posted.append((url, json)))
 
     watchlist.check_triggers()
-    assert "log in on **Main**, **Alt**" in posted[0][1]["content"]
+    assert embed_field(posted[0][1], "Log in on") == "Main, Alt"
 
 
 def test_check_triggers_notification_shows_the_specific_realm_name_registered(listings_dir, real_user, monkeypatch,
@@ -478,7 +504,7 @@ def test_check_triggers_notification_shows_the_specific_realm_name_registered(li
                         lambda url, json, timeout: posted.append((url, json)))
 
     watchlist.check_triggers()
-    assert "log in on **Main** (Zul'jin)" in posted[0][1]["content"]
+    assert embed_field(posted[0][1], "Log in on") == "Main (Zul'jin)"
 
 
 def test_check_triggers_notification_omits_account_note_when_none_registered(listings_dir, real_user, monkeypatch):
@@ -495,7 +521,7 @@ def test_check_triggers_notification_omits_account_note_when_none_registered(lis
                         lambda url, json, timeout: posted.append((url, json)))
 
     watchlist.check_triggers()
-    assert "log in on" not in posted[0][1]["content"]
+    assert embed_field(posted[0][1], "Log in on") is None
 
 
 def test_check_triggers_notification_lists_every_connected_realm_member_name(listings_dir, real_user, monkeypatch):
@@ -515,9 +541,9 @@ def test_check_triggers_notification_lists_every_connected_realm_member_name(lis
                         lambda url, json, timeout: posted.append((url, json)))
 
     watchlist.check_triggers()
-    content = posted[0][1]["content"]
-    assert "Zul'jin / Sanguino" in content
-    assert "(connected realm)" in content
+    realm = embed_field(posted[0][1], "Realm")
+    assert "Zul'jin / Sanguino" in realm
+    assert "(connected realm)" in realm
 
 
 def test_check_triggers_does_not_notify_above_trigger(listings_dir, real_user, monkeypatch):
@@ -663,9 +689,18 @@ class FakeAppearances:
 
 
 class FakeNames:
-    def __init__(self, inventory_types=None, base_levels=None):
+    def __init__(self, inventory_types=None, base_levels=None,
+                 item_classes=None, item_subclasses=None):
         self._inv = inventory_types or {}
         self._base = base_levels or {}
+        self._class = item_classes or {}
+        self._subclass = item_subclasses or {}
+
+    def item_class(self, item_id):
+        return self._class.get(item_id)
+
+    def item_subclass(self, item_id):
+        return self._subclass.get(item_id)
 
     def get(self, item_id, pet_species_id=None):
         return f"Item {item_id}"
@@ -684,13 +719,15 @@ class FakeNames:
 def rule_caches(monkeypatch):
     """Stubs the three caches _rule_scan() reads. Returns a setter so each
     test states only the data it cares about."""
-    def _configure(avgs=None, sources=None, inventory_types=None, base_levels=None):
+    def _configure(avgs=None, sources=None, inventory_types=None, base_levels=None,
+                   item_classes=None, item_subclasses=None):
         monkeypatch.setattr(watchlist.tsm, "SaleRateCache",
                             lambda: FakeSaleRates(avgs or {}))
         monkeypatch.setattr(watchlist, "AppearanceCache",
                             lambda: FakeAppearances(sources or {}))
         monkeypatch.setattr(watchlist, "NameCache",
-                            lambda: FakeNames(inventory_types, base_levels))
+                            lambda: FakeNames(inventory_types, base_levels,
+                                              item_classes, item_subclasses))
     return _configure
 
 
@@ -706,13 +743,16 @@ def write_listings(listings_dir, rows):
                        listings_dir / f"{cr}.parquet")
 
 
-def test_rule_candidates_only_returns_items_under_the_buy_ceiling(listings_dir):
+def test_rule_candidates_returns_every_item_regardless_of_price(listings_dir):
+    """The buy ceiling became per-item when it started depending on the
+    item's TSM sale average, so it deliberately no longer lives in this
+    query -- _rule_scan() applies it after the TSM lookup instead."""
     write_listings(listings_dir, [
-        listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1),    # under 100g
-        listing_row(cr=2, item_id=222, buyout=150 * G, auction_id=2),   # over  100g
+        listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1),
+        listing_row(cr=2, item_id=222, buyout=150_000 * G, auction_id=2),
     ])
     got = {c["item_id"] for c in watchlist._rule_candidates()}
-    assert got == {111}
+    assert got == {111, 222}
 
 
 def test_rule_candidates_uses_unit_price_not_stack_price(listings_dir):
@@ -727,14 +767,10 @@ def test_rule_candidates_uses_unit_price_not_stack_price(listings_dir):
     assert cands[0]["buy_copper"] == 50 * G
 
 
-def test_rule_candidates_cluster_uses_the_five_cheapest_other_realms(listings_dir, monkeypatch):
+def test_rule_candidates_cluster_uses_the_five_cheapest_other_realms(listings_dir):
     """Real vector, measured live 2026-08-05: item 204925's per-realm floors
     across EU. Cheapest realm 8,496g, next five 20,000/29,701/29,999/
     50,000/59,999 -> cluster median 29,999g."""
-    # The real floors are far above the production 100g ceiling, which is a
-    # separate filter from the cluster maths this test is about -- raise it
-    # so the real numbers can be used rather than inventing small ones.
-    monkeypatch.setattr(watchlist, "RULE_MAX_BUY_COPPER", 1_000_000 * G)
     floors_g = [8_496, 20_000, 29_701, 29_999, 50_000, 59_999, 65_000, 90_001]
     write_listings(listings_dir, [
         listing_row(cr=i + 1, item_id=204925, buyout=f * G, auction_id=i + 1)
@@ -795,10 +831,63 @@ def test_rule_scan_skips_items_with_no_tsm_sale_average(listings_dir, rule_cache
     assert watchlist._rule_scan() == []
 
 
-def test_rule_scan_skips_items_below_the_sale_average_floor(listings_dir, rule_caches):
-    rule_caches(avgs={111: 2_999})
-    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+def test_rule_scan_ignores_items_under_the_minimum_sale_average(listings_dir, rule_caches):
+    """Under 2,000g sale average the item is ignored **however cheap it is**.
+    This is the clause that stops the rule flooding: an intermediate version
+    that capped these at a flat 100g instead of rejecting them produced
+    6,580 hits against the live sweep, almost all sub-1g trade goods."""
+    rule_caches(avgs={111: 1_999})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=1, auction_id=1)])
     assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_minimum_sale_average_boundary_is_inclusive(listings_dir, rule_caches):
+    rule_caches(avgs={111: 2_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=199 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+def test_rule_scan_high_sale_avg_items_use_the_ten_percent_cap(listings_dir, rule_caches):
+    """Human's spec: "if item is over 5k sellavg, it can cost up to 500"."""
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=499 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+def test_rule_scan_high_sale_avg_item_over_ten_percent_is_dropped(listings_dir, rule_caches):
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=501 * G, auction_id=1)])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_ceiling_scales_with_the_sale_average(listings_dir, rule_caches):
+    """A 50,000g item qualifies up to 5,000g -- the whole point of making the
+    ceiling proportional, since the old flat 100g hid exactly these."""
+    rule_caches(avgs={111: 50_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=4_999 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+def test_rule_max_buy_is_a_flat_ten_percent():
+    for avg_g, cap_g in ((2_000, 200), (5_000, 500), (11_111, 1_111.1), (50_000, 5_000)):
+        assert watchlist._rule_max_buy_copper(avg_g * G) == pytest.approx(cap_g * G)
+
+
+def test_the_real_item_that_missed_the_old_flat_ceiling_now_qualifies(listings_dir, rule_caches):
+    """Item 29726 "Pattern: Hood of Primal Life", real live figures 2026-08-05
+    (human found it by hand and asked why it wasn't sent): TSM avg 11,111g,
+    cheapest realm 100g, next realms 9,000g / 10,001g / 16,098g / 16,100g /
+    16,100g. It missed the old flat 100g ceiling by a single copper -- 100g
+    is not < 100g -- and clears the 10% one (1,111g) comfortably."""
+    rule_caches(avgs={29726: 11_111})
+    floors_g = [100, 9_000, 10_001, 16_098, 16_100, 16_100]
+    write_listings(listings_dir, [
+        listing_row(cr=i + 1, item_id=29726, buyout=f * G, auction_id=i + 1)
+        for i, f in enumerate(floors_g)
+    ])
+    hits = watchlist._rule_scan()
+    assert [h["item_id"] for h in hits] == [29726]
+    assert hits[0]["buy_copper"] == 100 * G
 
 
 def test_rule_scan_keeps_a_cheap_high_value_item(listings_dir, rule_caches):
@@ -854,14 +943,45 @@ def test_rule_scan_keeps_a_non_transmog_item_without_applying_the_unique_test(
     assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
 
 
-def test_rule_scan_treats_profession_gear_as_not_transmog(listings_dir, rule_caches):
-    """A profession tool carries an appearance but isn't part of the visible
-    paperdoll system, so the unique test doesn't apply -- it passes even
-    with several appearance sources."""
+def test_rule_scan_drops_profession_tools_entirely(listings_dir, rule_caches):
+    """Human's call 2026-08-05, from a real delivered message ("Burnt Rolling
+    Pin"): profession tools/gear "should never be sent/showed". They now
+    fail is_sus_item() outright, so the earlier behavior -- passing because
+    they aren't transmog and so escape the uniqueness test -- is gone."""
     rule_caches(avgs={111: 5_000}, sources={111: 7},
                 inventory_types={111: "PROFESSION_TOOL"})
     write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_drops_blizzard_junk_class_items(listings_dir, rule_caches):
+    """Human's call 2026-08-05, from a real delivered message ("Undelivered
+    Love Letter", item 67386): junk "never". Uses Blizzard's own
+    class 15 / subclass 0 = Junk classification, confirmed live."""
+    rule_caches(avgs={67386: 5_000}, inventory_types={67386: "NON_EQUIP"},
+                item_classes={67386: 15}, item_subclasses={67386: 0})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=67386, buyout=50 * G, auction_id=1)])
+    assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_keeps_mounts_which_share_junks_item_class(listings_dir, rule_caches):
+    """Mounts are class 15 subclass 5 -- the Junk rule is subclass-specific
+    precisely so a class-only check can't swallow the category the human
+    explicitly asked to keep ("we still want mounts/pets/recipes")."""
+    rule_caches(avgs={111: 5_000}, inventory_types={111: "NON_EQUIP"},
+                item_classes={111: 15}, item_subclasses={111: 5})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
     assert [h["item_id"] for h in watchlist._rule_scan()] == [111]
+
+
+def test_rule_scan_keeps_recipes(listings_dir, rule_caches):
+    """Recipes are class 9, untouched by the Junk rule -- the four
+    recipe/technique/pattern/schematic items in the same real Discord batch
+    were not objected to."""
+    rule_caches(avgs={11168: 5_000}, inventory_types={11168: "NON_EQUIP"},
+                item_classes={11168: 9}, item_subclasses={11168: 8})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=11168, buyout=50 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [11168]
 
 
 def test_rule_scan_matches_caged_pets_by_species(listings_dir, rule_caches):
@@ -910,8 +1030,10 @@ def test_rule_notifies_a_superuser(listings_dir, rule_caches, superuser, monkeyp
     result = watchlist.check_triggers()
     assert result["rule_notified"] == 1
     assert len(posted) == 1
-    assert "50.00g" in posted[0]["content"]
-    assert "5,000g" in posted[0]["content"]
+    assert embed_field(posted[0], "Price") == "**50.00g**"
+    assert embed_field(posted[0], "TSM sale avg") == "5,000g"
+    assert embed_field(posted[0], "Multiple") == "100x"
+    assert embed_of(posted[0])["url"] == "https://undermine.exchange/#eu-realm-1/111"
 
 
 def test_rule_notifies_any_active_subscriber(listings_dir, rule_caches, real_user,
@@ -1033,4 +1155,87 @@ def test_rule_failure_does_not_break_the_per_item_trigger_path(listings_dir, rea
     result = watchlist.check_triggers()
     assert result["notified"] == 1      # per-item path unaffected
     assert result.get("rule_error") is True
+    assert len(posted) == 1
+
+
+# ---- "Default sniper list" per-user toggle (2026-08-05) ----
+
+def test_default_sniper_list_is_enabled_by_default(bypass_get_async_session):
+    """Defaults ON, deliberately: the standing rule shipped earlier the same
+    day already delivering to every subscriber with a webhook, so defaulting
+    to off would silently switch a live feature off for everyone.
+
+    Asserted against a **persisted** row, not the module-level FAKE_USER --
+    SQLAlchemy applies a column default on INSERT, so an object merely
+    constructed in Python still has None there and would prove nothing."""
+    async def _make():
+        async with bypass_get_async_session() as session:
+            user = User(email=f"dflt-{uuid.uuid4()}@example.com", hashed_password="x",
+                        is_active=True, is_superuser=False, is_verified=True,
+                        subscription_status="active")
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            return user.default_sniper_list_enabled
+    assert asyncio.run(_make()) is True
+
+
+def test_default_sniper_list_can_be_toggled_off_and_back_on(real_user):
+    user = real_user()
+    r = client.patch("/api/watchlist/default-sniper-list", json={"enabled": False})
+    assert r.status_code == 200
+    assert r.json()["default_sniper_list_enabled"] is False
+    assert client.get("/api/watchlist").json()["default_sniper_list_enabled"] is False
+
+    r = client.patch("/api/watchlist/default-sniper-list", json={"enabled": True})
+    assert r.status_code == 200
+    assert client.get("/api/watchlist").json()["default_sniper_list_enabled"] is True
+    assert user.default_sniper_list_enabled is True
+
+
+def test_default_sniper_list_route_is_not_swallowed_by_the_item_id_route():
+    """Route-order regression guard, the same one /discord-webhook needed:
+    a "/{item_id}: int" pattern registered first would turn this path into a
+    422 int-parse failure instead of reaching the handler."""
+    r = client.patch("/api/watchlist/default-sniper-list", json={"enabled": True})
+    assert r.status_code == 200
+
+
+def test_rule_skips_a_subscriber_who_turned_the_list_off(listings_dir, rule_caches,
+                                                         real_user, monkeypatch,
+                                                         stub_realm_lookup):
+    """The toggle has to gate delivery, not just render in the UI."""
+    # Seeded at creation, not via the PATCH route -- see real_user()'s
+    # docstring: in this bypassed-session setup the route mutates a detached
+    # object, so check_triggers() would still read the old value from the DB
+    # and the test would pass for the wrong reason.
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a",
+              default_sniper_list_enabled=False)
+    rule_caches(avgs={111: 5_000})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    result = watchlist.check_triggers()
+    assert result["rule_recipients"] == 0
+    assert result["rule_notified"] == 0
+    assert posted == []
+
+
+def test_turning_the_list_off_leaves_per_item_triggers_working(listings_dir, real_user,
+                                                                monkeypatch, stub_realm_lookup):
+    """The toggle is scoped to the standing rule only -- a user must be able
+    to keep their own watched items firing while turning the rule off."""
+    real_user(discord_webhook_url="https://discord.com/api/webhooks/1/a",
+              default_sniper_list_enabled=False)
+    client.post("/api/watchlist", json={"item_id": 555, "trigger_price_g": 10})
+    write_listings(listings_dir, [listing_row(cr=99, item_id=555, buyout=5 * G, auction_id=1)])
+    posted = []
+    monkeypatch.setattr(watchlist.requests, "post",
+                        lambda url, json, timeout: posted.append(json))
+
+    result = watchlist.check_triggers()
+    assert result["notified"] == 1        # per-item path still fires
+    assert result["rule_notified"] == 0   # standing rule does not
     assert len(posted) == 1
