@@ -1048,7 +1048,13 @@ def test_rule_notifies_a_superuser(listings_dir, rule_caches, superuser, monkeyp
     assert result["rule_notified"] == 1
     assert len(posted) == 1
     embed = embed_of(posted[0])
-    assert embed["title"] == "1 snipe"
+    # Title carries a UTC date+time so a stack of messages is scannable;
+    # asserted by shape rather than a frozen string, since the value is
+    # "now" and pinning it would make the test fail at midnight.
+    assert embed["title"].startswith("1 snipe · ")
+    assert embed["title"].endswith(" UTC")
+    # Discord renders this in the reader's own timezone.
+    assert embed["timestamp"].endswith("+00:00")
     # One line per find, carrying only what the human asked for: name (as
     # the undermine link), buy price, sale average, realm.
     assert embed["description"] == (
@@ -1154,7 +1160,7 @@ def test_rule_caps_notifications_per_cycle(listings_dir, rule_caches, superuser,
     # One message, not one per find (2026-08-05) -- the cap now bounds how
     # many *lines* it carries, not how many messages get sent.
     assert len(posted) == 1
-    assert embed_of(posted[0])["title"] == "2 snipes"
+    assert embed_of(posted[0])["title"].startswith("2 snipes · ")
     assert len(embed_of(posted[0])["description"].splitlines()) == 2
 
 

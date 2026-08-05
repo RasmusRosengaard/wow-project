@@ -826,10 +826,26 @@ def _rule_send_batch(webhook_url: str, cands: list[dict], name_cache: NameCache,
         if sum(len(x) + 1 for x in lines) + len(line) > EMBED_DESCRIPTION_MAX:
             break
         lines.append(line)
+    # Date + time in the title (2026-08-05, human request) so a stack of
+    # messages in a busy channel is scannable without expanding any of them.
+    #
+    # Spelled UTC explicitly rather than using the server's local zone,
+    # which is whatever the Railway container happens to be -- an unlabelled
+    # time from a server is worse than no time at all. `%d %b`, not `%-d`:
+    # the no-pad flag is glibc-only and raises ValueError on Windows, where
+    # this project's tests actually run.
+    #
+    # The embed also carries a real `timestamp`, which Discord renders in
+    # the *reader's* own timezone next to the footer -- so between the two
+    # there's an unambiguous absolute time and a local one, without this
+    # code having to guess where the reader is.
+    now = datetime.now(timezone.utc)
     payload = {"embeds": [{
-        "title": f"{len(lines)} snipe{'' if len(lines) == 1 else 's'}",
+        "title": (f"{len(lines)} snipe{'' if len(lines) == 1 else 's'}"
+                  f" · {now.strftime('%d %b %H:%M')} UTC"),
         "color": EMBED_COLOR_RULE,
         "description": "\n".join(lines),
+        "timestamp": now.isoformat(),
         "footer": {"text": "Default sniper list"},
     }]}
     try:
