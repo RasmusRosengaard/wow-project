@@ -77,10 +77,19 @@
      Watched Items given the rest of the width on the right (2026-08-02,
      human request: "utilize the screen" -- a wide table benefits from
      room far more than a handful of compact form fields do). */
-  .page-grid { display: grid; grid-template-columns: 400px 1fr; gap: 1.5rem; align-items: start; }
-  @media (max-width: 1000px) { .page-grid { grid-template-columns: 1fr; } }
-  .left-col { display: flex; flex-direction: column; gap: 1.5rem; min-width: 0; }
-  .right-col { min-width: 0; }
+  /* Settings across the top, items full width below (2026-08-05). The
+     previous 400px rail made every label and explanation wrap two or three
+     times in a column narrower than the text needed, while the table --
+     the thing the page is actually for -- sat in the smaller share of the
+     screen. auto-fit means the strip collapses to two cards then one as
+     the window narrows, with no separate breakpoint to keep in sync. */
+  .page-grid { display: flex; flex-direction: column; gap: 1.5rem; }
+  .settings-strip {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.25rem; align-items: start;
+  }
+  .settings-strip > .card { height: 100%; }
+  .items-col { min-width: 0; }
   h2 { font-size: 1.1rem; margin: 0; font-weight: 800; letter-spacing: -0.01em; }
   h3 { font-size: 0.85rem; margin: 0; font-weight: 800; text-transform: uppercase; letter-spacing: 0.02em; color: var(--text-dim); }
   .card {
@@ -93,7 +102,10 @@
   .upsell a:hover { text-decoration: underline; }
 
   label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
-  input[type=text], input[type=number], textarea {
+  /* select included so it matches input height exactly -- .row aligns its
+     children on flex-end, so a shorter control drags its own label down
+     and the row reads as misaligned. */
+  input[type=text], input[type=number], textarea, .field select {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
     border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.85rem; font-family: inherit; width: 100%;
   }
@@ -189,8 +201,12 @@
   tr:last-child td { border-bottom: none; }
   .item-cell { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
   .item-icon { width: 26px; height: 26px; border-radius: 4px; flex-shrink: 0; border: 1px solid var(--hairline-strong); box-shadow: inset 0 0 0 3px var(--q, transparent); background: var(--paper); }
-  .item-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .item-label { font-size: 0.74rem; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+  /* No ellipsis clamp any more -- the table owns the full page width, so a
+     long item or connected-realm name has room to sit on one line instead
+     of being cut off mid-word. */
+  .item-name { font-weight: 600; }
+  .item-label { font-size: 0.74rem; color: var(--text-dim); }
+  th:first-child, td:first-child { width: 45%; }
   .trigger-cell { display: flex; align-items: center; gap: 0.4rem; }
   .trigger-cell input { width: 90px; }
   .trigger-cell .unit { font-size: 0.75rem; color: var(--text-dim); }
@@ -257,86 +273,77 @@
 
   <div id="app" style="display:none;">
    <div class="page-grid">
-    <div class="left-col">
-      <div class="rail-group">
-        <div class="rail-label">Delivery</div>
-        <div class="card">
-          <h3>Discord<span class="info-icon" tabindex="0">?<span class="info-tooltip">Everything on this page is delivered here. Create a webhook in your Discord server under Server Settings &rarr; Integrations &rarr; Webhooks, then paste its URL. Leave it empty to track items without any delivery.</span></span></h3>
-          <div class="field">
-            <label for="webhook-url">Webhook URL</label>
-            <input type="text" id="webhook-url" placeholder="https://discord.com/api/webhooks/...">
-          </div>
-          <div class="explain">Both sources below send here. Leave empty to track items silently.</div>
-          <div class="card-actions">
-            <button id="webhook-save">Save webhook</button>
-          </div>
-          <div class="error" id="webhook-error"></div>
-          <div class="status-msg" id="webhook-status"></div>
+    <div class="settings-strip">
+      <div class="card">
+        <h3>Discord<span class="info-icon" tabindex="0">?<span class="info-tooltip">Everything on this page is delivered here. Create a webhook in your Discord server under Server Settings &rarr; Integrations &rarr; Webhooks, then paste its URL. Leave it empty to track items without any delivery.</span></span></h3>
+        <div class="field">
+          <label for="webhook-url">Webhook URL</label>
+          <input type="text" id="webhook-url" placeholder="https://discord.com/api/webhooks/...">
         </div>
+        <div class="explain">Both sources below send here. Leave empty to track items silently.</div>
+        <div class="card-actions">
+          <button id="webhook-save">Save webhook</button>
+        </div>
+        <div class="error" id="webhook-error"></div>
+        <div class="status-msg" id="webhook-status"></div>
       </div>
-
-      <div class="rail-group">
-        <div class="rail-label">Sources</div>
-
-        <div class="card">
-          <h3>Default sniper list<span class="info-icon" tabindex="0">?<span class="info-tooltip">A standing rule over every item on every EU realm, not just the ones you list below.</span></span></h3>
-          <div class="toggle-row">
-            <input type="checkbox" id="sniper-list-enabled">
-            <label for="sniper-list-enabled">Watch every item automatically</label>
-          </div>
-          <div class="field" style="margin-top:0.7rem;">
-            <label for="sniper-buy-percent">Alert me under</label>
-            <select id="sniper-buy-percent"></select>
-          </div>
-          <div class="explain">
-            Alerts you when any EU listing drops under <strong><span id="sniper-pct-label">10</span>%</strong>
-            of its TSM sale average, from the next auction data onward.
-          </div>
-          <div class="error" id="sniper-list-error"></div>
-          <div class="status-msg" id="sniper-list-status"></div>
+      <div class="card">
+        <h3>Default sniper list<span class="info-icon" tabindex="0">?<span class="info-tooltip">A standing rule over every item on every EU realm, not just the ones you list below.</span></span></h3>
+        <div class="toggle-row">
+          <input type="checkbox" id="sniper-list-enabled">
+          <label for="sniper-list-enabled">Watch every item automatically</label>
         </div>
-
-        <div class="card">
-          <h3>Your items</h3>
-          <div class="explain">Watch a specific item and name your own price. Shown in the table.</div>
-          <div class="row">
-            <div class="field grow">
-              <label for="add-item-id">Item ID</label>
-              <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
-            </div>
-            <div class="field grow">
-              <label for="add-trigger-mode">Alert when</label>
-              <select id="add-trigger-mode">
-                <option value="price">under a gold price</option>
-                <option value="percent">under % of sale average</option>
-              </select>
-            </div>
-            <div class="field grow" id="add-trigger-price-field">
-              <label for="add-trigger">Trigger price (g)</label>
-              <input type="number" id="add-trigger" min="0.01" step="0.01" placeholder="e.g. 50">
-            </div>
-            <div class="field grow" id="add-trigger-percent-field" style="display:none;">
-              <label for="add-trigger-percent">Percentage</label>
-              <select id="add-trigger-percent"></select>
-            </div>
-          </div>
-          <div class="card-actions">
-            <button id="add-item-btn">Add item</button>
-          </div>
-          <div class="error" id="add-item-error"></div>
-
-          <div class="sub-divider">Or import a TSM group<span class="info-icon" tabindex="0">?<span class="info-tooltip">Right-click a group in TSM &rarr; Export, then paste the string here. Items arrive without a trigger price &mdash; set one per item in the table.</span></span></div>
-          <textarea id="tsm-export" placeholder="Paste a TSM group export string..."></textarea>
-          <div class="card-actions">
-            <button id="tsm-import-btn" class="secondary">Import group</button>
-          </div>
-          <div class="error" id="tsm-error"></div>
-          <div class="import-result" id="tsm-result"></div>
+        <div class="field" style="margin-top:0.7rem;">
+          <label for="sniper-buy-percent">Alert me under</label>
+          <select id="sniper-buy-percent"></select>
         </div>
+        <div class="explain">
+          Alerts you when any EU listing drops under <strong><span id="sniper-pct-label">10</span>%</strong>
+          of its TSM sale average, from the next auction data onward.
+        </div>
+        <div class="error" id="sniper-list-error"></div>
+        <div class="status-msg" id="sniper-list-status"></div>
+      </div>
+      <div class="card">
+        <h3>Your items</h3>
+        <div class="explain">Watch a specific item and name your own price. Shown in the table.</div>
+        <div class="row">
+          <div class="field grow">
+            <label for="add-item-id">Item ID</label>
+            <input type="number" id="add-item-id" min="1" placeholder="e.g. 190819">
+          </div>
+          <div class="field grow">
+            <label for="add-trigger-mode">Alert when</label>
+            <select id="add-trigger-mode">
+              <option value="price">under a gold price</option>
+              <option value="percent">under % of sale average</option>
+            </select>
+          </div>
+          <div class="field grow" id="add-trigger-price-field">
+            <label for="add-trigger">Trigger price (g)</label>
+            <input type="number" id="add-trigger" min="0.01" step="0.01" placeholder="e.g. 50">
+          </div>
+          <div class="field grow" id="add-trigger-percent-field" style="display:none;">
+            <label for="add-trigger-percent">Percentage</label>
+            <select id="add-trigger-percent"></select>
+          </div>
+        </div>
+        <div class="card-actions">
+          <button id="add-item-btn">Add item</button>
+        </div>
+        <div class="error" id="add-item-error"></div>
+
+        <div class="sub-divider">Or import a TSM group<span class="info-icon" tabindex="0">?<span class="info-tooltip">Right-click a group in TSM &rarr; Export, then paste the string here. Items arrive without a trigger price &mdash; set one per item in the table.</span></span></div>
+        <textarea id="tsm-export" placeholder="Paste a TSM group export string..."></textarea>
+        <div class="card-actions">
+          <button id="tsm-import-btn" class="secondary">Import group</button>
+        </div>
+        <div class="error" id="tsm-error"></div>
+        <div class="import-result" id="tsm-result"></div>
       </div>
     </div>
 
-    <div class="right-col">
+    <div class="items-col">
      <div class="card">
       <div class="row" style="justify-content: space-between;">
         <h3>Watched items (<span id="item-count">0</span> / <span id="item-cap">-</span>)</h3>
