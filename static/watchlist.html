@@ -163,6 +163,18 @@
                  border-top: 1px dashed var(--hairline-strong);
                  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
                  color: var(--text-dim); font-weight: 700; }
+  /* Unit switch, not an action: the row is always on one of two modes, so
+     both are shown with the active one marked, rather than a "use %" button
+     that reads as a verb and hides which mode you're currently in. */
+  .unit-toggle { display: inline-flex; border: 1px solid var(--hairline-strong); border-radius: 3px; overflow: hidden; }
+  .unit-toggle button {
+    background: transparent; color: var(--text-dim); border: none; border-radius: 0;
+    padding: 0.3rem 0.5rem; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em;
+    text-transform: none; cursor: pointer; min-width: 26px;
+  }
+  .unit-toggle button + button { border-left: 1px solid var(--hairline-strong); }
+  .unit-toggle button:hover:not(.on) { background: var(--paper); color: var(--ink); }
+  .unit-toggle button.on { background: var(--bullion); color: #fff; cursor: default; }
   .toggle-row { display: flex; align-items: flex-start; gap: 0.55rem; }
   .toggle-row input[type=checkbox] { margin-top: 0.15rem; flex-shrink: 0; }
   .toggle-row label { font-weight: 600; cursor: pointer; }
@@ -267,7 +279,7 @@
         <div class="rail-label">Sources</div>
 
         <div class="card">
-          <h3>Default sniper list<span class="info-icon" tabindex="0">?<span class="info-tooltip">A standing rule over every item on every EU realm, not just the ones listed below. An item qualifies when TSM's region-wide average sale price is at least 2,000g and the cheapest listing anywhere is under 10% of that &mdash; so a 5,000g item under 500g, a 50,000g item under 5,000g. Excluded: old low-ilvl necklaces/rings/trinkets, curated junk sets, profession tools, anything Blizzard classes as Junk, gear whose transmog appearance is shared with other items, and prices several other realms already list at (not a find, just the going rate).</span></span></h3>
+          <h3>Default sniper list<span class="info-icon" tabindex="0">?<span class="info-tooltip">A standing rule over every item on every EU realm, not just the ones you list below.</span></span></h3>
           <div class="toggle-row">
             <input type="checkbox" id="sniper-list-enabled">
             <label for="sniper-list-enabled">Watch every item automatically</label>
@@ -277,13 +289,8 @@
             <select id="sniper-buy-percent"></select>
           </div>
           <div class="explain">
-            Scans every item on every EU realm as new auction data lands, and messages you when
-            one is worth <strong>2,000g+</strong> (TSM average) and listed under
-            <strong><span id="sniper-pct-label">10</span>%</strong> of that.
-            Lower is stricter and quieter; higher finds more but closer to the going rate.
-            Skips known decoys and shared-appearance transmog; mounts, pets and recipes still come through.
-            Max 10 per scan, same item at most every 4 hours.
-            <em>Takes effect from the next auction data.</em>
+            Alerts you when any EU listing drops under <strong><span id="sniper-pct-label">10</span>%</strong>
+            of its TSM sale average, from the next auction data onward.
           </div>
           <div class="error" id="sniper-list-error"></div>
           <div class="status-msg" id="sniper-list-status"></div>
@@ -453,8 +460,14 @@ function renderItems() {
       ? `<select data-percent-input="${item.id}">${PERCENT_CHOICES.map(p =>
            `<option value="${p}"${p === item.trigger_percent ? " selected" : ""}>${p}%</option>`).join("")}
          </select>`
-      : `<input type="number" min="0" step="0.01" value="${triggerValue}" data-trigger-input="${item.id}" placeholder="none">
-         <span class="unit">g</span>`;
+      : `<input type="number" min="0" step="0.01" value="${triggerValue}" data-trigger-input="${item.id}" placeholder="none">`;
+    const unitToggle = `
+      <div class="unit-toggle" role="group" aria-label="Trigger unit">
+        <button type="button" class="${isPct ? "" : "on"}" data-mode="${item.id}" data-to="price"
+                aria-pressed="${!isPct}" title="Trigger on a gold price">g</button>
+        <button type="button" class="${isPct ? "on" : ""}" data-mode="${item.id}" data-to="percent"
+                aria-pressed="${isPct}" title="Trigger on a percentage of the TSM sale average">%</button>
+      </div>`;
     return `
       <tr data-item-id="${item.id}" class="${isDirty ? "dirty" : ""}">
         <td><div class="item-cell">${icon}<span class="item-name" title="${name}">${name}</span></div></td>
@@ -462,10 +475,7 @@ function renderItems() {
         <td>
           <div class="trigger-cell">
             ${triggerCell}
-            <button class="secondary" data-mode="${item.id}" data-to="${isPct ? "price" : "percent"}"
-                    title="Switch to ${isPct ? "a gold price" : "a percentage of the TSM sale average"}">
-              ${isPct ? "use g" : "use %"}
-            </button>
+            ${unitToggle}
           </div>
         </td>
         <td><button class="danger" data-remove="${item.id}">Remove</button></td>
@@ -678,7 +688,7 @@ $("add-trigger-mode").addEventListener("change", () => {
 // and a mode switch changes which number the row even has.
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-mode]");
-  if (!btn) return;
+  if (!btn || btn.classList.contains("on")) return;
   const id = Number(btn.dataset.mode);
   const body = btn.dataset.to === "percent"
     ? { trigger_percent: PERCENT_CHOICES[0] }
