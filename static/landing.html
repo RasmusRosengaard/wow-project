@@ -26,7 +26,6 @@
     --bullion-dim: #8a6624;
     --verified: #2f7d72;
     --alert: #b0392f;
-    --coin-gold: #d4af37; --coin-silver: #b7b7b7; --coin-copper: #b87333;
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
@@ -46,7 +45,6 @@
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
     margin: 0; background: var(--paper); color: var(--ink); min-height: 100vh;
   }
-  .mono, .money { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
   /* Hero headline only -- a serif, used with restraint, deliberately
      evoking a printed certificate/appraisal document (the same "validated
      data, not decoration" thesis the seal mark already carries elsewhere).
@@ -84,9 +82,14 @@
 
   main { max-width: 1400px; margin: 0 auto; padding: 0 1.5rem; }
 
+  /* Compact masthead. The hero used to carry a subheading, two CTAs and a
+     sample ledger table (all removed 2026-08-05, human request: the page
+     should lead with the actual product, not a preamble about it), so its
+     old 4.5rem/3.5rem padding now just left a large empty band above the
+     first feature row. */
   .hero {
     display: flex; flex-direction: column; align-items: center; text-align: center;
-    gap: 1.4rem; padding: 4.5rem 0 3.5rem;
+    gap: 0.9rem; padding: 3.2rem 0 0;
   }
   .eyebrow {
     font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
@@ -96,10 +99,6 @@
     font-size: clamp(2rem, 4.5vw, 3rem); font-weight: 700; margin: 0; line-height: 1.15;
     max-width: 720px;
   }
-  .hero .sub {
-    max-width: 560px; color: var(--text-dim); font-size: 1rem; line-height: 1.6; margin: 0;
-  }
-  .hero-ctas { display: flex; gap: 0.85rem; flex-wrap: wrap; justify-content: center; margin-top: 0.3rem; }
   .cta {
     display: inline-block; text-decoration: none; border-radius: 4px;
     padding: 0.75rem 1.4rem; font-weight: 700; text-transform: uppercase;
@@ -107,51 +106,82 @@
   }
   .cta.primary { background: var(--bullion); color: #fff; border-color: var(--bullion); }
   .cta.primary:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
-  .cta.secondary { background: transparent; color: var(--ink); border-color: var(--hairline-strong); }
-  .cta.secondary:hover { border-color: var(--ink); }
 
-  /* ---------- Signature: a real excerpt of the actual ledger table
-     (dashboard.html's own table/item-cell/item-icon/money/coin markup and
-     class names, reused verbatim) instead of a paraphrased mockup -- this
-     is what the tool actually looks like, not an illustration of it. ---------- */
-  .sample-wrap {
-    width: 100%; max-width: 820px; margin-top: 1rem; text-align: left;
+  /* ---------- "What you get": the three surfaces of the product, written
+     for someone who has never sniped before and has no list of items they
+     think are valuable. The whole point of the section is that they don't
+     need one. ---------- */
+  .tour { padding: 0 0 3.5rem; }
+  .tour-head { text-align: center; max-width: 660px; margin: 1.6rem auto 2.6rem; }
+  /* Sans, not the hero's serif: the serif is reserved for the one masthead
+     headline, and a second serif heading directly under it read as two
+     competing titles once the hero lost everything between them. */
+  .tour-head h2 {
+    font-weight: 700; font-size: clamp(1.15rem, 2vw, 1.4rem);
+    margin: 0 0 0.8rem; line-height: 1.3;
+  }
+  .tour-head p { margin: 0; color: var(--text-dim); font-size: 0.95rem; line-height: 1.6; }
+  .tour-head p b { color: var(--ink); }
+
+  /* Alternating text/screenshot rows. The screenshots are wide (a full
+     dashboard and a full watchlist), so they get the larger column and the
+     rows stack rather than sitting in a 3-up card grid, where they'd be too
+     small to read the columns being described. */
+  .tour-row {
+    display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: 2.2rem; align-items: center; margin-bottom: 3rem;
+  }
+  .tour-row.flip .tour-copy { order: 2; }
+  /* The screenshots are dense full-page captures -- at column width the
+     individual columns/labels the copy names aren't readable, so the whole
+     shot is a link to the full-size image. */
+  .shot-link { display: block; text-decoration: none; }
+  .tour-shot {
+    display: block; width: 100%; height: auto; border-radius: 8px;
+    border: 1px solid var(--hairline-strong); box-shadow: 0 12px 32px rgba(20,22,26,0.10);
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  :root[data-theme="dark"] .tour-shot { box-shadow: 0 12px 32px rgba(0,0,0,0.35); }
+  .shot-link:hover .tour-shot { border-color: var(--bullion); }
+  .shot-caption {
+    display: block; margin-top: 0.5rem; font-size: 0.68rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700;
+  }
+  .shot-link:hover .shot-caption { color: var(--bullion); }
+
+  /* The short product name IS the heading now (human, 2026-08-05) -- the
+     descriptive one-liners that used to sit here were saying what the .lede
+     below already says. */
+  .tour-copy h3 { margin: 0 0 0.6rem; font-size: 1.45rem; font-weight: 700; line-height: 1.25; }
+  .tour-copy .lede { margin: 0 0 1rem; color: var(--text-dim); font-size: 0.9rem; line-height: 1.6; }
+  .tour-copy ul, .tour-band ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.55rem; }
+  .tour-copy li, .tour-band li {
+    font-size: 0.85rem; line-height: 1.5; color: var(--ink);
+    padding-left: 1.1rem; position: relative;
+  }
+  .tour-copy li::before, .tour-band li::before {
+    content: ""; position: absolute; left: 0; top: 0.5em;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--bullion);
+  }
+  .tour-copy li b, .tour-band li b { font-weight: 700; }
+
+  /* Profile has no screenshot of its own -- it's a short setup step, not a
+     surface you spend time in, so it gets a single centred band instead of
+     a half-empty image row. */
+  .tour-band {
     background: var(--card); border: 1px solid var(--hairline); border-radius: 8px;
-    overflow: hidden; box-shadow: 0 12px 32px rgba(20,22,26,0.06);
+    padding: 1.6rem 1.8rem; max-width: 780px; margin: 0 auto;
   }
-  :root[data-theme="dark"] .sample-wrap { box-shadow: 0 12px 32px rgba(0,0,0,0.3); }
-  .sample-label {
-    font-size: 0.64rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--text-dim); padding: 0.8rem 1rem 0.6rem;
+  .tour-band h3 { margin: 0 0 0.6rem; font-size: 1.3rem; font-weight: 700; text-align: center; }
+  .tour-band .lede {
+    margin: 0 auto; color: var(--text-dim); font-size: 0.88rem; line-height: 1.6;
+    text-align: center; max-width: 560px;
   }
-  .sample-wrap table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
-  .sample-wrap th, .sample-wrap td { padding: 0.55rem 0.9rem; text-align: right; border-bottom: 1px solid var(--hairline); }
-  .sample-wrap th:first-child, .sample-wrap td:first-child,
-  .sample-wrap th:nth-child(2), .sample-wrap td:nth-child(2),
-  .sample-wrap th:nth-child(3), .sample-wrap td:nth-child(3) { text-align: left; }
-  .sample-wrap th {
-    color: var(--text-dim); font-weight: 700; white-space: nowrap;
-    text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.66rem;
-    border-bottom: 1px solid var(--hairline-strong);
+  .tour-foot {
+    margin-top: 2.4rem; text-align: center; display: flex; flex-direction: column;
+    align-items: center; gap: 0.9rem;
   }
-  .sample-wrap tbody tr:last-child td { border-bottom: none; }
-  .item-cell { display: flex; align-items: center; gap: 0.5rem; }
-  .item-icon {
-    width: 28px; height: 28px; border-radius: 4px; flex-shrink: 0;
-    border: 1px solid var(--hairline-strong); box-shadow: inset 0 0 0 3px var(--q, transparent);
-    background: linear-gradient(135deg, #b48a3a, #8a6624);
-    object-fit: cover;
-  }
-  .money { white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .money-part { display: inline-flex; align-items: center; gap: 3px; margin-right: 7px; }
-  .discount-cell { color: var(--verified); font-weight: 700; }
-  .coin {
-    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-    box-shadow: inset -1px -1px 1px rgba(0,0,0,0.35), inset 1px 1px 1px rgba(255,255,255,0.5);
-  }
-  .coin-gold   { background: radial-gradient(circle at 35% 30%, #f3d78a, var(--coin-gold) 55%, #a3821f); }
-  .coin-silver { background: radial-gradient(circle at 35% 30%, #f4f4f4, var(--coin-silver) 55%, #7c7c7c); }
-  .coin-copper { background: radial-gradient(circle at 35% 30%, #dba573, var(--coin-copper) 55%, #7a4a20); }
+  .tour-foot p { margin: 0; color: var(--text-dim); font-size: 0.88rem; }
 
   footer {
     border-top: 1px solid var(--hairline); padding: 1.6rem 1.5rem 2.5rem; text-align: center;
@@ -162,6 +192,12 @@
   @media (max-width: 720px) {
     .sample-wrap table { min-width: 480px; }
     .sample-wrap { overflow-x: auto; }
+  }
+  @media (max-width: 900px) {
+    .tour-row { grid-template-columns: 1fr; gap: 1.2rem; margin-bottom: 2.4rem; }
+    /* Copy always leads on narrow screens -- the alternating order only
+       exists to break up the rhythm on wide ones. */
+    .tour-row.flip .tour-copy { order: 0; }
   }
 </style>
 </head>
@@ -196,44 +232,65 @@
 
 <main>
   <div class="hero">
-    <div class="eyebrow">Cross-realm AH validation for World of Warcraft</div>
-    <h1>Somewhere in the EU, this is cheaper.</h1>
-    <p class="sub">Realm Arbitrage calculates the real price difference, the arbitrage,
-      between your own realm's current price and every other EU realm's listings for
-      the same item. Not every gap is a genuine bargain: some listings are troll prices
-      or camped jokes from other players, not real value. If it looks worth it, buy it
-      there, move it home through the warband bank, sell it here.</p>
-    <div class="hero-ctas">
-      <a class="cta primary" href="/register" id="hero-cta">Create free account</a>
-      <a class="cta secondary" href="/pricing">See pricing</a>
+    <div class="eyebrow">Cross-realm Auction House sniper</div>
+    <h1>Realm Arbitrage</h1>
+  </div>
+
+  <section class="tour">
+    <div class="tour-head">
+      <h2>You don't need to know which items are worth sniping.</h2>
+      <p>Switch on the default sniper list and it stands over every item on
+        every EU realm, sending anything priced far under its TSM sale average
+        to your Discord. The snipe board is the other half: it prices
+        listings against your own realm.</p>
     </div>
 
-    <div class="sample-wrap">
-      <div class="sample-label">Example listing: illustrative, not live data · sell realm: Draenor</div>
-      <table>
-        <thead>
-          <tr>
-            <th>Buy realm</th>
-            <th>Item</th>
-            <th>Variant</th>
-            <th>Buy</th>
-            <th>Sell price</th>
-            <th>Discount %</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Silvermoon</td>
-            <td><div class="item-cell"><img class="item-icon" style="--q:#a335ee" src="https://render.worldofwarcraft.com/eu/icons/56/inv_sword_2h_ashbringercorrupt.jpg" alt=""><span>Corrupted Ashbringer</span></div></td>
-            <td class="mono">0 bonuses</td>
-            <td><span class="money"><span class="money-part">1<span class="coin coin-gold"></span></span></span></td>
-            <td><span class="money"><span class="money-part">214748<span class="coin coin-gold"></span></span><span class="money-part">36<span class="coin coin-silver"></span></span><span class="money-part">47<span class="coin coin-copper"></span></span></span></td>
-            <td class="discount-cell">100.0</td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="tour-row flip">
+      <div class="tour-copy">
+        <h3>Watchlist &amp; Discord</h3>
+        <p class="lede">Paste a Discord webhook and get notified whenever an item meets your criteria.</p>
+        <ul>
+          <li>A default sniper that evaluates items against TSM's EU sale average based on your % preferences. No prior knowledge needed.</li>
+          <li>Manually add items to your watchlist if desired.</li>
+          <li>Set the threshold in raw gold, or as a percentage of the sale average.</li>
+        </ul>
+      </div>
+      <a class="shot-link" href="/static/img/watchlist.png" target="_blank" rel="noopener">
+        <img class="tour-shot" src="/static/img/watchlist.png" loading="lazy"
+             alt="The watchlist page: a Discord webhook field, the default sniper list set to alert under 20% of sale average, an add-item form with TSM group import, and a table of watched items.">
+        <span class="shot-caption">The watchlist &middot; click to enlarge</span>
+      </a>
     </div>
-  </div>
+
+    <div class="tour-row">
+      <div class="tour-copy">
+        <h3>Snipe board</h3>
+        <p class="lede">Pick the realm you sell on. The board ranks auctions on every
+          other EU realm by how far under your own realm's cheapest price they are.</p>
+        <ul>
+          <li>Buy realm, item, buy price, sell price, EU median, sale rate (TSM), sale average (TSM), discount %, and whether you have a character on that realm.</li>
+          <li>Filter by unique transmog, item class, rarity, price and discount.</li>
+          <li>Hide flagged hides obvious bait items and falsely priced items.</li>
+          <li>Not real-time. Blizzard republishes auction data about once an hour, so a snipe can be gone before you arrive.</li>
+        </ul>
+      </div>
+      <a class="shot-link" href="/static/img/dashboard.png" target="_blank" rel="noopener">
+        <img class="tour-shot" src="/static/img/dashboard.png" loading="lazy"
+             alt="The snipe board: a filter sidebar on the left, and a table of listings from other EU realms with buy realm, item, variant, buy price, sell price, EU median, sale rate, sale average and discount percent.">
+        <span class="shot-caption">The snipe board &middot; click to enlarge</span>
+      </a>
+    </div>
+
+    <div class="tour-band">
+      <h3>Profile</h3>
+      <p class="lede">Register which WoW accounts have which characters. This appears in the snipe board and in watchlist notifications, so you can easily identify which account to log into.</p>
+    </div>
+
+    <div class="tour-foot">
+      <p>Free account to start. DM my Discord for a free premium trial.</p>
+      <a class="cta primary" href="/register" id="tour-cta">Create free account</a>
+    </div>
+  </section>
 
 </main>
 
@@ -277,7 +334,7 @@ fetch("/api/me").then(async r => {
   const toDashboard = (el, label) => { el.textContent = label; el.href = "/snipes"; };
   toDashboard(document.getElementById("nav-cta"), "Go to dashboard");
   document.getElementById("nav-login").remove();
-  toDashboard(document.getElementById("hero-cta"), "Go to dashboard");
+  toDashboard(document.getElementById("tour-cta"), "Go to dashboard");
 }).catch(() => {});
 </script>
 </body>

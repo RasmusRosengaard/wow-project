@@ -97,6 +97,96 @@ silver`/`.coin-copper` classes (removed as dead code 2026-07-31 when only gold
 was in use — legitimately needed again now that the sell price shows all three
 denominations, mirroring `dashboard.html`'s exact gradient values).
 
+**Feature tour section added 2026-08-05** (human request: a beginner-facing
+intro to the watchlist, snipe board and profile, "no preknown knowledge of
+items worth to snipe"). Sits below the hero as `.tour`: a centred head, two
+alternating copy/screenshot `.tour-row`s (watchlist first, snipe board second),
+then a centred `.tour-band` for Profile (no screenshot of its own — it's a
+one-minute setup step, not a surface you live in), then a repeated
+`#tour-cta` sign-up button that the existing `/api/me` CTA-swap script also
+retargets. Two real product screenshots live at `static/img/watchlist.png` and
+`static/img/dashboard.png`, each wrapped in a `.shot-link` opening the
+full-size PNG in a new tab (at column width the dense filter sidebar and
+9-column table the copy describes aren't legible). Both are dark-theme
+captures shown on a light-or-dark page, accepted as-is. Each block's heading is
+just the **product name** (`Watchlist & Discord` / `Snipe board` / `Profile`,
+human 2026-08-05, replacing descriptive one-liner headings plus a `.kicker`
+eyebrow above each — the one-liners only restated the `.lede` directly beneath
+them). A bullet offering "leave the webhook empty to track items quietly on the
+site" was **cut** (human, 2026-08-05: the feature is useless unfilled) — don't
+pitch the no-webhook path as a landing-page selling point, whatever
+`watchlist.html`'s own field hint says. A Profile bullet explaining warbands
+(account-wide gold, unsoulbound gear moving via the warband bank) was also cut
+the same day; the market-structure rationale still lives in `CLAUDE.md` for
+anyone building the thing, it just isn't landing-page copy.
+
+**Hero stripped to a masthead the same day** (human, in sequence: remove the
+sub-heading, then both hero CTAs, then the sample ledger table, "then redo the
+page so it focuses on the new stuff"). What's left above `.tour` is the
+`.eyebrow` plus the serif `<h1>` — the 2026-07-25 subheading, the
+`Create free account`/`See pricing` pair, and the 2026-08-01 Corrupted-Ashbringer
+example row are all gone, because the real screenshots below now do the job the
+mockup row was standing in for. Consequently removed as dead code: `.hero .sub`,
+`.hero-ctas`, `.cta.secondary`(+`:hover`), the whole `.sample-*` block,
+`.item-cell`/`.item-icon`/`.money`/`.money-part`/`.discount-cell`/`.coin*`, the
+`--coin-gold|silver|copper` vars (re-added 2026-08-01, dead again now) and the
+`.mono, .money` font rule; the CTA-swap script lost its `#hero-cta` line and now
+only retargets `#nav-cta` and `#tour-cta`. `.hero` padding cut 4.5rem/3.5rem →
+3.2rem/0 and `.tour-head`'s h2 dropped from serif `clamp(1.5rem,3vw,2rem)` to
+sans `clamp(1.15rem,2vw,1.4rem)`: with nothing between them, two centred serif
+headings read as two competing titles, so the serif stays reserved for the one
+masthead line. **Sign-up now has exactly two entry points** (nav `#nav-cta`,
+closing `#tour-cta`) — don't assume a hero CTA exists.
+
+`<meta name="description">` still paraphrases the deleted hero subheading. It
+remains accurate about the product, so it was left alone; revisit it if the
+pitch shifts again.
+
+Two accuracy points that drove the copy and must survive any rewrite:
+
+- **"Every item on every EU realm" is true of the *default sniper list* only**
+  (human correction, 2026-08-05, on a first draft that claimed it for the whole
+  product). The watchlist's standing rule is a region-wide scan judged against
+  TSM's EU sale average (`watchlist.py`'s "standing rule over **every item in
+  the region sweep**"), so it needs no sell realm and no item list. The snipe
+  board can't match that reach by construction: sell price *is* the sell
+  realm's own current cheapest listing, and `snipe_check.find_snipes` drops any
+  row where `cheapest_now IS NULL`, so an item your realm has no live listing
+  for can never appear. The Snipe-board card says so explicitly rather than
+  leaving the head's claim to bleed across both.
+- **Never call the board "live"** (human correction, 2026-08-05, on a draft
+  reading "the board lists live auctions"). Blizzard republishes each connected
+  realm's auction endpoint only *roughly hourly, at no fixed clock time*
+  (`architecture.md`'s Blizzard API facts), so hour-old data is the freshest
+  anything can be, ours or a competitor's. The Snipe-board card says so in a
+  "Not real-time" bullet warning a snipe can be gone before you arrive. This is
+  the same class of accuracy fix as the 2026-07-25 hero rewrite: state the real
+  limit rather than let a reader infer a capability we don't have. Keep the
+  bullet however short the copy gets — it survived the trim below at one
+  sentence. **Make the point once, on the board card.** A matching bullet on
+  the watchlist card ("alerts fire on the next batch of auction data... being on
+  Discord is exactly as fast as sitting on the page") was cut immediately (human,
+  2026-08-05): it pre-empted an objection no reader had raised and read as a
+  defence of the product rather than a description of it. Being accurate about
+  the hourly cadence is required; repeating it defensively in every card is not.
+- The section's copy **avoids em-dashes** like the rest of this page (the first
+  draft used them throughout and had to be rewritten) — periods, colons and
+  commas instead.
+
+**Copy halved 2026-08-05** (human: "there is 2much text on landing page"). The
+bullets had accreted across a dozen revisions into full sentences explaining
+themselves. Now: ledes are one sentence, bullets are fragments, Profile is a
+lede with no bullets at all, and the whole page is about two screenfuls. The
+screenshots carry the detail — anything a reader can see in the image doesn't
+need saying in prose. Both accuracy points above survived the cut in compressed
+form, which is the bar: trim wording, never trim a stated limit.
+
+The `watchlist.png` capture originally contained the human's **live Discord
+webhook URL** in the input field, which would have published a working
+post-to-channel secret. Redacted in the committed PNG (pixels overwritten with
+a `https://discord.com/api/webhooks/...` placeholder, not a CSS overlay).
+Re-check this on any future screenshot of that page.
+
 ## `static/login.html`, `register.html`, `subscribe.html`, `profile.html`, `pricing.html`, `snipeboard.html`, `watchlist.html`
 
 Plain HTML/JS, same no-build-step convention, same visual identity/dark-mode
