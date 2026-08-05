@@ -1616,10 +1616,15 @@ def test_is_sus_item_flags_explosives_and_devices():
     assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "NON_EQUIP", 14, 0, 1) is False
 
 
-def test_is_sus_item_flags_grey_and_white_quality():
+def test_is_sus_item_does_not_flag_on_quality():
+    """Grey/white was moved out of this shared predicate 2026-08-05 (human
+    request: "the dashboard should not have this grey/white"). It now lives
+    in watchlist._rule_scan() alone, so the sniper list drops POOR/COMMON
+    while the dashboard still shows them unflagged. LOW_QUALITY_TYPES stays
+    in this module as the single definition both sides use."""
     for q in ("POOR", "COMMON", "poor", "common"):
         assert snipe_check.is_sus_item(NON_STARTER_ITEM_ID, "SHOULDER", 250, 4, 1,
-                                       quality=q) is True
+                                       quality=q) is False
 
 
 def test_is_sus_item_keeps_uncommon_and_above():

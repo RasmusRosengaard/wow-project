@@ -1264,3 +1264,19 @@ def test_turning_the_list_off_leaves_per_item_triggers_working(listings_dir, rea
     assert result["notified"] == 1        # per-item path still fires
     assert result["rule_notified"] == 0   # standing rule does not
     assert len(posted) == 1
+
+
+def test_rule_scan_drops_grey_and_white_items(listings_dir, rule_caches):
+    """The sniper list still excludes POOR/COMMON even though is_sus_item()
+    no longer flags on quality -- the rule applies it itself so the
+    dashboard is unaffected (2026-08-05)."""
+    for q in ("POOR", "COMMON"):
+        rule_caches(avgs={111: 5_000}, qualities={111: q})
+        write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+        assert watchlist._rule_scan() == []
+
+
+def test_rule_scan_keeps_uncommon_items(listings_dir, rule_caches):
+    rule_caches(avgs={111: 5_000}, qualities={111: "UNCOMMON"})
+    write_listings(listings_dir, [listing_row(cr=1, item_id=111, buyout=50 * G, auction_id=1)])
+    assert [h["item_id"] for h in watchlist._rule_scan()] == [111]

@@ -676,6 +676,14 @@ def _rule_scan(min_sale_avg_copper: int | None = None, buy_fraction: float | Non
     for cand in hits:
         item_id = cand["item_id"]
         inventory_type = names.inventory_type(item_id)
+        # Grey/white lives here rather than in is_sus_item() (2026-08-05):
+        # the human wants POOR/COMMON gone from the sniper list but still
+        # visible on the dashboard, and is_sus_item() is shared by both.
+        # The set is still imported from snipe_check so there is only ever
+        # one definition of "low quality".
+        quality = names.quality(item_id)
+        if quality is not None and quality.upper() in snipe_check.LOW_QUALITY_TYPES:
+            continue
         if snipe_check.is_sus_item(item_id, inventory_type, names.base_level(item_id),
                                    names.item_class(item_id), names.item_subclass(item_id),
                                    names.quality(item_id), names.get(item_id),

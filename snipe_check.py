@@ -381,8 +381,12 @@ def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None
         return True
     if (item_class, item_subclass) in SUS_CLASS_SUBCLASS_PAIRS:
         return True
-    if quality is not None and quality.upper() in LOW_QUALITY_TYPES:
-        return True
+    # NOTE: the grey/white (POOR/COMMON) rule is deliberately NOT applied
+    # here -- it lives in watchlist.py's standing rule instead (moved
+    # 2026-08-05, human request: "the dashboard should not have this
+    # grey/white"). LOW_QUALITY_TYPES stays in this module because that is
+    # where every other shared classification lives, and the watchlist
+    # imports it rather than declaring a second copy.
     if inventory_type in JEWELRY_INVENTORY_TYPES:
         return True
     if name is not None and name.strip().lower().startswith(DARKMOON_NAME_PREFIXES):
