@@ -357,13 +357,12 @@ def test_collect_all_survives_tsm_refresh_failure(env, monkeypatch):
     assert summary["tsm_refreshed"] is False
 
 
-def test_prewarm_item_details_converges_stale_cache_entries(tmp_path, monkeypatch):
-    """An entry cached before item_purchase_price existed is incomplete, so
-    the background prewarm re-resolves it and the vendor rule starts
-    applying to it. Without this the rule only ever covered items seen for
-    the first time after the deploy -- confirmed live, item 45673 was still
-    being sent after it shipped."""
-    import duckdb, item_names, pyarrow as pa, pyarrow.parquet as pq
+def test_prewarm_item_details_does_not_rechurn_already_cached_entries(tmp_path, monkeypatch):
+    """The vendor rule briefly made item_purchase_price part of
+    _is_complete(), which turned every pre-existing entry incomplete and
+    forced ~18,000 re-resolves. Both were reverted 2026-08-05; this pins
+    that a fully-cached entry is left alone, so the prewarm stays cheap."""
+    import item_names, pyarrow as pa, pyarrow.parquet as pq
     from scan_region import LISTING_SCHEMA
 
     monkeypatch.setattr(item_names, "CACHE_PATH", tmp_path / "names.json")
@@ -376,14 +375,11 @@ def test_prewarm_item_details_converges_stale_cache_entries(tmp_path, monkeypatc
         "time_left": "VERY_LONG"}], schema=LISTING_SCHEMA), listings / "1.parquet")
 
     fetched = []
-    def fake_details(item_id):
-        fetched.append(item_id)
-        return {"name": "Thunder Bluff Doublet", "quality": "UNCOMMON", "level": 1,
-                "inventory_type": "BODY", "item_class": 4, "item_subclass": 0,
-                "purchase_price": 1000}
-    monkeypatch.setattr(item_names, "_fetch_item_details", fake_details)
+    monkeypatch.setattr(item_names, "_fetch_item_details", lambda i: (
+        fetched.append(i) or {"name": "x", "quality": "RARE", "level": 1,
+                              "inventory_type": None, "item_class": 4,
+                              "item_subclass": 0, "purchase_price": 0}))
 
-    # Seed a stale entry: every pre-purchase_price field present.
     c = item_names.NameCache()
     for section, value in (("items", "Thunder Bluff Doublet"), ("item_quality", "UNCOMMON"),
                             ("item_level", 1), ("item_inventory_type", "BODY"),
@@ -392,8 +388,7 @@ def test_prewarm_item_details_converges_stale_cache_entries(tmp_path, monkeypatc
     c.save()
 
     assert collect_all._prewarm_item_details() == 1
-    assert 45673 in fetched          # re-resolved despite looking cached
-    assert item_names.NameCache().purchase_price(45673) == 1000
+    assert fetched == []   # complete without purchase_price -> left alone
 
 
 def test_prewarm_item_details_respects_its_cap(tmp_path, monkeypatch):

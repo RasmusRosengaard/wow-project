@@ -1659,11 +1659,17 @@ def test_is_sus_item_darkmoon_rule_does_not_catch_other_darkmoon_items():
                                    name="Darkmoon Hammer") is False
 
 
-def test_is_sus_item_flags_vendor_purchasable_items():
-    """Item 45673 "Thunder Bluff Doublet" -- buyable from a vendor, so a
-    cheap listing is not a find. "just all vendoritems"."""
+def test_is_sus_item_does_not_flag_on_vendor_price():
+    """REVERTED 2026-08-05, same day it shipped. Measured against the live
+    sweep the vendor rule dropped 66 of 110 surviving candidates -- 60% of
+    the whole chain -- because purchase_price is an item-template field
+    populated whether or not any vendor stocks the item. The parameter is
+    kept so a narrower rule (e.g. vendor price as a fraction of the TSM
+    average) can reuse the plumbing, but it must not flag on its own."""
     assert snipe_check.is_sus_item(45673, "BODY", 1, 4, 0, quality="UNCOMMON",
-                                   purchase_price=1000) is True
+                                   purchase_price=1000) is False
+    assert snipe_check.is_sus_item(45673, "BODY", 1, 4, 0, quality="UNCOMMON",
+                                   purchase_price=250000) is False
 
 
 def test_is_sus_item_zero_purchase_price_is_not_vendor_sold():

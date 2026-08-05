@@ -387,16 +387,17 @@ def is_sus_item(item_id: int, inventory_type: str | None, base_level: int | None
         return True
     if name is not None and name.strip().lower().startswith(DARKMOON_NAME_PREFIXES):
         return True
-    # Vendor-buyable (human's call 2026-08-05, "just all vendoritems"):
-    # anything a vendor sells is obtainable without the auction house, so a
-    # cheap listing of it is not a find. purchase_price > 0 is Blizzard's
-    # own "a vendor charges this much" figure; 0 means no vendor sells it.
-    # None means we simply don't know yet (an item resolved before this
-    # field was cached) -- treated as not-sus, the same "unknown isn't a
-    # claim" convention used throughout, so the cache converges rather than
-    # silently hiding finds in the meantime.
-    if purchase_price is not None and purchase_price > 0:
-        return True
+    # NOTE: the vendor-price rule that lived here was REVERTED 2026-08-05,
+    # same day it shipped, at the human's request. Measured against the live
+    # sweep it was dropping 66 of 110 surviving candidates -- 60% of the
+    # whole filter chain on its own -- because Blizzard's purchase_price is
+    # a field on the *item template*, populated for a great many items
+    # regardless of whether any vendor actually stocks them. So it answered
+    # "has a vendor price", which is far wider than "you can go buy this
+    # from a vendor". The `purchase_price` parameter is kept (callers still
+    # pass it, NameCache still caches it) so the rule can be reinstated in a
+    # narrower form -- e.g. only when the vendor price is a meaningful
+    # fraction of the TSM sale average -- without redoing the plumbing.
     return (inventory_type in LEGACY_JEWELRY_INVENTORY_TYPES
             and base_level is not None
             and base_level <= LEGACY_JEWELRY_ILVL_MAX)

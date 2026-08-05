@@ -166,18 +166,17 @@ class NameCache:
         self._dirty = True
 
     def _is_complete(self, key: str) -> bool:
-        # item_purchase_price added 2026-08-05. Leaving it out meant every
-        # entry cached before the field existed counted as complete and was
-        # never re-resolved, so purchase_price stayed None forever and the
-        # sniper list's vendor-item rule silently applied to newly-seen
-        # items only -- confirmed live, item 45673 was still being sent
-        # after the rule shipped. Including it here is what makes stale
-        # entries re-resolve; collect_all's prewarm is what stops that
-        # becoming a burst (see _prewarm_item_details there).
+        # item_purchase_price is deliberately NOT required here (reverted
+        # 2026-08-05, same day, along with the vendor rule it existed for).
+        # Requiring it made every entry cached before the field existed
+        # count as incomplete, forcing ~18,000 re-resolves against Blizzard;
+        # that churn only earned its keep while something actually read
+        # purchase_price. The field is still written whenever an item is
+        # resolved for any other reason, so adding it back to this tuple is
+        # all a narrower vendor rule would need.
         return key in self._cache["items"] and key in self._cache["item_quality"] \
             and key in self._cache["item_level"] and key in self._cache["item_inventory_type"] \
-            and key in self._cache["item_class"] and key in self._cache["item_subclass"] \
-            and key in self._cache["item_purchase_price"]
+            and key in self._cache["item_class"] and key in self._cache["item_subclass"]
 
     def has_class_info(self, item_id: int) -> bool:
         """Whether item_class/item_subclass are already resolved for
