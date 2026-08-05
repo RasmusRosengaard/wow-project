@@ -96,11 +96,29 @@ COLLECTION_INTERVAL_SECONDS = 10 * 60
 # earlier, more cautious :12-:28 estimate -- still wider (8 min) than the
 # originally observed ~1.5-minute band since this schedule is shared across
 # every deep-collected realm, not tuned per-realm -- other realms likely
-# publish at a slightly different offset. Revisit with a per-realm learned
-# offset if this window turns out too narrow/wide once more realms have
-# enough /log history to check.
-TIGHT_WINDOW_START_MINUTE = 18
-TIGHT_WINDOW_END_MINUTE = 26
+# publish at a slightly different offset.
+#
+# Re-aimed :18-:26 -> :38-:48 on 2026-08-05 (human-confirmed): Blizzard
+# re-phased Draenor's publish slot outright, it did not drift. Two
+# consecutive Last-Modified values, 07:44:43 and 08:41:26 UTC (56m43s
+# apart, so the hourly cadence itself was unchanged), both landed ~20
+# minutes past the old window -- which had already crept from the
+# originally observed :19-:20 to ~:23 before the step change. Every
+# publish was therefore missing the tight window entirely and falling back
+# to the 10-minute baseline: ~5 min average detection lag, 10 min worst
+# case, against 45s when the window is aimed correctly. Freshness only, no
+# correctness impact. Width kept deliberately modest (10 min) rather than
+# spanning both the old and new slots, because collect_all() runs a *full
+# unconditional region sweep every cycle* (~92 realms, no
+# If-Modified-Since -- see collect_all.py) so a cycle costs ~127 requests
+# and window width translates near-linearly into request volume.
+#
+# Revisit with a per-realm learned offset if this window turns out too
+# narrow/wide -- now the more likely endgame than another hand-aimed
+# window, since a slot that re-phases once will re-phase again, and one
+# shared window cannot fit every deep-collected realm's own offset.
+TIGHT_WINDOW_START_MINUTE = 38
+TIGHT_WINDOW_END_MINUTE = 48
 TIGHT_INTERVAL_SECONDS = 45
 
 

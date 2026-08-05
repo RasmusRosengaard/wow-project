@@ -1283,19 +1283,29 @@ def test_realm_info_returns_none_fields_on_failure(monkeypatch):
 
 
 def test_poll_interval_is_tight_inside_the_expected_publish_window():
-    """Real production data (7 consecutive Draenor retrievals landing within
-    ~1.5 minutes of each other) showed AH data reliably arrives around
-    :19-:20 past the hour for at least this realm -- poll every
+    """Real production data showed AH data reliably arrives in a narrow band
+    past the hour for at least this realm -- poll every
     TIGHT_INTERVAL_SECONDS through a generous window around that mark
-    instead of waiting up to the full 10-minute baseline."""
+    instead of waiting up to the full 10-minute baseline. The band itself
+    moved once already (:19-:20 -> ~:23 drift, then re-phased to :41-:44 on
+    2026-08-05, see TIGHT_WINDOW_START_MINUTE's comment), so these two
+    tests derive their timestamps from the constants rather than hardcoding
+    a minute that silently flips meaning the next time it moves."""
     import datetime
-    inside = datetime.datetime(2026, 7, 23, 21, 20, 0, tzinfo=datetime.timezone.utc)
+    midpoint = (dashboard.TIGHT_WINDOW_START_MINUTE + dashboard.TIGHT_WINDOW_END_MINUTE) // 2
+    inside = datetime.datetime(2026, 7, 23, 21, midpoint, 0, tzinfo=datetime.timezone.utc)
     assert dashboard._next_poll_interval_seconds(inside) == dashboard.TIGHT_INTERVAL_SECONDS
 
 
 def test_poll_interval_is_normal_outside_the_expected_publish_window():
     import datetime
-    outside = datetime.datetime(2026, 7, 23, 21, 45, 0, tzinfo=datetime.timezone.utc)
+    outside_minute = (dashboard.TIGHT_WINDOW_END_MINUTE + 5) % 60
+    # Precondition, so a future window move that happens to swallow this
+    # minute fails loudly here instead of silently asserting nothing.
+    assert not (dashboard.TIGHT_WINDOW_START_MINUTE <= outside_minute
+                < dashboard.TIGHT_WINDOW_END_MINUTE)
+    outside = datetime.datetime(2026, 7, 23, 21, outside_minute, 0,
+                                tzinfo=datetime.timezone.utc)
     assert dashboard._next_poll_interval_seconds(outside) == dashboard.COLLECTION_INTERVAL_SECONDS
 
 

@@ -3193,3 +3193,54 @@ Verified in a browser against a seeded mix (brand-new unverified, active
 subscriber, free tier, cancelled+inactive, superuser, and one legacy account
 with no date) — ordering, badges, and the "before tracking" fallback all
 render correctly in both themes, no console errors.
+
+---
+
+## Blizzard re-phased Draenor's publish slot (2026-08-05)
+
+Human noticed the dashboard's "Last auction data" reading 09:44:43 local
+(07:44:43 UTC) when it "usually" sat around :23 past the hour, and asked
+why the odd timing.
+
+**The value is Blizzard's, not ours.** `fetch_snapshot.py`'s `fetch_once()`
+stores the raw `Last-Modified` header into `data/state/{cr}.json`;
+`dashboard.py`'s `/api/status` hands it through and `dashboard.html`
+formats it in local time. Nothing on our side — poll cadence, container
+restarts, a manual Refresh — can move that number, so an odd minute means
+Blizzard itself published at that minute.
+
+**It was a step change, not the usual drift.** Two consecutive values,
+07:44:43 and 08:41:26 UTC (the second read live off the API while
+diagnosing an unrelated question), sit 56m43s apart — the hourly cadence
+itself was intact, the phase had moved. The slot had already crept from the
+originally observed :19-:20 (2026-07-23, 7 consecutive retrievals) to about
+:23 before this; a ~20-minute jump is a different phenomenon. 2026-08-05
+was a Wednesday, i.e. EU maintenance/rolling-restart day, which is the
+obvious candidate for re-phasing a realm's internal hourly job.
+
+**Impact was freshness only.** Every publish now landed outside the
+`:18-:26` tight-poll window, so detection fell back to
+`COLLECTION_INTERVAL_SECONDS` — ~5 min average lag, 10 min worst case,
+against 45s when the window is aimed correctly. The data and its timestamp
+stayed honest throughout; only the delay before we noticed grew.
+
+**Fix: re-aimed the window to `:38-:48`** (human's choice among three
+options offered — re-aim at the same width, widen to span both old and new
+slots, or build the per-realm learned offset). Width was kept modest
+deliberately: `collect_all()` runs a **full unconditional region sweep every
+cycle** (~92 realms, no `If-Modified-Since`), so a cycle costs ~127 requests
+and window width translates near-linearly into request volume — roughly
+2,000 req/h against the 36,000 limit at the current shape. Headroom is not
+the constraint, but a 30-minute window is still ~3x the traffic for no
+benefit once the new slot is known.
+
+Two tests in `test_dashboard.py` hardcoded minute 20 as "inside" and minute
+45 as "outside" — both of which *flip meaning* under the new window, the
+second silently. They now derive their timestamps from the constants, and
+the "outside" test asserts its chosen minute really is outside the window
+before relying on it, so the next re-phase can't turn either into a test
+that passes while checking nothing.
+
+Per-realm learned offsets are now the more likely endgame than another
+hand-aimed window: a slot that re-phases once will re-phase again, and one
+shared window cannot fit every deep-collected realm's own offset.

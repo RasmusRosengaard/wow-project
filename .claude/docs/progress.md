@@ -458,9 +458,12 @@ does now, and `history.md`'s "Hosted SaaS pivot" entry for how it shipped.
   live-verified id set, not a threshold. See `history.md` for the
   live-verified examples of both, and for `sell_price_suspect`'s removal
   the same day.
-- The tightened background-poll window (`:18-:26` past the hour, narrowed
-  2026-08-02 from an earlier `:12-:28` estimate on further human-confirmed
-  observation) is still a shared, global schedule, not learned per-realm.
+- The tightened background-poll window (`:38-:48` past the hour, re-aimed
+  2026-08-05 from `:18-:26` after Blizzard re-phased Draenor's publish slot
+  outright — see `history.md`) is still a shared, global schedule, not
+  learned per-realm. The re-phase makes per-realm learned offsets the
+  likely endgame: a slot that moves once will move again, and one window
+  can't fit every deep-collected realm's own offset.
 - Stripe is on the full `sk_live_...` secret key, not a restricted key
   scoped to what `billing.py` actually needs (see "Next up").
 
