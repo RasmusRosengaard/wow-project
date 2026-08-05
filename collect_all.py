@@ -34,6 +34,7 @@ a high-pop sell realm's current cheapest listing; scoping the buy side down
 to FULL/HIGH would defeat that.
 """
 import logging
+import time
 from pathlib import Path
 
 import duckdb
@@ -67,6 +68,40 @@ PREWARM_BASE_LEVEL_CAP = 1000
 # roughly a day of cycles while adding ~500 requests to a budget of 36,000
 # per hour.
 PREWARM_DETAILS_CAP = 500
+
+# Wall-clock floor between prewarm passes, independent of how often a cycle
+# runs (2026-08-05, human request: "get the notification as fast as
+# possible").
+#
+# Both prewarms together cost up to PREWARM_BASE_LEVEL_CAP +
+# PREWARM_DETAILS_CAP = 1,500 sequential requests, which dwarfs the ~128 a
+# cycle spends on actual auction data (36 deep realms + ~92 sweep). Before
+# this existed they ran *every* cycle, so shortening the collection interval
+# to cut notification latency would have multiplied the request bill by the
+# same factor and run straight into the 36,000/h ceiling: at the old ~6
+# cycles/h the prewarms alone were already ~9,000 req/h (~25% of budget).
+#
+# Pinning them to wall-clock time instead of cycle count means the poll
+# cadence and the prewarm bill are independent knobs -- COLLECTION_INTERVAL
+# can drop to seconds without changing prewarm cost at all. These caches are
+# pure background convergence with nothing waiting on them (see both
+# functions' docstrings), so a floor here costs nothing user-visible.
+PREWARM_MIN_INTERVAL_SECONDS = 10 * 60
+
+# monotonic() timestamp of the last prewarm pass; None until the first one.
+# Deliberately process-local: a redeploy re-running one extra prewarm pass
+# is harmless, and persisting it would mean more state on the volume for no
+# benefit.
+_last_prewarm_at: float | None = None
+
+
+def _prewarm_due(now: float | None = None) -> bool:
+    """True when the prewarm caches are allowed another pass. Pure-ish and
+    injectable so tests don't have to sleep."""
+    now = time.monotonic() if now is None else now
+    return (_last_prewarm_at is None
+            or (now - _last_prewarm_at) >= PREWARM_MIN_INTERVAL_SECONDS)
+
 
 _deep_collect_realm_ids: list[int] | None = None
 
@@ -198,28 +233,19 @@ def collect_all() -> dict:
     except Exception:
         log.exception("collect_all: region sweep failed")
 
-    prewarmed = 0
-    try:
-        prewarmed = _prewarm_item_base_levels()
-    except Exception:
-        log.exception("collect_all: item base-level prewarm failed")
-
-    # Separate try/except from the base-level prewarm above: one converging
-    # the cache must not stop the other, same "one subsystem's failure
-    # doesn't abort the rest" convention as every other block here.
-    details_prewarmed = 0
-    try:
-        details_prewarmed = _prewarm_item_details()
-    except Exception:
-        log.exception("collect_all: item detail prewarm failed")
-
     # TSM sale-rate refresh (added 2026-08-01, human request) -- its own
     # tsm.REFRESH_INTERVAL_SECONDS (6h) internally no-ops most cycles, since
     # TSM's region data only updates ~daily; this call itself is cheap
-    # (just a staleness check) every ~10 min regardless. Single-writer
+    # (just a staleness check) every cycle regardless. Single-writer
     # design (see tsm.py's own docstring) -- this is the *only* place
     # SaleRateCache.refresh_if_stale() should ever be called; live
     # /api/snipes requests only ever call .get(), never write.
+    #
+    # Stays *ahead* of the watchlist check below even after the 2026-08-05
+    # reordering: the standing rule prices every candidate against TSM's
+    # sale average, so checking triggers first would judge this cycle's
+    # listings against last cycle's averages. Cheap enough here that it is
+    # not worth the staleness.
     tsm_refreshed = False
     try:
         tsm_refreshed = tsm.SaleRateCache().refresh_if_stale()
@@ -227,19 +253,52 @@ def collect_all() -> dict:
         log.exception("collect_all: TSM sale-rate refresh failed")
 
     # Watchlist trigger check (added 2026-08-02, human request -- see
-    # watchlist.py's module docstring) -- rides this existing ~10-min cycle
-    # rather than getting its own cadence, reading the region sweep that
-    # just ran above. Never lets a DB/Discord hiccup break realm collection,
-    # same "one subsystem's failure doesn't abort the rest" convention as
-    # every other block in this function.
+    # watchlist.py's module docstring) -- rides this existing cycle rather
+    # than getting its own cadence, reading the region sweep that just ran
+    # above. Never lets a DB/Discord hiccup break realm collection, same
+    # "one subsystem's failure doesn't abort the rest" convention as every
+    # other block in this function.
+    #
+    # Moved directly behind the sweep 2026-08-05 (human request: "get the
+    # notification as fast as possible"). It used to run dead last, so every
+    # Discord alert waited on up to 1,500 sequential item-metadata requests
+    # from the two prewarms below -- work the notification path does not read
+    # and cannot be affected by. The sweep it *does* read is already complete
+    # at this point, so this is pure latency removed at zero request cost.
+    # Keep it here: moving it back below the prewarms silently re-adds
+    # minutes to every alert.
     watchlist_result = {}
     try:
         watchlist_result = watchlist.check_triggers()
     except Exception:
         log.exception("collect_all: watchlist trigger check failed")
 
+    # Background cache convergence, deliberately *after* the notification
+    # path above and rate-limited by its own wall clock (see
+    # PREWARM_MIN_INTERVAL_SECONDS) so poll cadence and prewarm cost stay
+    # independent.
+    global _last_prewarm_at
+    prewarmed = 0
+    details_prewarmed = 0
+    prewarm_ran = _prewarm_due()
+    if prewarm_ran:
+        _last_prewarm_at = time.monotonic()
+        try:
+            prewarmed = _prewarm_item_base_levels()
+        except Exception:
+            log.exception("collect_all: item base-level prewarm failed")
+
+        # Separate try/except from the base-level prewarm above: one converging
+        # the cache must not stop the other, same "one subsystem's failure
+        # doesn't abort the rest" convention as every other block here.
+        try:
+            details_prewarmed = _prewarm_item_details()
+        except Exception:
+            log.exception("collect_all: item detail prewarm failed")
+
     summary = {"realms": len(realm_ids), "polled": polled,
               "pruned_snapshots": pruned, "failed": failed,
+              "prewarm_ran": prewarm_ran,
               "base_level_candidates": prewarmed,
               "detail_candidates": details_prewarmed, "tsm_refreshed": tsm_refreshed,
               "watchlist": watchlist_result}

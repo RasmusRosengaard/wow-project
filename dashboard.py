@@ -81,7 +81,18 @@ ENABLE_BACKGROUND_COLLECTION = os.environ.get("ENABLE_BACKGROUND_COLLECTION", "f
 # Poll every ~10 min instead (matching fetch_snapshot.py's own original
 # local-collector cadence) so the lag after a real update stays small;
 # fetch_once()'s If-Modified-Since check keeps the no-op polls cheap.
-COLLECTION_INTERVAL_SECONDS = 10 * 60
+# 10 min -> 60s (2026-08-05, human request: "get the notification as fast as
+# possible"). Safe to shorten only because collect_all() no longer runs its
+# two prewarm passes every cycle -- those are now pinned to their own wall
+# clock (PREWARM_MIN_INTERVAL_SECONDS), so cadence and request bill are
+# independent knobs. Before that change this line was effectively load-
+# bearing for the rate limit: at ~1,628 requests a cycle, cutting the
+# interval to 60s would have meant ~35,800 req/h against a 36,000/h ceiling.
+# A cycle's own auction work is only ~128 requests (36 deep realms + ~92
+# sweep), so the real floor now is how long a sweep takes (~1-2 min,
+# sequential), not this number -- the loop sleeps *after* the cycle, so a
+# short interval just means "start again promptly", never overlapping runs.
+COLLECTION_INTERVAL_SECONDS = 60
 
 # Real production data (this deployment's own /log page, 2026-07-23 evening)
 # showed the "no fixed clock time" assumption above was overly cautious for

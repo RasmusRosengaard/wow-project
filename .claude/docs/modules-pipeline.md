@@ -97,9 +97,42 @@ the cycle's `summary` dict as `tsm_refreshed: bool`. Covered by `tests/test_co
 llect_all.py::test_collect_all_refreshes_tsm_sale_rates`/`::test_collect_all_s
 urvives_tsm_refresh_failure`. **Also runs `watchlist.check_triggers()` every
 cycle** (added 2026-08-02, human request -- see `watchlist.py`'s row): rides
-this existing ~10-min cadence rather than getting its own, same non-decision
+this existing cadence rather than getting its own, same non-decision
 as `tsm.py`'s refresh call above. Wrapped in its own `try/except`; reported in
 `summary` as `watchlist: dict`.
+
+**Cycle re-ordered and prewarms decoupled 2026-08-05** (human request: "get
+the notification as fast as possible"). Two changes, and the order between
+them matters:
+
+- `watchlist.check_triggers()` now runs **directly after `scan_region.sweep()`**,
+  ahead of both prewarms, instead of dead last. It reads the sweep and nothing
+  else, so every Discord alert was previously sitting behind up to 1,500
+  sequential item-metadata requests it could not be affected by. Free latency,
+  zero extra requests. `tsm.SaleRateCache().refresh_if_stale()` was moved with
+  it and deliberately kept **ahead** of the trigger check: the standing rule
+  prices candidates against TSM sale averages, so the reverse order would judge
+  this cycle's listings against last cycle's averages.
+- The two prewarms are now gated by `_prewarm_due()` /
+  `PREWARM_MIN_INTERVAL_SECONDS=10*60` (wall clock, `time.monotonic()`,
+  process-local) instead of running every cycle. This is what makes the cadence
+  safe to change at all: prewarms cost up to 1,500 requests against a cycle's
+  ~128 of actual auction work (36 deep realms + ~92 sweep), so before this they
+  dominated the bill and `COLLECTION_INTERVAL_SECONDS` was effectively
+  load-bearing for the 36,000/h rate limit. Poll cadence and prewarm cost are
+  now independent knobs. `summary` gained `prewarm_ran: bool`.
+
+`dashboard.py`'s `COLLECTION_INTERVAL_SECONDS` dropped 10 min -> 60s on the
+back of that (~13 min alert latency -> ~1-2 min; ~9,800 req/h -> ~12,600, ~27%
+-> ~35% of budget). **The real floor is now `scan_region.sweep()` itself**,
+which is a plain sequential `for cr in realms` over ~92 realms — parallelising
+it is the next available win and was deliberately left out of this change,
+since it touches the collector's never-die guarantee and its parquet writes.
+Covered by `tests/test_collect_all.py::test_prewarm_due_*` /
+`::test_collect_all_skips_prewarms_inside_the_interval_but_still_notifies`,
+plus an autouse `reset_prewarm_clock` fixture — `_last_prewarm_at` is
+module-level state that otherwise leaks between tests and silently masks a
+skipped prewarm.
 
 ## `snipe_check.py`
 

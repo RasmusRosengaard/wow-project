@@ -45,6 +45,15 @@ def reset_realm_cache(monkeypatch):
     monkeypatch.setattr(collect_all, "_deep_collect_realm_ids", None)
 
 
+@pytest.fixture(autouse=True)
+def reset_prewarm_clock(monkeypatch):
+    """_last_prewarm_at is module-level state gating the prewarm passes
+    (2026-08-05). Without resetting it, the first test to run a cycle would
+    arm the interval and every later test would silently observe a *skipped*
+    prewarm -- the exact behaviour some of them assert against."""
+    monkeypatch.setattr(collect_all, "_last_prewarm_at", None)
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     for mod in (fetch_snapshot, scan_region, collect_all):
@@ -181,6 +190,50 @@ def test_collect_all_only_deep_collects_high_pop_but_sweeps_everyone(env, monkey
     # region sweep is unscoped -- both realms get a listings file regardless of pop
     assert (env / "listings" / f"{FULL_POP_CR}.parquet").exists()
     assert (env / "listings" / f"{LOW_POP_CR}.parquet").exists()
+
+
+def test_prewarm_due_is_true_on_first_call_then_respects_the_interval():
+    """The interval must not suppress the very first pass of a fresh process,
+    or a redeploy would leave the caches unconverged for a full interval."""
+    assert collect_all._prewarm_due(now=1000.0) is True
+
+
+def test_prewarm_due_is_false_inside_the_interval_and_true_after(monkeypatch):
+    monkeypatch.setattr(collect_all, "_last_prewarm_at", 1000.0)
+    interval = collect_all.PREWARM_MIN_INTERVAL_SECONDS
+
+    assert collect_all._prewarm_due(now=1000.0 + interval - 1) is False
+    assert collect_all._prewarm_due(now=1000.0 + interval) is True
+
+
+def test_collect_all_skips_prewarms_inside_the_interval_but_still_notifies(env, monkeypatch):
+    """The whole point of the 2026-08-05 split: shortening the poll interval
+    must not multiply the prewarms' ~1,500-request bill, while the watchlist
+    check -- the thing the user is actually waiting on -- still runs every
+    single cycle."""
+    monkeypatch.setattr(blizz, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(blizz, "connected_realm_population", lambda cr: "FULL")
+    monkeypatch.setattr(fetch_snapshot, "fetch_once", lambda cr: None)
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [FULL_POP_CR])
+    monkeypatch.setattr(scan_region, "get_auctions_with_backoff",
+                        lambda *a, **k: FakeResponse(200, payload={"auctions": []}))
+
+    prewarm_calls = []
+    monkeypatch.setattr(collect_all, "_prewarm_item_base_levels",
+                        lambda *a, **k: prewarm_calls.append("base") or 0)
+    monkeypatch.setattr(collect_all, "_prewarm_item_details",
+                        lambda *a, **k: prewarm_calls.append("details") or 0)
+    watchlist_calls = []
+    monkeypatch.setattr(watchlist, "check_triggers",
+                        lambda: watchlist_calls.append(1) or {})
+
+    first = collect_all.collect_all()
+    second = collect_all.collect_all()
+
+    assert first["prewarm_ran"] is True
+    assert second["prewarm_ran"] is False          # second cycle is inside the interval
+    assert prewarm_calls == ["base", "details"]    # ...so the expensive pass ran once
+    assert len(watchlist_calls) == 2               # ...but notifications ran every cycle
 
 
 def test_collect_all_skips_prune_when_no_new_snapshot_arrived(env, monkeypatch):

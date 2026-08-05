@@ -192,12 +192,20 @@ RULE_CLUSTER_MIN_REALMS = snipe_check.SNIPER_FILTER_MIN_REALMS
 
 # Safety valve. The very first cycle after this ships evaluates the rule
 # against the whole region sweep with an empty cooldown file, so without a
-# cap a single cycle could fire hundreds of Discord messages at once (and
-# Discord rate-limits a webhook hard enough that the overflow would be
-# dropped anyway, just messily). Hits above the cap are simply not sent
-# *and not marked notified*, so they are reconsidered next cycle rather
-# than silently lost.
-RULE_MAX_NOTIFICATIONS_PER_CYCLE = 10
+# cap a single cycle could dump the entire region's hits at once. Hits
+# above the cap are simply not sent *and not marked notified*, so they are
+# reconsidered next cycle rather than silently lost.
+#
+# 10 -> 25 (2026-08-05, human's call) after production logs showed the cap
+# biting routinely: a single cycle logged rule_hits=62, rule_notified=22,
+# rule_suppressed_by_cap=5, so real finds were being deferred a cycle for
+# no reason. This is *not* a Discord-request-volume knob, contrary to the
+# note this comment used to carry: _send_rule_batch() packs a whole cycle's
+# hits into one embed in one POST, so the cap sets lines per message, not
+# messages. The binding limit is EMBED_DESCRIPTION_MAX (4096 chars, ~110
+# per line, so ~37 lines), which that function already enforces by breaking
+# out of the loop -- 25 stays comfortably under it.
+RULE_MAX_NOTIFICATIONS_PER_CYCLE = 25
 
 # Per-(item, pet) cooldown state. The per-item path stores this on the
 # WatchlistItem row, but a standing rule owns no rows -- and an in-memory
