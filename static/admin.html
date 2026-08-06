@@ -118,6 +118,37 @@
   .badge.none { color: var(--text-dim); }
   .badge.warn { color: var(--alert); }
   .badge.admin { color: var(--bullion); }
+
+  /* Anonymous traffic vs a known account -- the distinction the "who is
+     actually active" view exists to make, so it reads at a glance. */
+  .anon { color: var(--text-dim); font-style: italic; }
+  .who { font-weight: 600; }
+  .check { color: var(--verified); font-weight: 700; }
+
+  /* Collapsible watchlist. A button, not a bare click handler on the cell:
+     it has to be keyboard-reachable, and aria-expanded is what makes the
+     open/closed state legible to a screen reader. */
+  .expand {
+    background: none; border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.15rem 0.4rem; cursor: pointer;
+    font-family: inherit; font-size: 0.72rem; white-space: nowrap;
+  }
+  .expand:hover { border-color: var(--bullion); color: var(--bullion); }
+  .expand .caret { display: inline-block; width: 0.7em; margin-right: 0.3em; }
+  /* The badge carries margin-right for the status column, where several sit
+     in a row; next to a name it needs the gap on the other side too. */
+  .who .badge { margin-left: 0.4rem; }
+  tr.detail > td { background: var(--paper); padding: 0.7rem 1.1rem 0.9rem; white-space: normal; }
+  .items { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+  .items li {
+    border: 1px solid var(--hairline); border-radius: 3px; background: var(--card);
+    padding: 0.2rem 0.45rem; font-size: 0.75rem;
+  }
+  .items .trig { color: var(--text-dim); margin-left: 0.35rem; }
+  .items .swatch {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 0.35rem; vertical-align: middle; background: var(--hairline-strong);
+  }
   .dim { color: var(--text-dim); }
   .empty, .note { padding: 1.1rem; color: var(--text-dim); font-size: 0.82rem; }
   .note { padding-top: 0; }
@@ -168,6 +199,7 @@
   <div id="content" hidden>
     <div class="stats">
       <div class="stat"><div class="n" id="stat-active">&mdash;</div><div class="k">Active now</div></div>
+      <div class="stat"><div class="n" id="stat-signed-in">&mdash;</div><div class="k">Signed in now</div></div>
       <div class="stat"><div class="n" id="stat-signups">&mdash;</div><div class="k">Registered users</div></div>
       <div class="stat"><div class="n" id="stat-total">&mdash;</div><div class="k">Visitors all time</div></div>
       <div class="stat"><div class="n" id="stat-hits">&mdash;</div><div class="k">API hits all time</div></div>
@@ -178,7 +210,8 @@
       <div class="scroll">
         <table>
           <thead><tr>
-            <th>Email</th><th>Nickname</th><th>Signed up</th><th>Status</th>
+            <th>Email</th><th>Nickname</th><th>Watchlist</th><th>Default list</th>
+            <th>Signed up</th><th>Status</th>
           </tr></thead>
           <tbody id="signup-body"></tbody>
         </table>
@@ -192,7 +225,7 @@
       <div class="scroll">
         <table>
           <thead><tr>
-            <th>IP</th><th>Last seen</th><th class="num">Hits</th><th>First seen</th>
+            <th>IP</th><th>User</th><th>Last seen</th><th class="num">Hits</th><th>First seen</th>
           </tr></thead>
           <tbody id="active-body"></tbody>
         </table>
@@ -205,7 +238,7 @@
       <div class="scroll">
         <table>
           <thead><tr>
-            <th>IP</th><th>Last seen</th><th class="num">Hits</th><th>First seen</th>
+            <th>IP</th><th>User</th><th>Last seen</th><th class="num">Hits</th><th>First seen</th>
           </tr></thead>
           <tbody id="history-body"></tbody>
         </table>
@@ -257,6 +290,22 @@ function renderRows(tbody, entries, showDot) {
     ipCell.append(document.createTextNode(e.ip));
     tr.append(ipCell);
 
+    // Who this IP belongs to, if anyone signed in from it. Nickname is the
+    // friendlier label but is NULL until a first forum post, so email is the
+    // fallback -- and the other one goes in the tooltip so both are reachable.
+    const who = document.createElement("td");
+    if (e.user_email) {
+      who.className = "who";
+      who.textContent = e.user_nickname || e.user_email;
+      who.title = e.user_nickname ? e.user_email + " (" + e.user_nickname + ")" : e.user_email;
+      if (e.is_superuser) who.append(badge("admin", "admin"));
+    } else {
+      who.className = "anon";
+      who.textContent = "anonymous";
+      who.title = "No signed-in account has been seen from this IP";
+    }
+    tr.append(who);
+
     const last = document.createElement("td");
     last.textContent = relTime(e.last_seen_seconds_ago);
     last.title = absTime(e.last_seen);
@@ -286,6 +335,111 @@ function badge(text, cls) {
   return b;
 }
 
+// Which accounts' watchlists are currently open, and what we last fetched
+// for them. Both survive re-renders: the page reloads every REFRESH_MS and
+// renderSignups() replaces every row, so without this an expanded list would
+// silently snap shut every 30 seconds while being read.
+const expanded = new Set();
+const itemCache = new Map();
+
+function expandButton(entry, tbody, tr) {
+  const btn = document.createElement("button");
+  btn.className = "expand";
+  btn.setAttribute("aria-expanded", expanded.has(entry.id) ? "true" : "false");
+
+  const caret = document.createElement("span");
+  caret.className = "caret";
+  caret.textContent = expanded.has(entry.id) ? "▾" : "▸";
+  btn.append(caret, document.createTextNode(
+    entry.watchlist_count.toLocaleString() + (entry.watchlist_count === 1 ? " item" : " items")));
+
+  btn.addEventListener("click", async () => {
+    if (expanded.has(entry.id)) {
+      expanded.delete(entry.id);
+      caret.textContent = "▸";
+      btn.setAttribute("aria-expanded", "false");
+      tr.nextSibling?.classList?.contains("detail") && tr.nextSibling.remove();
+      return;
+    }
+    expanded.add(entry.id);
+    caret.textContent = "▾";
+    btn.setAttribute("aria-expanded", "true");
+    await renderDetail(entry, tr);
+  });
+  return btn;
+}
+
+// Fetched on expand, not with the signup list: an account may hold up to 500
+// watchlist items, so embedding every account's items in the list payload
+// would grow it with the product's own success for data almost none of which
+// is on screen.
+async function renderDetail(entry, tr) {
+  const row = document.createElement("tr");
+  row.className = "detail";
+  const cell = document.createElement("td");
+  cell.colSpan = 6;
+  row.append(cell);
+  tr.after(row);
+
+  const cached = itemCache.get(entry.id);
+  if (cached) {
+    fillItems(cell, cached);
+    return;
+  }
+  cell.textContent = "Loading…";
+  cell.className = "dim";
+  try {
+    const res = await fetch("/api/admin/watchlist/" + encodeURIComponent(entry.id));
+    if (!res.ok) throw new Error(res.status);
+    const body = await res.json();
+    itemCache.set(entry.id, body);
+    cell.className = "";
+    fillItems(cell, body);
+  } catch (err) {
+    cell.textContent = "Could not load this watchlist.";
+  }
+}
+
+// textContent only, same rule as everywhere else on this page: item names
+// come from Blizzard but `label` is free text the user typed (or a group
+// path from a pasted TSM export), so it is attacker-controlled.
+function fillItems(cell, body) {
+  cell.replaceChildren();
+  if (!body.items.length) {
+    cell.textContent = "No items.";
+    cell.className = "dim";
+    return;
+  }
+  const ul = document.createElement("ul");
+  ul.className = "items";
+  for (const it of body.items) {
+    const li = document.createElement("li");
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    if (it.quality_color) swatch.style.background = it.quality_color;
+    li.append(swatch, document.createTextNode(it.name || ("Item " + it.item_id)));
+
+    const trig = document.createElement("span");
+    trig.className = "trig";
+    // Exactly one of the two modes is set per row (see db.WatchlistItem).
+    if (it.trigger_percent != null) trig.textContent = "< " + it.trigger_percent + "% avg";
+    else if (it.trigger_price_g != null) trig.textContent = "< " + it.trigger_price_g.toLocaleString() + "g";
+    else trig.textContent = "no trigger";
+    li.append(trig);
+    if (it.label) li.title = it.label;
+    ul.append(li);
+  }
+  cell.append(ul);
+  if (body.total > body.count) {
+    const note = document.createElement("div");
+    note.className = "dim";
+    note.style.marginTop = "0.5rem";
+    note.textContent = "Showing " + body.count.toLocaleString() +
+      " of " + body.total.toLocaleString() + " items.";
+    cell.append(note);
+  }
+}
+
 // Same textContent-only rule as renderRows, and it matters more here: email
 // and nickname are values the *user* chose at registration, so they're the
 // most directly attacker-controlled strings on the page.
@@ -306,6 +460,35 @@ function renderSignups(tbody, entries) {
       nick.className = "dim";
     }
     tr.append(nick);
+
+    const watch = document.createElement("td");
+    if (e.watchlist_count > 0) {
+      watch.append(expandButton(e, tbody, tr));
+    } else {
+      watch.textContent = "—";
+      watch.className = "dim";
+    }
+    tr.append(watch);
+
+    // The standing sniper-list rule: whether it's on, not what it matches.
+    // Its hits are region-wide and identical for everyone on the same
+    // thresholds, so per-account contents would be one list repeated.
+    const def = document.createElement("td");
+    if (e.default_sniper_list_enabled) {
+      def.className = "check";
+      def.textContent = "✓";
+      def.title = e.has_discord_webhook
+        ? "Default sniper list on, Discord webhook configured"
+        : "Default sniper list on, but no Discord webhook — nothing is delivered";
+      if (!e.has_discord_webhook) {
+        def.className = "";
+        def.append(badge("no webhook", "warn"));
+      }
+    } else {
+      def.textContent = "—";
+      def.className = "dim";
+    }
+    tr.append(def);
 
     const when = document.createElement("td");
     if (e.created_at) {
@@ -330,6 +513,9 @@ function renderSignups(tbody, entries) {
     tr.append(status);
 
     tbody.append(tr);
+    // Restore anything the user had open before this refresh replaced the
+    // rows. Served from itemCache, so re-expanding costs no extra request.
+    if (expanded.has(e.id) && e.watchlist_count > 0) renderDetail(e, tr);
   }
 }
 
@@ -357,6 +543,8 @@ async function load() {
   show("content", true);
 
   document.getElementById("stat-active").textContent = active.count.toLocaleString();
+  document.getElementById("stat-signed-in").textContent =
+    (active.signed_in_count ?? 0).toLocaleString();
   // `total`, not `count` -- count is capped by the endpoint's limit, and the
   // tile is meant to be the real number of accounts.
   document.getElementById("stat-signups").textContent = signups.total.toLocaleString();

@@ -289,6 +289,24 @@ class VisitorIP(Base):
     # Total /api/* requests ever seen from this IP -- accumulated across
     # flushes, so it survives the redeploys that reset the in-memory dict.
     hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The most recent *authenticated* account seen from this IP, or NULL if
+    # only anonymous traffic has ever come from it (added 2026-08-06, human
+    # request: "show username and ip if they're connected so i can see what
+    # users are active").
+    #
+    # Deliberately last-writer-wins rather than a full (ip, user) history
+    # table. This table's whole design is one row per distinct IP precisely
+    # to stay small (see the class docstring), and a join table would grow
+    # by every distinct pair. The tradeoff is real and worth stating: two
+    # accounts behind one NAT/household IP show only whichever hit the API
+    # most recently, and the column is never cleared on logout, so it means
+    # "last account seen here", not "who is logged in right now".
+    #
+    # ondelete="SET NULL": deleting an account must not cascade away its
+    # visitor history, and must not fail on an FK violation either -- the
+    # IP row is about traffic, not about the account.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
 
 
 def _database_url() -> str:

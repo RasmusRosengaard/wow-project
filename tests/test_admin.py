@@ -23,7 +23,7 @@ import admin
 import auth
 import dashboard
 import db
-from db import Base, User, VisitorIP, get_async_session
+from db import Base, User, VisitorIP, WatchlistItem, get_async_session
 
 client = TestClient(dashboard.app)
 
@@ -73,6 +73,7 @@ def reset_buffers(monkeypatch):
     test's TestClient traffic can't leak into another's assertions."""
     monkeypatch.setattr(admin, "_recent_activity", {})
     monkeypatch.setattr(admin, "_pending_hits", {})
+    monkeypatch.setattr(admin, "_pending_user_ids", {})
 
 
 @pytest.fixture
@@ -104,13 +105,21 @@ def _rows(factory):
     return asyncio.run(_run())
 
 
-def _seed(factory, ip, *, last_seen, first_seen=None, hit_count=1):
+def _seed(factory, ip, *, last_seen, first_seen=None, hit_count=1, user_id=None):
     async def _run():
         async with factory() as session:
             session.add(VisitorIP(ip=ip, first_seen=first_seen or last_seen,
-                                  last_seen=last_seen, hit_count=hit_count))
+                                  last_seen=last_seen, hit_count=hit_count,
+                                  user_id=user_id))
             await session.commit()
     asyncio.run(_run())
+
+
+def _seed_visitor(factory, ip, *, user_id=None, hit_count=1):
+    """A visitor seen just now -- the common case for the attribution tests,
+    which care about who the IP belongs to rather than when it was active."""
+    _seed(factory, ip, last_seen=datetime.now(timezone.utc),
+          hit_count=hit_count, user_id=user_id)
 
 
 # --- the request path: memory only ------------------------------------
@@ -297,7 +306,8 @@ def test_visitors_is_capped(as_superuser, session_factory, monkeypatch):
 
 def _seed_user(factory, email, *, created_at=None, nickname=None,
                subscription_status=None, is_superuser=False, is_verified=True,
-               is_active=True):
+               is_active=True, discord_webhook_url=None,
+               default_sniper_list_enabled=False):
     """created_at=None seeds a *legacy* row -- one that predates the column.
 
     It needs a follow-up UPDATE because SQLAlchemy applies a column default
@@ -306,18 +316,26 @@ def _seed_user(factory, email, *, created_at=None, nickname=None,
     is correct behaviour for real registrations (which must always get a
     date), and it means the only rows that can legitimately be NULL are the
     ones the migration added the column to -- exactly what this reproduces."""
+    created_id = {}
+
     async def _run():
         async with factory() as session:
-            session.add(User(email=email, hashed_password="x", created_at=created_at,
-                             nickname=nickname, subscription_status=subscription_status,
-                             is_superuser=is_superuser, is_verified=is_verified,
-                             is_active=is_active))
+            user = User(email=email, hashed_password="x", created_at=created_at,
+                        nickname=nickname, subscription_status=subscription_status,
+                        is_superuser=is_superuser, is_verified=is_verified,
+                        is_active=is_active, discord_webhook_url=discord_webhook_url,
+                        default_sniper_list_enabled=default_sniper_list_enabled)
+            session.add(user)
             await session.commit()
+            created_id["id"] = user.id
             if created_at is None:
                 await session.execute(
                     update(User).where(User.email == email).values(created_at=None))
                 await session.commit()
     asyncio.run(_run())
+    # Returned so watchlist/visitor tests can reference the account by id
+    # without a second lookup.
+    return created_id["id"]
 
 
 def test_signups_requires_superuser(as_plain_user):
@@ -360,8 +378,23 @@ def test_signups_never_exposes_secrets(as_superuser, session_factory):
     an explicit allowlist, so a future column can't leak by default."""
     _seed_user(session_factory, "new@example.com", created_at=datetime.now(timezone.utc))
     (entry,) = client.get("/api/admin/signups").json()["signups"]
-    assert set(entry) == {"email", "nickname", "created_at", "signed_up_seconds_ago",
-                          "subscription_status", "is_verified", "is_active", "is_superuser"}
+    assert set(entry) == {"id", "email", "nickname", "created_at", "signed_up_seconds_ago",
+                          "subscription_status", "is_verified", "is_active", "is_superuser",
+                          "watchlist_count", "default_sniper_list_enabled",
+                          "has_discord_webhook"}
+
+
+def test_signups_reports_webhook_presence_but_never_the_url(as_superuser, session_factory):
+    """A Discord webhook URL is a bearer credential -- anyone holding it can
+    post into that channel. The admin page only ever needs to know whether
+    one is configured, so the boolean is exposed and the URL never is."""
+    url = "https://discord.com/api/webhooks/123/supersecrettoken"
+    _seed_user(session_factory, "hook@example.com", created_at=datetime.now(timezone.utc),
+               discord_webhook_url=url)
+    body = client.get("/api/admin/signups").text
+    assert "supersecrettoken" not in body
+    (entry,) = client.get("/api/admin/signups").json()["signups"]
+    assert entry["has_discord_webhook"] is True
 
 
 def test_signups_surfaces_subscription_and_flags(as_superuser, session_factory):
@@ -400,3 +433,167 @@ def test_admin_page_is_served():
     r = client.get("/admin")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+# --- account attribution (2026-08-06) --------------------------------------
+
+def _auth_cookie(user_id):
+    """A real ah_auth JWT for this account, signed the way auth.py signs it.
+    Built through the actual strategy rather than a hand-rolled token so the
+    test breaks if the audience/algorithm/secret ever change."""
+    from fastapi_users.jwt import generate_jwt
+    strategy = auth.get_jwt_strategy()
+    return generate_jwt({"sub": str(user_id), "aud": strategy.token_audience},
+                        strategy.secret, strategy.lifetime_seconds)
+
+
+def test_client_user_id_returns_none_without_a_cookie():
+    """Anonymous traffic is the common case and must not raise."""
+    client.get("/api/me", headers={"X-Forwarded-For": "203.0.113.60"})
+    assert admin._pending_user_ids == {}
+
+
+def test_client_user_id_ignores_a_forged_or_corrupt_token(session_factory):
+    """A bad signature must be treated as anonymous, never as an error --
+    this runs in middleware in front of every request."""
+    client.get("/api/me", headers={"X-Forwarded-For": "203.0.113.61"},
+               cookies={"ah_auth": "not.a.jwt"})
+    assert admin._pending_user_ids == {}
+
+
+def test_track_activity_records_the_signed_in_account(session_factory):
+    uid = _seed_user(session_factory, "who@example.com",
+                     created_at=datetime.now(timezone.utc))
+    client.get("/api/me", headers={"X-Forwarded-For": "203.0.113.62"},
+               cookies={"ah_auth": _auth_cookie(uid)})
+    assert admin._pending_user_ids == {"203.0.113.62": uid}
+
+
+def test_flush_writes_the_account_against_the_ip(session_factory):
+    uid = _seed_user(session_factory, "flush@example.com",
+                     created_at=datetime.now(timezone.utc))
+    admin._pending_hits["203.0.113.63"] = 1
+    admin._pending_user_ids["203.0.113.63"] = uid
+
+    async def _run():
+        async with session_factory() as session:
+            await admin.flush_visitors(session)
+            return (await session.execute(
+                select(VisitorIP).where(VisitorIP.ip == "203.0.113.63"))).scalar_one()
+    assert asyncio.run(_run()).user_id == uid
+
+
+def test_anonymous_traffic_does_not_clear_a_known_account(session_factory):
+    """The column means "last account seen here", so a later anonymous hit
+    from the same IP must leave it alone rather than blanking it."""
+    uid = _seed_user(session_factory, "sticky@example.com",
+                     created_at=datetime.now(timezone.utc))
+
+    async def _flush():
+        async with session_factory() as session:
+            await admin.flush_visitors(session)
+
+    admin._pending_hits["203.0.113.64"] = 1
+    admin._pending_user_ids["203.0.113.64"] = uid
+    asyncio.run(_flush())
+
+    admin._pending_hits["203.0.113.64"] = 1          # anonymous this time
+    asyncio.run(_flush())
+
+    async def _read():
+        async with session_factory() as session:
+            return (await session.execute(
+                select(VisitorIP).where(VisitorIP.ip == "203.0.113.64"))).scalar_one()
+    row = asyncio.run(_read())
+    assert row.user_id == uid and row.hit_count == 2
+
+
+def test_active_users_names_the_signed_in_account(as_superuser, session_factory):
+    uid = _seed_user(session_factory, "active@example.com", nickname="Sniper",
+                     created_at=datetime.now(timezone.utc))
+    _seed_visitor(session_factory, "203.0.113.65", user_id=uid)
+    _seed_visitor(session_factory, "203.0.113.66")
+
+    body = client.get("/api/admin/active-users").json()
+    named = {e["ip"]: e for e in body["ips"]}
+    assert named["203.0.113.65"]["user_email"] == "active@example.com"
+    assert named["203.0.113.65"]["user_nickname"] == "Sniper"
+    assert named["203.0.113.66"]["user_email"] is None
+    assert body["signed_in_count"] == 1
+
+
+def test_visitor_history_names_the_signed_in_account(as_superuser, session_factory):
+    uid = _seed_user(session_factory, "hist@example.com",
+                     created_at=datetime.now(timezone.utc))
+    _seed_visitor(session_factory, "203.0.113.67", user_id=uid)
+    (entry,) = client.get("/api/admin/visitors").json()["visitors"]
+    assert entry["user_email"] == "hist@example.com"
+
+
+def test_a_dangling_user_id_renders_as_anonymous(as_superuser, session_factory):
+    """SET NULL covers a real delete, but a row read between the two queries
+    (or a hand-edited database) can still reference a missing account. It
+    must degrade to anonymous, never fabricate an entry or 500."""
+    import uuid as _uuid
+    _seed_visitor(session_factory, "203.0.113.68", user_id=_uuid.uuid4())
+    (entry,) = client.get("/api/admin/visitors").json()["visitors"]
+    assert entry["user_email"] is None
+
+
+# --- watchlist visibility (2026-08-06) -------------------------------------
+
+def _seed_watchlist(factory, owner_id, item_ids, trigger_price_copper=5_000_000):
+    async def _run():
+        async with factory() as session:
+            for item_id in item_ids:
+                session.add(WatchlistItem(owner_id=owner_id, item_id=item_id,
+                                          trigger_price_copper=trigger_price_copper))
+            await session.commit()
+    asyncio.run(_run())
+
+
+def test_signups_reports_watchlist_size_and_default_list_flag(as_superuser, session_factory):
+    uid = _seed_user(session_factory, "wl@example.com",
+                     created_at=datetime.now(timezone.utc),
+                     default_sniper_list_enabled=True)
+    _seed_watchlist(session_factory, uid, [1234, 5678])
+    (entry,) = client.get("/api/admin/signups").json()["signups"]
+    assert entry["watchlist_count"] == 2
+    assert entry["default_sniper_list_enabled"] is True
+
+
+def test_signups_reports_zero_for_an_empty_watchlist(as_superuser, session_factory):
+    """An account with no items doesn't appear in the grouped count query at
+    all, so the .get() default is what's being checked here."""
+    _seed_user(session_factory, "empty@example.com",
+               created_at=datetime.now(timezone.utc))
+    (entry,) = client.get("/api/admin/signups").json()["signups"]
+    assert entry["watchlist_count"] == 0
+    assert entry["default_sniper_list_enabled"] is False
+
+
+def test_watchlist_detail_requires_superuser(as_plain_user, session_factory):
+    import uuid as _uuid
+    r = client.get(f"/api/admin/watchlist/{_uuid.uuid4()}")
+    assert r.status_code == 403
+
+
+def test_watchlist_detail_lists_items(as_superuser, session_factory, monkeypatch):
+    uid = _seed_user(session_factory, "det@example.com",
+                     created_at=datetime.now(timezone.utc))
+    _seed_watchlist(session_factory, uid, [152510, 82800])
+
+    body = client.get(f"/api/admin/watchlist/{uid}").json()
+    assert body["count"] == 2 and body["total"] == 2
+    assert [i["item_id"] for i in body["items"]] == [152510, 82800]
+    assert body["items"][0]["trigger_price_g"] == 500.0
+
+
+def test_watchlist_detail_is_empty_for_an_account_with_none(as_superuser, session_factory):
+    """Must short-circuit before touching NameCache -- an empty list has no
+    ids to resolve and should cost no item lookups at all."""
+    uid = _seed_user(session_factory, "none@example.com",
+                     created_at=datetime.now(timezone.utc))
+    body = client.get(f"/api/admin/watchlist/{uid}").json()
+    assert body == {"count": 0, "total": 0,
+                    "limit": admin.WATCHLIST_DETAIL_LIMIT, "items": []}

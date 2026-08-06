@@ -61,9 +61,61 @@ Superuser-only activity tracking + visitor history (split out of
 non-superuser, on top of `current_active_user`'s 401) gates every route:
 `GET /api/admin/active-users` (`last_seen` within `ACTIVE_WINDOW_SECONDS`,
 15 min), `GET /api/admin/visitors` (full history, newest first, capped at
-`VISITOR_HISTORY_LIMIT`) and `GET /api/admin/signups` (registered accounts
-with email, newest first, capped at `SIGNUP_LIST_LIMIT`); `/admin` →
-`admin.html` renders all three.
+`VISITOR_HISTORY_LIMIT`), `GET /api/admin/signups` (registered accounts
+with email, newest first, capped at `SIGNUP_LIST_LIMIT`) and
+`GET /api/admin/watchlist/{owner_id}` (one account's watchlist items,
+capped at `WATCHLIST_DETAIL_LIMIT`); `/admin` → `admin.html` renders them.
+
+### Account attribution on visitor rows (2026-08-06)
+
+`db.VisitorIP.user_id` records the most recent **authenticated** account seen
+from an IP, so `/active-users` and `/visitors` emit `user_email` /
+`user_nickname` and the page can answer "which *users* are active", not just
+which addresses. `/active-users` also returns `signed_in_count`.
+
+The hard constraint is that this had to cost **no database work on the
+request path** — this module's docstring documents a real outage from exactly
+that. `_client_user_id()` therefore decodes the `ah_auth` JWT locally
+(`fastapi_users.jwt.decode_jwt` with `auth.SECRET` and the strategy's own
+audience) and reads `sub`; it never asks Postgres who the user is. Any
+signature/expiry/audience failure returns None — this runs in front of every
+request, so it must never be able to reject traffic. A validly-signed token
+for a since-deleted account is caught at read time instead: the endpoints
+join to `User`, and a dangling id renders as anonymous rather than as a
+fabricated account.
+
+Deliberately last-writer-wins on one row per IP, **not** an (ip, user)
+history table — that table's whole design is to stay bounded by distinct
+visitor count. Two consequences worth knowing before trusting the column:
+a shared NAT/household IP shows only whichever account hit the API most
+recently, and it is never cleared on logout, so it means "last account seen
+here", not "who is logged in right now". A later *anonymous* request from the
+same IP leaves it intact (tested).
+
+### Watchlist visibility (2026-08-06)
+
+`/signups` carries `watchlist_count` (one grouped query, not a count per
+row), `default_sniper_list_enabled` and `has_discord_webhook`. The webhook is
+exposed **only as a boolean** — the URL itself is a bearer credential that
+lets anyone holding it post into that channel, and a test asserts the token
+never appears in the response body.
+
+The items themselves are their own endpoint, fetched only when a row is
+actually expanded: one account may hold `watchlist.MAX_WATCHLIST_ITEMS_PER_USER`
+(500) items, so embedding them would grow the signup payload with the
+product's own success for data almost none of which is on screen. Item names
+come from `NameCache`, whose cold lookups make live blocking Blizzard calls,
+so the build runs inside `asyncio.to_thread()` bounded by
+`LIVE_RESOLVE_DEADLINE_SECONDS` — the same precaution `watchlist.list_watchlist()`
+takes, for the same reason.
+
+The standing sniper-list rule is reported as **on/off only**, never as its
+matches: those are region-wide and identical for every account sharing the
+same thresholds, so rendering them per user would repeat one list N times.
+
+`admin.html` keeps expanded rows in a module-level `Set` plus an item cache,
+because the page re-renders every 30s and would otherwise snap an open list
+shut while it was being read.
 
 `/signups` returns an **explicit field allowlist**, never the whole `User`
 row — that row also carries `hashed_password` and the Stripe customer/
