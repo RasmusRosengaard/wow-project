@@ -71,6 +71,24 @@ Region scanner: sweeps every EU connected realm's *current* listings
 `os.replace()` atomic rename (fixed 2026-07-25 after a real production crash —
 a reader could open the file mid-write).
 
+Each sweep also records every realm's Blizzard publish time (the response's
+`Last-Modified`) into `data/state/sweep_publish.json` — one file write per
+sweep, no extra requests, `scan_region.load_publish_state()` to read it.
+Diagnostics only; nothing on the pricing path reads it. See
+`.claude/docs/architecture.md` for the schema and why it exists (short
+version: without it, a sniper-list alert timestamp can't be told apart from
+an old listing that merely became newly eligible).
+
+`scan_one()` returns `(row_count, last_modified)` — a malformed body yields
+`(0, None)`, never `(0, header)`, since the parquet on disk is still the
+*previous* sweep's and recording the new publish would overstate its
+freshness.
+
+**Not** yet fed back as `If-Modified-Since`. Doing so would cut the sweep's
+bandwidth by roughly 60x at the current 60s cadence (~92 full dumps/minute
+today), but a 304 leaves the parquet — and its `fetched_ts` — untouched, so
+it changes what lands on disk and is left as its own change.
+
 ## `collect_all.py`
 
 The sole collection path (runs in-process inside `dashboard.py`'s background

@@ -20,7 +20,39 @@ data/state/{cr_id}.json  — Last-Modified cursor for the sell-realm collector
 Blizzard API ──> data/listings/{cr_id}.parquet   (region scanner, ALL EU realms;
                                                     latest sweep only, overwritten,
                                                     no history — buy side)
+
+data/state/sweep_publish.json — when Blizzard actually published each realm's
+                                dump, recorded by every sweep (2026-08-06).
+                                Diagnostics only; nothing on the pricing path
+                                reads it. See below.
 ```
+
+### `data/state/sweep_publish.json`
+
+`{cr_id (str): {last_modified, published_ts, first_seen_ts}}`, written once per
+sweep by `scan_region.sweep()`, read by `scan_region.load_publish_state()`.
+
+`published_ts` is Blizzard's own publish moment (the dump's `Last-Modified`,
+parsed); `first_seen_ts` is the sweep that **first** observed that value, so
+`first_seen_ts - published_ts` is our detection lag for that realm.
+`first_seen_ts` deliberately does not move while the dump is unchanged —
+otherwise it would measure our poll cadence rather than the lag.
+
+Added because the buy side previously threw the `Last-Modified` header away
+(`scan_one()` fetches unconditionally), which made a sniper-list alert
+timestamp ambiguous: a listing appearing for the first time and an old listing
+merely becoming *newly eligible* look identical from outside. Three things
+produce the latter — the 4h `watchlist.NOTIFY_COOLDOWN_SECONDS` expiring, the
+6h `tsm.REFRESH_INTERVAL_SECONDS` sale-average refresh, and NameCache/
+appearance entries converging via `collect_all.py`'s prewarms. This file is
+what tells them apart.
+
+It is also the raw material for the **per-realm learned publish offset** that
+`dashboard.py`'s `TIGHT_WINDOW_*` comment already names as the likely endgame:
+one hand-aimed window cannot fit every realm's own offset, and a slot that
+re-phased once (2026-08-05, Draenor :18-:26 -> :38-:48) will re-phase again.
+Note the tight window only helps the ~36 deep-collected sell realms; the
+sniper-list feed is region-sweep-only and gets no benefit from it.
 
 **Manual/ad-hoc path only** (diff_snapshots.py is no longer run automatically): a
 human who wants the sale-classification signal first accumulates real history
