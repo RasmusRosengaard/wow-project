@@ -3359,3 +3359,109 @@ suddenly reading the developer's real `data/tsm_sale_rates.json` and
 "how many Discord posts happened" assertion depended on whether a real TSM
 refresh had happened to add its fixture item id with a high enough sale
 average. The `listings_dir` fixture now points both caches at `tmp_path`.
+
+---
+
+## Email verification, password reset, Google login (2026-08-06)
+
+Prompted by "how do we get auth for registers and already existing users".
+Register/login had worked since 2026-07-20 (FastAPI-Users, `ah_auth` cookie);
+what was missing was every part of auth that needs an **email sender**, plus a
+password-free way in. Scoped on 2026-07-26 as `progress.md` item 4 and never
+started, because it needs third-party accounts — human-only steps.
+
+### Decisions taken up front (human, all four)
+
+Scope (verification + Google + reset), provider (Resend), existing accounts
+(grandfather), gate strength (soft), and Google↔password collision (link into
+one account). Two are worth recording as reversals of the earlier plan:
+
+**The gate is soft, not the hard gate originally scoped.** 2026-07-26's goal was
+to block unverified accounts from every `current_active_user` route, so a
+throwaway registration couldn't burn free-tier query budget or a realm-lock
+slot. That reasoning was quietly invalidated on 2026-08-03 by the anonymous
+tier: a visitor with no account at all can already run realm-locked
+`/api/snipes` queries, so the hard gate would protect nothing and merely push a
+person back to anonymous browsing while making the product look broken. Raised
+before implementing; human chose soft. Three things need a confirmed address —
+checkout, Snipe Board posting, Discord alerts — chosen as "takes money,
+publishes to others, or points our sender at a URL". A useful side effect: all
+20 pre-existing `test_auth.py` tests passed untouched, where the hard gate would
+have meant rewriting most of them.
+
+**Grandfathering, for the same reason the `created_at` migration refused to
+backfill.** Every production account sat at `is_verified=False` because nothing
+had ever written the column. Migration `b2d5f8a03c71` flips them all. These
+accounts were never *asked* to confirm an address, so recording them as having
+failed to would invent a fact about them — the same principle that led
+`f7b3d81c5e29` (2026-08-04) to leave `created_at` NULL rather than stamp every
+old row with the deploy time. Without it, the founder account and every paying
+subscriber would have lost checkout and posting the instant this deployed.
+
+### Four things that broke, or would have
+
+1. **`lazy="joined"` on `User.oauth_accounts` broke six unrelated queries.**
+   FastAPI-Users' own docs use it. A joined eager load against a *collection*
+   makes SQLAlchemy demand `.unique()` on every `Result` returning `User`
+   entities; the library calls it internally, but `admin.py`, `billing.py`,
+   `watchlist.py` and `grant_free_month.py` each have their own `select(User)`.
+   Caught by 9 red tests. Eager loading is genuinely required (two independent
+   reasons: `resolve_user_from_request()` closes its session before returning
+   the user, and `add_oauth_account()` reads the collection after a
+   `session.refresh()` — both raise `MissingGreenlet` on a lazy load under
+   asyncio), so the fix wasn't "make it lazy" but **`lazy="selectin"`**: just as
+   eager, requires `.unique()` nowhere, costs one extra indexed SELECT. Chosen
+   over patching six call sites specifically because every *future*
+   `select(User)` would have hit the same wall — the recurring-trap shape
+   `matching.md` exists to warn about.
+2. **The OAuth callback returned a bare 204.** FastAPI-Users' callback ends in
+   `backend.login(...)`, and `CookieTransport.get_login_response()` returns 204
+   with a `Set-Cookie`. That's right for `/auth/login` (fetched by JS, which
+   navigates itself) but the OAuth callback is a full browser navigation *from
+   Google* — the user would land on a blank page, logged in, with no way to
+   tell. Fixed with a `RedirectCookieTransport` subclass on a second
+   `AuthenticationBackend` sharing the same JWT strategy and cookie, so it only
+   changes the response shape. Found by reading the installed package before
+   writing the code, and pinned by a test asserting 302-not-204.
+3. **`is_verified_by_default` doesn't apply when linking.** Reading
+   `BaseUserManager.oauth_callback` showed the `associate_by_email` branch never
+   touches `is_verified` — so register-with-password → never confirm → log in
+   with Google on that address left the account unverified and still bannered,
+   immediately after Google proved the exact thing our confirmation email
+   exists to prove. Caught by a test written on the wrong assumption, then fixed
+   properly with a `UserManager.oauth_callback` override gated on an explicit
+   provider allowlist (so a future provider that *doesn't* verify addresses
+   can't inherit it silently).
+4. **A test made a live Stripe call.** An assertion on `/billing/checkout`
+   returned 200 locally instead of the expected 500: `billing.py` reads
+   `STRIPE_SECRET_KEY` at import time, the dev `.env` holds the **live** key,
+   and the test had created a real Checkout Session over the network (no charge
+   — an abandoned session expires). CI has no `.env` and would have gone red, so
+   the leak was local-only and would have been caught, but only after the fact.
+   Now a `stripe_unconfigured` fixture clears the key and price id for those
+   tests. `test_billing.py` had this right all along, patching in a fake
+   `sk_test_` key — worth copying, not re-deriving.
+
+### Also found
+
+`request.base_url` isn't trustworthy for Google's `redirect_uri` (matched
+byte-for-byte), because uvicorn here isn't configured to trust Railway's proxy
+headers — `admin._client_ip()` parsing `X-Forwarded-For` by hand is the
+evidence. Hence explicit `PUBLIC_BASE_URL`, used for email links too.
+`httpx-oauth`'s Google client resolves identity through the **People API**
+(`people/me?personFields=emailAddresses`), not the OIDC userinfo endpoint, so
+that API must be enabled on the Google Cloud project and the default scopes must
+be left alone — a setup step easy to miss, and it fails only at the last step of
+a real login.
+
+### Same-session follow-up: `/subscribe` copy drift
+
+Human asked to bring `/subscribe` up to date. It still advertised only the snipe
+cap and realm switching — no Watchlist, no standing sniper list, no WoW account
+tracking, all subscriber-only and all shipped weeks earlier. `/pricing` (the
+detailed comparison it links to) was current except for the standing sniper
+list. Also corrected a stale comment in `watchlist.py` claiming
+`default_sniper_list_enabled` "defaults to on"; `db.py` records the human's
+same-day 2026-08-05 request to flip it off. Both statements were true at
+different times, which is why it survived — existing rows kept their value, so
+nothing observable changed for anyone already enrolled.

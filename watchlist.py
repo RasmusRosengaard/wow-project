@@ -225,8 +225,16 @@ def _rule_state_path() -> Path:
 # audience as the rest of Watchlist, whose routes all sit behind
 # Depends(current_subscribed_user) -- and each can turn it off individually
 # via User.default_sniper_list_enabled ("Default sniper list" on
-# watchlist.html), which defaults to on so the already-live behavior isn't
-# silently switched off for anyone.
+# watchlist.html).
+#
+# That flag now defaults to **off** -- corrected here 2026-08-06, this comment
+# still said "defaults to on so the already-live behavior isn't silently
+# switched off for anyone", which was true only for the few hours between the
+# rule shipping and the human's same-day request to flip the default (see
+# db.py's column comment, the authoritative note). Both statements were once
+# accurate, which is exactly why the stale one was easy to miss: existing rows
+# kept their value, only new accounts default off, so nothing observable
+# changed for anyone already enrolled.
 #
 # Deliberately gated through auth.has_active_subscription() in Python
 # rather than an equivalent SQL WHERE clause: that helper is the single

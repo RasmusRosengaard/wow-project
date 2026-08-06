@@ -127,6 +127,11 @@ For changing code, not for running your own instance:
 3. `cp .env.example .env`, fill in Blizzard creds + a `SECRET`. `DATABASE_URL`
    only matters if you're testing something that touches Postgres (auth,
    billing) — the test suite itself uses SQLite and doesn't need it.
+   `RESEND_API_KEY` and the two `GOOGLE_OAUTH_*` keys are optional: with them
+   unset, verification/reset links are written to the server log instead of
+   emailed and the "Continue with Google" button is hidden, which is enough to
+   exercise the whole signup flow locally. See "Email and Google login" below
+   before wiring the real thing up.
 4. `pytest -q` — full suite, no live network calls, no Postgres required.
 5. To manually exercise the app locally (e.g. testing an auth/billing
    change end to end): `docker run -d -e POSTGRES_PASSWORD=devpassword
@@ -141,6 +146,51 @@ The individual CLI tools (`fetch_snapshot.py`, `scan_region.py`,
 standalone for debugging/inspecting data — see their `--help` — but none of
 them are how the product actually runs anymore; `collect_all.py` inside the
 deployed app is.
+
+## Email and Google login
+
+Added 2026-08-06. Accounts confirm their email address, can reset a forgotten
+password, and can sign in with Google instead of a password. Both integrations
+degrade gracefully when unconfigured, so neither is needed to develop locally.
+
+**Email (Resend).** `mailer.py` is one authenticated POST through the existing
+`httpx` dependency — no new library. With `RESEND_API_KEY` unset it logs the
+message body (including the working link) and returns, which is how you finish
+a signup on a local instance. `send()` never raises: a provider outage must not
+turn a created account into a 500, and the resend affordance on `/verify` covers
+an undelivered mail.
+
+Two human-only setup steps, both required before this works for real users:
+
+- **Resend:** create the account, add `realm-arbitrage.com`, and put its
+  DKIM/SPF records into **name.com**'s DNS panel — that's where the domain's
+  nameservers point. Railway hosts the app, not the DNS zone. Free tier is
+  3,000 emails/month capped at 100/day on one domain.
+- **Google Cloud:** create an OAuth client (Web application), register the
+  redirect URI exactly as `https://realm-arbitrage.com/auth/google/callback`,
+  **and enable the People API** — `httpx-oauth`'s Google client reads the
+  address from `people.googleapis.com/v1/people/me` rather than the OIDC
+  userinfo endpoint, so login fails at the last step without it.
+
+**The gate is soft, on purpose.** An unverified account keeps full free-tier
+access to the product — `/api/snipes`, `/api/me`, `/api/status`, `/api/realms`
+all stay open, with a banner asking it to confirm. Only three things require a
+confirmed address: Stripe checkout, posting to the Snipe Board, and (already,
+via the subscription gate) Discord alerts. The hard gate originally scoped for
+this stopped making sense once anonymous visitors could use `/snipes` at all
+(2026-08-03) — blocking an unverified *account* from the same data protects
+nothing and just pushes the person back to anonymous browsing.
+
+Every account that existed before this deployed was marked verified by a one-off
+migration (`b2d5f8a03c71`). They were never asked to confirm an address, so
+treating them as having failed to is inventing a fact — and without the backfill
+the founder account and every paying subscriber would have lost checkout and
+posting the moment it shipped.
+
+Google logins link by email address: signing in with Google on an address that
+already has a password account joins that one account rather than creating a
+second, and marks it verified, since Google has just proven the same thing our
+own confirmation email exists to prove.
 
 ## How the classification engine works — and its limits
 

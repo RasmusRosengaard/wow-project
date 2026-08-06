@@ -15,13 +15,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends
-from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
+from fastapi_users.db import (SQLAlchemyBaseOAuthAccountTableUUID, SQLAlchemyBaseUserTableUUID,
+                             SQLAlchemyUserDatabase)
 from fastapi_users_db_sqlalchemy.generics import GUID
 from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String,
                         UniqueConstraint, false as sa_false,
                         true as sa_true)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 import blizz  # noqa: F401  -- triggers .env loading as a side effect, same as every other module here
 
@@ -30,10 +31,34 @@ class Base(DeclarativeBase):
     pass
 
 
+class OAuthAccount(SQLAlchemyBaseOAuthAccountTableUUID, Base):
+    """One linked third-party login for a User -- currently only Google (added
+    2026-08-06). FastAPI-Users' base table supplies every column
+    (oauth_name/account_id/account_email/access_token/refresh_token/expires_at
+    plus the user_id FK); nothing project-specific belongs here, so this stays
+    an empty subclass. The migration adds one index the base table doesn't
+    declare, on user_id -- User.oauth_accounts' selectin load queries by it on
+    every single user lookup.
+
+    Nothing in this app ever reads the stored access/refresh token back. We use
+    Google purely to establish "this person controls this email address" at
+    login time -- there is no Google API we call on the user's behalf, and no
+    plan for one. The tokens are persisted only because FastAPI-Users' base
+    table defines those columns."""
+    pass
+
+
 class User(SQLAlchemyBaseUserTableUUID, Base):
     """FastAPI-Users' base table (id/email/hashed_password/is_active/
     is_verified) plus subscription state, updated only by billing.py's
-    Stripe webhook handler -- never trust client input for these fields."""
+    Stripe webhook handler -- never trust client input for these fields.
+
+    is_verified went from a column nothing read to a real gate on 2026-08-06
+    (see auth.py's UserManager hooks and current_verified_user). Every account
+    that existed before that deploy was marked verified by a one-off migration
+    -- there was no way for them to have confirmed an address that was never
+    asked for, and flipping the gate on without that backfill would have locked
+    out the founder account and every paying subscriber."""
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     subscription_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -95,6 +120,29 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
         default=lambda: datetime.now(timezone.utc))
+    # Linked third-party logins (2026-08-06).
+    #
+    # Eager loading is REQUIRED, not a performance preference. Two independent
+    # reasons: auth.resolve_user_from_request() closes its session before
+    # returning the User, and FastAPI-Users' add_oauth_account() touches
+    # user.oauth_accounts after a session.refresh() -- under asyncio a lazy
+    # collection load raises MissingGreenlet in both cases, so Google login
+    # would break outright.
+    #
+    # **selectin, not joined** -- deliberately against FastAPI-Users' own
+    # documented example, which uses lazy="joined". A joined eager load against
+    # a collection makes SQLAlchemy require .unique() on every Result that
+    # returns User entities, or it raises InvalidRequestError at runtime. The
+    # library's own queries do call .unique() (see SQLAlchemyUserDatabase._get_user),
+    # but this app has its own select(User) statements in admin.py, billing.py,
+    # watchlist.py and grant_free_month.py -- all six of which broke when this
+    # first shipped as lazy="joined", and every future one would too. That's a
+    # recurring-trap shape this project has been bitten by before (see
+    # .claude/docs/matching.md's async-blocking pitfall). selectin is just as
+    # eager, needs no .unique() anywhere, and costs one extra indexed SELECT
+    # against a table with one row per linked Google account -- negligible
+    # next to what the routes on this path already do.
+    oauth_accounts: Mapped[list[OAuthAccount]] = relationship("OAuthAccount", lazy="selectin")
 
 
 class ForumPost(Base):
@@ -405,4 +453,9 @@ async def get_async_session():
 
 
 async def get_user_db(session: AsyncSession = Depends(get_async_session)):
-    yield SQLAlchemyUserDatabase(session, User)
+    """OAuthAccount is the third argument (added 2026-08-06) -- without it
+    SQLAlchemyUserDatabase raises NotImplementedError on the
+    get_by_oauth_account/add_oauth_account calls FastAPI-Users' OAuth callback
+    makes, so Google login would fail at the final step rather than at
+    import."""
+    yield SQLAlchemyUserDatabase(session, User, OAuthAccount)

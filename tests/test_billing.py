@@ -70,6 +70,18 @@ async def _get_user(session_factory, email: str) -> User:
         return (await session.execute(select(User).where(User.email == email))).scalar_one()
 
 
+async def _verify_user(session_factory, email: str) -> None:
+    """/billing/checkout requires a confirmed email address as of 2026-08-06
+    (auth.current_verified_user -- don't start a recurring charge against an
+    address that may not exist). Registration leaves an account unverified, so
+    any test about checkout *mechanics* has to clear that gate first; the gate
+    itself is covered in tests/test_auth.py, not here."""
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+        user.is_verified = True
+        await session.commit()
+
+
 def sign_payload(payload: bytes, secret: str = WEBHOOK_SECRET, timestamp: int | None = None) -> tuple[bytes, str]:
     """Constructs a valid Stripe webhook signature header per Stripe's
     documented scheme (HMAC-SHA256 of "{timestamp}.{payload}"), so tests
@@ -100,6 +112,7 @@ def test_checkout_requires_login(client):
 def test_checkout_creates_session_and_returns_url(client, monkeypatch):
     register(client)
     login(client)
+    asyncio.run(_verify_user(client.session_factory, EMAIL))
     user = asyncio.run(_get_user(client.session_factory, EMAIL))
 
     captured = {}

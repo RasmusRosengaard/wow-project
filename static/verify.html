@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Confirm your email — Realm Arbitrage</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<script>
+  (function () {
+    var saved = localStorage.getItem("theme");
+    var theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --paper: #f6f7f5;
+    --card: #ffffff;
+    --hairline: #d8dbd4;
+    --hairline-strong: #c3c8bd;
+    --ink: #14161a;
+    --text-dim: #5b6259;
+    --bullion: #a67c2e;
+    --bullion-dim: #8a6624;
+    --verified: #2f7d72;
+    --alert: #b0392f;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #14161a;
+    --card: #1b1e24;
+    --hairline: #333844;
+    --hairline-strong: #454b59;
+    --ink: #e8eaed;
+    --text-dim: #8b93a3;
+    --bullion: #d4af61;
+    --bullion-dim: #b8934f;
+    --verified: #3fa9a0;
+    --alert: #e0645a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--paper); color: var(--ink);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 1.5rem; gap: 1.5rem;
+  }
+  .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .brand-link { display: contents; text-decoration: none; color: inherit; }
+  .brand h1 {
+    font-size: 1rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
+    text-transform: uppercase; color: var(--ink);
+  }
+  .seal { color: var(--verified); flex-shrink: 0; }
+  #theme-toggle {
+    position: fixed; top: 1rem; right: 1rem;
+    background: var(--card); border: 1px solid var(--hairline-strong); color: var(--text-dim);
+    border-radius: 3px; padding: 0.4rem 0.55rem; cursor: pointer; font-size: 1rem; line-height: 1;
+    font-family: inherit;
+  }
+  #theme-toggle:hover { color: var(--ink); border-color: var(--bullion); }
+  .panel {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
+    padding: 2rem; width: 100%; max-width: 340px;
+    display: flex; flex-direction: column; gap: 1rem;
+  }
+  .panel h2 {
+    font-size: 0.95rem; margin: 0; color: var(--ink);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .panel p { font-size: 0.83rem; color: var(--text-dim); margin: 0; line-height: 1.55; }
+  .mark { font-size: 1.1rem; line-height: 1; }
+  .mark.ok { color: var(--verified); }
+  .mark.bad { color: var(--alert); }
+  label {
+    font-size: 0.68rem; color: var(--text-dim); display: flex; flex-direction: column;
+    gap: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  input {
+    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.55rem 0.65rem; font-size: 0.9rem; font-family: inherit;
+  }
+  input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
+  button {
+    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
+    border-radius: 3px; padding: 0.6rem; cursor: pointer; font-size: 0.85rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    font-family: inherit;
+  }
+  button:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .switch { font-size: 0.8rem; color: var(--text-dim); text-align: center; }
+  .switch a { color: var(--bullion); }
+  .note {
+    font-size: 0.78rem; color: var(--text-dim); background: var(--paper);
+    border: 1px dashed var(--hairline-strong); border-radius: 3px; padding: 0.6rem;
+    line-height: 1.45;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
+<div class="brand">
+  <a href="/" class="brand-link" aria-label="Realm Arbitrage home">
+  <svg class="seal" width="22" height="22" viewBox="0 0 30 30" aria-hidden="true">
+    <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
+    <g stroke="currentColor" stroke-width="0.9" stroke-linecap="round">
+      <line x1="15" y1="1" x2="15" y2="3.4"/>
+      <line x1="15" y1="26.6" x2="15" y2="29"/>
+      <line x1="1" y1="15" x2="3.4" y2="15"/>
+      <line x1="26.6" y1="15" x2="29" y2="15"/>
+      <line x1="5.11" y1="5.11" x2="6.81" y2="6.81"/>
+      <line x1="23.19" y1="23.19" x2="24.89" y2="24.89"/>
+      <line x1="5.11" y1="24.89" x2="6.81" y2="23.19"/>
+      <line x1="23.19" y1="6.81" x2="24.89" y2="5.11"/>
+    </g>
+    <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <h1>Realm Arbitrage</h1>
+  </a>
+</div>
+
+<div class="panel" id="working">
+  <h2>Confirming your email...</h2>
+  <p>One moment.</p>
+</div>
+
+<div class="panel" id="ok" hidden>
+  <h2><span class="mark ok">&#10003;</span> Email confirmed</h2>
+  <p>Your address is confirmed. Subscribing, posting to the Snipe Board and
+     Discord alerts are all unlocked.</p>
+  <div class="switch"><a href="/snipes">Go to the sniper</a> &middot; <a href="/login">Log in</a></div>
+</div>
+
+<div class="panel" id="already" hidden>
+  <h2><span class="mark ok">&#10003;</span> Already confirmed</h2>
+  <p>This address was confirmed already — nothing else to do.</p>
+  <div class="switch"><a href="/snipes">Go to the sniper</a> &middot; <a href="/login">Log in</a></div>
+</div>
+
+<!-- One panel for every failure, deliberately: a bad token, an expired token
+     and a missing token all leave the user in exactly the same position, and
+     the only useful next step is the same in each case. Telling them apart
+     would also confirm to a stranger whether a token was ever valid. -->
+<div class="panel" id="bad" hidden>
+  <h2><span class="mark bad">&#10007;</span> That link didn't work</h2>
+  <p id="bad-why">Confirmation links expire after an hour, and each one can only
+     be used once. Enter your email and we'll send a fresh link.</p>
+  <label>Email <input type="email" id="email" required autocomplete="username"></label>
+  <button type="button" id="resend">Send a new link</button>
+  <div class="note" id="no-email-note" hidden>
+    Email delivery isn't configured on this instance — the new link will be
+    written to the server log instead of being sent.
+  </div>
+  <div class="switch" id="resend-state"></div>
+  <div class="switch"><a href="/login">Back to log in</a></div>
+</div>
+
+<script>
+const token = new URLSearchParams(window.location.search).get("token");
+
+function show(id) {
+  for (const p of ["working", "ok", "already", "bad"]) {
+    document.getElementById(p).hidden = (p !== id);
+  }
+}
+
+// Whether real delivery is possible -- only used to set expectations on the
+// resend note, so a failure to fetch it is not worth surfacing.
+(async function checkEmailConfigured() {
+  try {
+    const cfg = await (await fetch("/api/auth-config")).json();
+    document.getElementById("no-email-note").hidden = !!cfg.email;
+  } catch (e) { /* leave the note hidden */ }
+})();
+
+(async function verify() {
+  if (!token) {
+    document.getElementById("bad-why").textContent =
+      "This page needs a confirmation link. Enter your email and we'll send one.";
+    show("bad");
+    return;
+  }
+  try {
+    // POST, not a GET on page load with the token in the path: the token is in
+    // the query string here purely so it survives being clicked from an email,
+    // and dashboard.py's /verify route is a plain static file. FastAPI-Users'
+    // verify router takes the token in a JSON body.
+    const r = await fetch("/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (r.ok) {
+      show("ok");
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    if (data.detail === "VERIFY_USER_ALREADY_VERIFIED") {
+      show("already");
+      return;
+    }
+    show("bad");
+  } catch (e) {
+    document.getElementById("bad-why").textContent =
+      "Couldn't reach the server. Check your connection, then enter your email " +
+      "to request a fresh link.";
+    show("bad");
+  }
+})();
+
+document.getElementById("resend").addEventListener("click", async () => {
+  const btn = document.getElementById("resend");
+  const state = document.getElementById("resend-state");
+  const email = document.getElementById("email").value.trim();
+  if (!email) {
+    state.textContent = "Enter your email first.";
+    return;
+  }
+  btn.disabled = true;
+  state.textContent = "Sending...";
+  try {
+    // Always 202, whether or not that address has an account -- FastAPI-Users
+    // swallows UserNotExists/AlreadyVerified on purpose so this endpoint can't
+    // be used to find out which emails are registered. So the confirmation
+    // below is deliberately worded as "if there's an account".
+    await fetch("/auth/request-verify-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    state.textContent = "Sent — if that address has an account, check your inbox.";
+  } catch (e) {
+    state.textContent = "Network error -- try again.";
+    btn.disabled = false;
+  }
+});
+
+function applyThemeButtonState() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  const btn = document.getElementById("theme-toggle");
+  btn.textContent = dark ? "☀" : "☽";
+  const label = dark ? "Switch to light mode" : "Switch to dark mode";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  applyThemeButtonState();
+});
+applyThemeButtonState();
+</script>
+</body>
+</html>

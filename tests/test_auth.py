@@ -4,15 +4,22 @@ database (not the dependency-override bypass test_dashboard.py uses for its
 snipe_check-focused tests) so this suite gives genuine coverage of the auth
 machinery itself: password hashing, cookie issuance, session validity."""
 import asyncio
+import re
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi_users.router.oauth import CSRF_TOKEN_COOKIE_NAME, generate_state_token
+from httpx_oauth.oauth2 import OAuth2Token
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import auth
+import billing
 import dashboard
 import db
-from db import Base, User, get_async_session
+import mailer
+from db import Base, OAuthAccount, User, get_async_session
 
 EMAIL = "test@example.com"
 PASSWORD = "testpassword123"
@@ -353,3 +360,460 @@ def test_anonymous_session_persists_across_requests_via_cookie(client):
     assert client.get("/api/me").json()["locked_sell_realm"] == 111111
 
 
+
+
+# --- Email verification, password reset, Google OAuth (2026-08-06) ----------
+#
+# Every test above still passes untouched, and that is the point of the "soft
+# gate" (human decision): a freshly-registered, unverified account still reaches
+# /api/snipes, /api/status and /api/me exactly as before. Only three write
+# routes require a confirmed address. The originally-scoped hard gate would have
+# meant rewriting most of this file.
+
+
+@pytest.fixture
+def sent_mail(monkeypatch):
+    """Captures every email instead of sending one. Returns the list of
+    (to, subject, html) tuples, which grows as the test runs.
+
+    Patched even though mailer.send() is already a no-op without RESEND_API_KEY
+    (CI sets none): a developer with a real key in .env would otherwise send
+    live email from a test run, and the tests need the token out of the body
+    anyway."""
+    captured = []
+
+    async def fake_send(to, subject, html):
+        captured.append((to, subject, html))
+        return True
+
+    monkeypatch.setattr(mailer, "send", fake_send)
+    return captured
+
+
+def token_from(html: str) -> str:
+    """Pulls the token out of a link in a captured email body. Deliberately
+    reads the real rendered HTML rather than intercepting the token earlier --
+    a link that carries a malformed or truncated token is exactly the kind of
+    break this should catch."""
+    match = re.search(r"[?&]token=([^\"&<\s]+)", html)
+    assert match, f"no token= link found in email body: {html[:400]}"
+    return match.group(1)
+
+
+async def _is_verified(session_factory, email: str) -> bool:
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+        return user.is_verified
+
+
+async def _verify_user(session_factory, email: str) -> None:
+    """Marks an account verified directly, the way the grandfather migration
+    did for every pre-existing account -- for tests about what a verified
+    account can do, rather than about the verification flow itself."""
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+        user.is_verified = True
+        await session.commit()
+
+
+def test_registration_sends_verification_email(client, sent_mail):
+    r = register(client)
+    assert r.status_code == 201
+    # New accounts start unverified -- the whole premise of the gate.
+    assert r.json()["is_verified"] is False
+    assert asyncio.run(_is_verified(client.session_factory, EMAIL)) is False
+
+    assert len(sent_mail) == 1
+    to, subject, html = sent_mail[0]
+    assert to == EMAIL
+    assert "confirm" in subject.lower()
+    assert "/verify?token=" in html
+
+
+def test_verify_token_marks_account_verified(client, sent_mail):
+    register(client)
+    token = token_from(sent_mail[0][2])
+
+    r = client.post("/auth/verify", json={"token": token})
+    assert r.status_code == 200
+    assert r.json()["is_verified"] is True
+    assert asyncio.run(_is_verified(client.session_factory, EMAIL)) is True
+
+
+def test_verify_token_is_single_use(client, sent_mail):
+    """Replaying a consumed token reports ALREADY_VERIFIED rather than
+    succeeding again -- verify.html shows its own panel for this, so the
+    distinction is load-bearing, not cosmetic."""
+    register(client)
+    token = token_from(sent_mail[0][2])
+    assert client.post("/auth/verify", json={"token": token}).status_code == 200
+
+    r = client.post("/auth/verify", json={"token": token})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "VERIFY_USER_ALREADY_VERIFIED"
+
+
+def test_verify_rejects_garbage_token(client, sent_mail):
+    register(client)
+    r = client.post("/auth/verify", json={"token": "not-a-real-token"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "VERIFY_USER_BAD_TOKEN"
+    assert asyncio.run(_is_verified(client.session_factory, EMAIL)) is False
+
+
+def test_request_verify_token_resends_without_leaking_account_existence(client, sent_mail):
+    """The resend affordance (verify.html, register.html, the dashboard banner)
+    always gets 202, whether or not the address has an account -- otherwise the
+    endpoint would be a way to enumerate registered emails. So the response is
+    identical; only whether a mail was actually produced differs."""
+    register(client)
+    sent_mail.clear()
+
+    r = client.post("/auth/request-verify-token", json={"email": EMAIL})
+    assert r.status_code == 202
+    assert len(sent_mail) == 1
+
+    r = client.post("/auth/request-verify-token", json={"email": "nobody@example.com"})
+    assert r.status_code == 202  # same status...
+    assert len(sent_mail) == 1   # ...but no mail: no such account
+
+
+def test_api_me_reports_is_verified_for_both_tiers(client, sent_mail):
+    """Both branches of /api/me carry the field -- the frontend banner logic
+    reads it without first checking which shape it got."""
+    anon = client.get("/api/me").json()
+    assert anon["is_anonymous"] is True
+    assert anon["is_verified"] is False
+
+    register(client)
+    login(client)
+    assert client.get("/api/me").json()["is_verified"] is False
+
+    asyncio.run(_verify_user(client.session_factory, EMAIL))
+    assert client.get("/api/me").json()["is_verified"] is True
+
+
+# --- The soft gate: three write routes require a confirmed address ----------
+
+
+def _post_forum(client):
+    """Minimal valid Snipe Board post. The image bytes don't need to be a real
+    PNG -- forum.py keys off the declared content type, not the payload."""
+    return client.post("/api/forum/posts",
+                       files={"image": ("snipe.png", b"fake-png-bytes", "image/png")})
+
+
+@pytest.fixture
+def stripe_unconfigured(monkeypatch):
+    """Guarantees no test in this file can reach the real Stripe API.
+
+    Not hypothetical: writing these tests, an assertion against
+    /billing/checkout returned 200 locally, because billing.py reads
+    STRIPE_SECRET_KEY at import time and a dev .env holds the **live** key --
+    the test had created a real Checkout Session over the network. CI has no
+    .env and would have 500'd, so the suite would have been red there and
+    quietly hitting live Stripe here.
+
+    Clearing PRICE_ID trips create_checkout_session's own "Stripe is not
+    configured" guard, which is the first thing it does after the auth
+    dependency resolves -- so a 500 here still proves the request got *past*
+    current_verified_user, which is the only thing these tests care about.
+    tests/test_billing.py takes the opposite approach for the same reason
+    (patch in a fake sk_test_ key and mock Session.create) because it needs the
+    call to succeed."""
+    monkeypatch.setattr(billing, "PRICE_ID", None)
+    monkeypatch.setattr(billing.stripe, "api_key", None)
+
+
+def test_unverified_account_cannot_start_checkout(client, sent_mail, stripe_unconfigured):
+    register(client)
+    login(client)
+    r = client.post("/billing/checkout")
+    # 403, specifically -- NOT 401. subscribe.html branches on exactly this to
+    # say "confirm your email" instead of bouncing an already-logged-in user
+    # to /login. Also note this is reached before the Stripe-configured check,
+    # so an unverified account never touches Stripe at all.
+    assert r.status_code == 403
+
+
+def test_unverified_account_cannot_post_to_snipe_board(client, sent_mail):
+    register(client)
+    login(client)
+    asyncio.run(_set_nickname(client.session_factory, EMAIL, "Snipehunter"))
+    assert _post_forum(client).status_code == 403
+
+
+def test_verified_account_passes_the_soft_gate(client, sent_mail, stripe_unconfigured):
+    """The same two requests as the two tests above, after verifying -- so a 403
+    there proves the gate, and a non-403 here proves the gate is the only thing
+    that was blocking them."""
+    register(client)
+    login(client)
+    token = token_from(sent_mail[0][2])
+    assert client.post("/auth/verify", json={"token": token}).status_code == 200
+    asyncio.run(_set_nickname(client.session_factory, EMAIL, "Snipehunter"))
+
+    assert _post_forum(client).status_code == 200
+    # 500, not 200: the stripe_unconfigured fixture deliberately leaves Stripe
+    # unconfigured, so the route gets past the auth dependency and then trips
+    # its own "Stripe is not configured" guard. That 500 is the proof the gate
+    # opened -- an unverified account gets 403 and never reaches that line.
+    # Checkout actually succeeding is test_billing.py's job.
+    assert client.post("/billing/checkout").status_code == 500
+
+
+def test_soft_gate_leaves_the_read_paths_open(client, sent_mail):
+    """The whole point of the soft gate (human decision, 2026-08-06): an
+    unverified account keeps full free-tier access to the product itself.
+    Anything less would just push the user back to anonymous browsing, which
+    since 2026-08-03 reaches the same data anyway."""
+    UNCOLLECTED_REALM = 424242
+    register(client)
+    login(client)
+    assert asyncio.run(_is_verified(client.session_factory, EMAIL)) is False
+
+    assert client.get("/api/me").status_code == 200
+    assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
+    assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 200
+    assert client.get("/api/realms").status_code == 200
+
+
+async def _set_nickname(session_factory, email: str, nickname: str) -> None:
+    """forum.create_post() requires a nickname before a first post, checked
+    before the verification gate matters -- set it directly so these tests are
+    about the gate and nothing else."""
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+        user.nickname = nickname
+        await session.commit()
+
+
+# --- Password reset ---------------------------------------------------------
+
+
+def test_forgot_password_flow_replaces_the_password(client, sent_mail):
+    NEW_PASSWORD = "a-brand-new-password-456"
+    register(client)
+    sent_mail.clear()
+
+    r = client.post("/auth/forgot-password", json={"email": EMAIL})
+    assert r.status_code == 202
+    assert len(sent_mail) == 1
+    to, subject, html = sent_mail[0]
+    assert to == EMAIL
+    assert "reset" in subject.lower()
+    assert "/reset-password?token=" in html
+
+    r = client.post("/auth/reset-password",
+                    json={"token": token_from(html), "password": NEW_PASSWORD})
+    assert r.status_code == 200
+
+    # Both directions matter: the new password must work AND the old one must
+    # not. Asserting only the first would pass even if reset did nothing.
+    assert login(client, password=NEW_PASSWORD).status_code == 204
+    assert login(client, password=PASSWORD).status_code == 400
+
+
+def test_forgot_password_does_not_leak_account_existence(client, sent_mail):
+    r = client.post("/auth/forgot-password", json={"email": "nobody@example.com"})
+    assert r.status_code == 202  # identical to the real-account response
+    assert sent_mail == []      # but nothing was sent
+
+
+def test_reset_password_rejects_garbage_token(client, sent_mail):
+    register(client)
+    r = client.post("/auth/reset-password",
+                    json={"token": "not-a-real-token", "password": "irrelevant-123"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "RESET_PASSWORD_BAD_TOKEN"
+    # The original password still works -- a rejected reset changed nothing.
+    assert login(client).status_code == 204
+
+
+# --- Google OAuth login -----------------------------------------------------
+#
+# The routes only exist because conftest.py sets GOOGLE_OAUTH_CLIENT_ID/SECRET
+# before auth.py is imported (dashboard.py mounts them conditionally). No test
+# below ever reaches Google: /authorize builds a URL locally, and the callback
+# tests replace the two client methods that would make network calls.
+
+GOOGLE_ACCOUNT_ID = "people/1234567890"
+
+
+@pytest.fixture
+def fake_google(monkeypatch):
+    """Stands in for Google's token exchange and profile lookup.
+
+    Patches the two methods on the live auth.google_oauth_client instance --
+    the same object the router captured at import time, so the patch is seen by
+    the mounted route. get_id_email's return shape mirrors httpx-oauth's real
+    GoogleOAuth2, which resolves identity through the **People API**
+    (people/me?personFields=emailAddresses) and therefore yields a
+    "people/<id>" resource name rather than an OIDC `sub` -- worth mirroring
+    exactly, since that string is what lands in oauth_account.account_id."""
+    state = {"email": EMAIL, "account_id": GOOGLE_ACCOUNT_ID}
+
+    async def fake_get_access_token(code, redirect_uri, code_verifier=None):
+        return OAuth2Token({"access_token": "fake-google-access-token",
+                            "expires_at": 9999999999})
+
+    async def fake_get_id_email(token):
+        return state["account_id"], state["email"]
+
+    monkeypatch.setattr(auth.google_oauth_client, "get_access_token", fake_get_access_token)
+    monkeypatch.setattr(auth.google_oauth_client, "get_id_email", fake_get_id_email)
+    return state
+
+
+def google_callback(client):
+    """Drives /auth/google/callback with a self-consistent state+CSRF pair.
+
+    Both halves are required: the router compares the csrftoken inside the
+    signed state JWT against the fastapiusersoauthcsrf cookie
+    (secrets.compare_digest) and 400s on a mismatch. Forging them here is what
+    makes it possible to test the callback without a browser round trip through
+    Google.
+
+    follow_redirects=False so the 302 itself is assertable -- following it would
+    turn the response into whatever /snipes returns and hide the very thing
+    these tests are about."""
+    csrf = "test-csrf-token-value"
+    state = generate_state_token({"csrftoken": csrf}, auth.SECRET)
+    client.cookies.set(CSRF_TOKEN_COOKIE_NAME, csrf)
+    try:
+        return client.get("/auth/google/callback",
+                          params={"code": "fake-auth-code", "state": state},
+                          follow_redirects=False)
+    finally:
+        client.cookies.delete(CSRF_TOKEN_COOKIE_NAME)
+
+
+async def _oauth_accounts(session_factory):
+    async with session_factory() as session:
+        return (await session.execute(select(OAuthAccount))).scalars().all()
+
+
+async def _count_users(session_factory) -> int:
+    async with session_factory() as session:
+        return len((await session.execute(select(User))).scalars().all())
+
+
+def test_google_authorize_returns_a_google_url_and_sets_csrf_cookie(client):
+    r = client.get("/auth/google/authorize")
+    assert r.status_code == 200
+    url = r.json()["authorization_url"]
+    assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth")
+    assert auth.GOOGLE_OAUTH_CLIENT_ID in url
+    # The redirect_uri must be the explicitly configured one, not something
+    # derived from the request -- Google matches it byte-for-byte, and a scheme
+    # guessed from proxy headers behind Railway's HTTPS terminator would break
+    # the whole flow. conftest.py pins PUBLIC_BASE_URL so this is exact.
+    assert quote(f"{auth.public_base_url()}{auth.GOOGLE_CALLBACK_PATH}", safe="") in url
+    # Without this cookie the callback cannot validate state at all.
+    assert CSRF_TOKEN_COOKIE_NAME in r.cookies
+
+
+def test_google_callback_creates_verified_account_and_redirects(client, fake_google):
+    r = google_callback(client)
+
+    # 302 to /snipes, NOT the bare 204 plain CookieTransport would return --
+    # the callback is a real browser navigation from Google, so a 204 would
+    # leave the user on a blank page (see auth.RedirectCookieTransport).
+    assert r.status_code == 302
+    assert r.headers["location"] == "/snipes"
+    assert "ah_auth" in r.cookies
+
+    # The cookie is a working session for the same app, interchangeable with one
+    # from /auth/login -- both backends share the JWT strategy and cookie name.
+    me = client.get("/api/me").json()
+    assert me["is_anonymous"] is False
+    assert me["email"] == EMAIL
+    # Verified with no confirmation email: Google already proved the address
+    # (is_verified_by_default=True), so demanding our own would be friction.
+    assert me["is_verified"] is True
+
+
+def test_google_signup_sends_no_verification_email(client, fake_google, sent_mail):
+    """UserManager.on_after_register early-returns for an already-verified user.
+    Without that guard, a Google signup would be emailed a "confirm your
+    address" link it has no reason to click."""
+    assert google_callback(client).status_code == 302
+    assert sent_mail == []
+
+
+def test_google_login_links_to_existing_password_account(client, fake_google, sent_mail):
+    """associate_by_email=True (human decision, 2026-08-06): the same address
+    must end up as ONE account with two ways in, not a duplicate. This is the
+    case where getting it wrong silently splits a paying customer's account in
+    two, so it is asserted on the row counts, not just the response."""
+    register(client)
+    login(client)
+    asyncio.run(_activate_subscription(client.session_factory, EMAIL))
+    client.post("/auth/logout")
+    assert asyncio.run(_count_users(client.session_factory)) == 1
+
+    assert google_callback(client).status_code == 302
+
+    # Still one account -- linked, not duplicated.
+    assert asyncio.run(_count_users(client.session_factory)) == 1
+    accounts = asyncio.run(_oauth_accounts(client.session_factory))
+    assert len(accounts) == 1
+    assert accounts[0].oauth_name == "google"
+    assert accounts[0].account_id == GOOGLE_ACCOUNT_ID
+
+    # And it is the *same* account: the subscription set up before the Google
+    # login is still there afterwards.
+    me = client.get("/api/me").json()
+    assert me["email"] == EMAIL
+    assert me["subscription_status"] == "active"
+    # Linking also verified it -- Google vouched for the address the existing
+    # password account had never confirmed.
+    assert me["is_verified"] is True
+
+
+def test_google_login_twice_reuses_the_same_link(client, fake_google):
+    """A returning Google user must not accumulate a new oauth_account row per
+    login."""
+    assert google_callback(client).status_code == 302
+    client.post("/auth/logout")
+    assert google_callback(client).status_code == 302
+
+    assert asyncio.run(_count_users(client.session_factory)) == 1
+    assert len(asyncio.run(_oauth_accounts(client.session_factory))) == 1
+
+
+def test_google_callback_rejects_mismatched_csrf_token(client, fake_google):
+    """The state JWT and the cookie must agree. Without this check a forged
+    callback could log a victim into an attacker's Google account."""
+    state = generate_state_token({"csrftoken": "the-real-token"}, auth.SECRET)
+    client.cookies.set(CSRF_TOKEN_COOKIE_NAME, "a-different-token")
+    r = client.get("/auth/google/callback",
+                   params={"code": "fake-auth-code", "state": state},
+                   follow_redirects=False)
+    client.cookies.delete(CSRF_TOKEN_COOKIE_NAME)
+    assert r.status_code == 400
+    assert asyncio.run(_count_users(client.session_factory)) == 0
+
+
+def test_google_callback_rejects_unsigned_state(client, fake_google):
+    """A state value we did not sign is refused -- proves the JWT signature is
+    actually checked and not merely parsed."""
+    client.cookies.set(CSRF_TOKEN_COOKIE_NAME, "whatever")
+    r = client.get("/auth/google/callback",
+                   params={"code": "fake-auth-code", "state": "not-a-jwt"},
+                   follow_redirects=False)
+    client.cookies.delete(CSRF_TOKEN_COOKIE_NAME)
+    assert r.status_code == 400
+    assert asyncio.run(_count_users(client.session_factory)) == 0
+
+
+def test_auth_config_reports_what_is_configured(client, monkeypatch):
+    """Drives login.html/register.html hiding the Google button on a deployment
+    with no credentials. Read live from auth/mailer, not baked in at import,
+    which is what makes this monkeypatchable at all."""
+    r = client.get("/api/auth-config").json()
+    assert r["google"] is True  # conftest.py configures it
+    assert r["email"] is False  # no RESEND_API_KEY in tests
+
+    monkeypatch.setattr(auth, "google_oauth_client", None)
+    assert client.get("/api/auth-config").json()["google"] is False

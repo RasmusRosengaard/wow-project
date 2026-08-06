@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import current_active_user
+from auth import current_verified_user
 from db import ForumPost, User, get_async_session
 
 ROOT = Path(__file__).resolve().parent
@@ -93,8 +93,12 @@ async def list_posts(limit: int = Query(50, ge=1, le=200),
 
 @router.post("/posts")
 async def create_post(title: str | None = Form(None), image: UploadFile = File(...),
-                      user: User = Depends(current_active_user),
+                      user: User = Depends(current_verified_user),
                       session: AsyncSession = Depends(get_async_session)) -> dict:
+    """Verified email required (2026-08-06, up from current_active_user) --
+    this is the one route in the app where one account's input becomes content
+    every other visitor sees, uploaded image included. Reading the board stays
+    fully public; only posting to it needs a confirmed address."""
     if not user.nickname:
         # Defense in depth -- snipeboard.html's dialog already prompts for a
         # nickname before ever reaching this request, but that's a client-

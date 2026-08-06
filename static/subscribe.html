@@ -149,9 +149,32 @@
 
   <div class="card">
     <div class="price">€4.99 <span>/ month</span></div>
+    <!-- Kept deliberately shorter than /pricing's full comparison table (linked
+         below): this page's job is to get an already-convinced visitor to
+         checkout, not to re-argue the tiers. But it had drifted badly by
+         2026-08-06 -- it still listed only the snipe cap and realm switching,
+         with no mention of the Watchlist, the standing sniper list or WoW
+         account tracking, all of which are subscriber-only and shipped weeks
+         earlier. Every number here has a single source in code; when one
+         changes, this list and /pricing both need the edit:
+           2,000            dashboard.SNIPE_TIER_CAPS["subscribed"]
+           500 items        watchlist.MAX_WATCHLIST_ITEMS_PER_USER
+           8 accounts       wow_accounts.MAX_ACCOUNTS_PER_USER
+           ~10 minutes      collect_all.py's cycle, which the rule rides -->
     <ul>
-      <li>2,000 snipes in total, refreshes every hour when new AH data comes</li>
+      <li>2,000 snipes per query, refreshes every hour when new AH data comes -- with
+        per-category room reserved, so one flooded category can't crowd out the rest</li>
       <li>Query and switch between <b>any</b> collected sell realm, not locked to one</li>
+      <li><b>Watchlist:</b> track up to 500 items across every EU realm. Trigger on a
+        gold price you set, or on a percentage of the item's region sale average --
+        Discord alert when a listing anywhere drops below it. Add items one at a time
+        or paste in a TSM group export</li>
+      <li><b>Standing sniper list:</b> opt in and every collection cycle (~10 minutes)
+        is scanned across every EU realm for genuinely underpriced listings, with the
+        minimum item value and the discount threshold both yours to tune. No watchlist
+        entries needed -- it looks at everything</li>
+      <li>Register up to 8 WoW accounts and which realms each has characters on -- the
+        dashboard then tells you which account to log into for every listing it finds</li>
     </ul>
     <div id="error" class="error"></div>
     <button id="subscribe">Subscribe with Stripe</button>
@@ -164,7 +187,7 @@
     features later.</div>
 
   <div class="nav">
-    Issues with the site or payment? Email <a href="mailto:rasmus2001@gmail.com">rasmus2001@gmail.com</a>
+    Issues with the site or payment? Email <a href="mailto:rasmusrosen2001@gmail.com">rasmusrosen2001@gmail.com</a>
     or find <b>rasmus5533</b> on Discord.
   </div>
 </div>
@@ -179,6 +202,18 @@ document.getElementById("subscribe").addEventListener("click", async () => {
     const r = await fetch("/billing/checkout", { method: "POST" });
     if (r.status === 401) {
       window.location.href = "/login";
+      return;
+    }
+    // 403 means logged in but email unconfirmed (2026-08-06,
+    // auth.current_verified_user). This is exactly why that dependency raises
+    // 403 rather than 401 -- redirecting to /login here would be nonsense
+    // advice to someone who is already logged in. Kept on the page with a real
+    // explanation instead, since the fix lives on /profile.
+    if (r.status === 403) {
+      err.innerHTML = 'Confirm your email address first — ' +
+        '<a href="/profile">resend the link from your profile</a>.';
+      btn.disabled = false;
+      btn.textContent = "Subscribe with Stripe";
       return;
     }
     if (!r.ok) {

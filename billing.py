@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import current_active_user
+from auth import current_active_user, current_verified_user
 from db import User, get_async_session
 
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
@@ -38,7 +38,15 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 
 
 @router.post("/checkout")
-async def create_checkout_session(request: Request, user: User = Depends(current_active_user)) -> dict:
+async def create_checkout_session(request: Request,
+                                  user: User = Depends(current_verified_user)) -> dict:
+    """Verified email required (2026-08-06, up from current_active_user). Two
+    reasons: don't start a recurring charge against an address that might not
+    exist -- every receipt, renewal notice and dunning email from Stripe would
+    bounce into nowhere -- and it makes "subscriber" imply "verified" for the
+    whole app, which is why watchlist.py's already-current_subscribed_user
+    routes (including the Discord webhook setter) needed no change of their
+    own."""
     if not stripe.api_key or not PRICE_ID:
         raise HTTPException(500, "Stripe is not configured (STRIPE_SECRET_KEY/STRIPE_PRICE_ID)")
 

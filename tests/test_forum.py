@@ -32,9 +32,14 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 32  # not a real decodable PNG -- cont
 
 @pytest.fixture(autouse=True)
 def bypass_auth():
-    dashboard.app.dependency_overrides[auth.current_active_user] = lambda: FAKE_USER
+    # current_verified_user, not current_active_user (changed 2026-08-06):
+    # forum.create_post() now requires a confirmed email address, and overriding
+    # the wrong dependency doesn't fail loudly -- it just leaves the real one in
+    # place, so every business-logic test below silently 401s instead. FAKE_USER
+    # already carries is_verified=True, so nothing else here needed to change.
+    dashboard.app.dependency_overrides[auth.current_verified_user] = lambda: FAKE_USER
     yield
-    dashboard.app.dependency_overrides.pop(auth.current_active_user, None)
+    dashboard.app.dependency_overrides.pop(auth.current_verified_user, None)
 
 
 @pytest.fixture(autouse=True)
@@ -70,7 +75,7 @@ def isolate_forum_image_dir(tmp_path, monkeypatch):
 
 
 def _drop_auth_override():
-    dashboard.app.dependency_overrides.pop(auth.current_active_user, None)
+    dashboard.app.dependency_overrides.pop(auth.current_verified_user, None)
 
 
 def test_list_posts_empty_by_default():
@@ -92,7 +97,7 @@ def test_create_post_requires_nickname():
     client-side, but that's a convenience; this is the real boundary."""
     no_nickname_user = User(id=uuid.uuid4(), email="nonick@example.com", hashed_password="x",
                             is_active=True, is_superuser=False, is_verified=True, nickname=None)
-    dashboard.app.dependency_overrides[auth.current_active_user] = lambda: no_nickname_user
+    dashboard.app.dependency_overrides[auth.current_verified_user] = lambda: no_nickname_user
     r = client.post("/api/forum/posts", files={"image": ("snipe.png", io.BytesIO(PNG_BYTES), "image/png")})
     assert r.status_code == 400
 

@@ -10,6 +10,24 @@ import os
 os.environ.setdefault("SECRET", "test-secret-not-used-for-anything-real")
 os.environ.setdefault("COOKIE_SECURE", "false")
 
+# Google OAuth credentials (2026-08-06). Needed at IMPORT time, not just at
+# request time: dashboard.py mounts /auth/google/* only when
+# auth.google_oauth_client is not None, and that is decided once when auth.py is
+# imported -- so without these, the OAuth routes wouldn't exist to test at all
+# and test_auth.py's Google cases would 404 in CI.
+#
+# Safe despite looking like credentials in a repo: nothing here reaches Google.
+# The /authorize test only builds a URL string locally, and the callback test
+# monkeypatches get_access_token/get_id_email, so no network call is ever made
+# with them. setdefault() (same as SECRET above) so a real .env still wins
+# locally -- the assertions read auth.GOOGLE_OAUTH_CLIENT_ID rather than
+# hardcoding this value, so they hold either way.
+os.environ.setdefault("GOOGLE_OAUTH_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+os.environ.setdefault("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret-not-real")
+# Pins the redirect_uri the OAuth router builds, so a test can assert an exact
+# string instead of whatever TestClient's base URL happens to be.
+os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
+
 # Match CI, which sets no DATABASE_URL at all -- so a missing DB-override
 # fixture fails HERE instead of only in CI (the 2026-08-01 incident: 17 tests
 # green locally, red in CI). This replaces the old `env -u DATABASE_URL pytest`

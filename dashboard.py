@@ -38,6 +38,7 @@ import blizz
 import db
 import fetch_snapshot
 import forum
+import mailer
 import snipe_check
 import watchlist
 import wow_accounts
@@ -230,6 +231,50 @@ async def ensure_anon_cookie(request: Request, call_next):
 app.include_router(admin.router)
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
+# Email verification + password reset (2026-08-06). Both routers only mint and
+# consume tokens; the actual sending happens in auth.UserManager's hooks via
+# mailer.py, so these are mounted unconditionally -- with no RESEND_API_KEY the
+# token still gets generated and logged, which is how local dev works.
+#   /auth/request-verify-token  POST {email}          -> 202, always (no account enumeration)
+#   /auth/verify                POST {token}          -> the verified user
+#   /auth/forgot-password       POST {email}          -> 202, always
+#   /auth/reset-password        POST {token, password}
+app.include_router(fastapi_users.get_verify_router(UserRead), prefix="/auth", tags=["auth"])
+app.include_router(fastapi_users.get_reset_password_router(), prefix="/auth", tags=["auth"])
+# Google login (2026-08-06). Mounted only when credentials are configured, so a
+# fresh checkout/CI can still import and serve everything else; /api/auth-config
+# reports whether it's live so login.html can hide a button that would 404.
+#
+# Three arguments are load-bearing:
+#   redirect_url  -- passed explicitly rather than letting the router call
+#                    request.url_for(), whose scheme comes from proxy headers
+#                    this app doesn't configure. Google matches redirect_uri
+#                    byte-for-byte; an http:// guess behind Railway's HTTPS
+#                    proxy fails the whole flow. See auth.public_base_url().
+#   associate_by_email=True -- a Google login on an address that already has a
+#                    password account links into that ONE account instead of
+#                    erroring (human decision). Safe specifically because
+#                    Google guarantees the address is verified; the standard
+#                    warning against this setting applies to providers that
+#                    don't, so it must not be copied blindly to a future one.
+#   is_verified_by_default=True -- for the same reason: Google already proved
+#                    the address, so demanding our own confirmation email on
+#                    top would be pure friction.
+# csrf_token_cookie_secure defaults to True and would silently drop the state
+# cookie over local http:// -- exactly the trap auth.py documents for ah_auth,
+# so it's wired to the same COOKIE_SECURE switch.
+if auth.google_oauth_client is not None:
+    app.include_router(
+        fastapi_users.get_oauth_router(
+            auth.google_oauth_client,
+            auth.oauth_redirect_backend,
+            auth.SECRET,
+            redirect_url=f"{auth.public_base_url()}{auth.GOOGLE_CALLBACK_PATH}",
+            associate_by_email=True,
+            is_verified_by_default=True,
+            csrf_token_cookie_secure=auth.COOKIE_SECURE,
+        ),
+        prefix="/auth/google", tags=["auth"])
 app.include_router(billing.router)
 app.include_router(forum.router)
 app.include_router(forum.image_router)
@@ -435,6 +480,12 @@ async def api_me(request: Request, session: AsyncSession = Depends(get_async_ses
             ),
             "has_stripe_customer": user.stripe_customer_id is not None,
             "is_superuser": user.is_superuser,
+            # Drives the "confirm your email" banner and the disabled state on
+            # the three soft-gated actions (2026-08-06) -- see
+            # auth.current_verified_user. Sending it here lets the frontend
+            # explain the gate up front instead of letting the user discover it
+            # by getting a 403 mid-action.
+            "is_verified": user.is_verified,
             # Free tier only -- None for a subscriber/superuser (never enforced
             # for them) and for a free account that hasn't queried /api/snipes
             # yet. dashboard.html uses this to pre-select and lock the realm
@@ -457,6 +508,11 @@ async def api_me(request: Request, session: AsyncSession = Depends(get_async_ses
         "subscription_current_period_end": None,
         "has_stripe_customer": False,
         "is_superuser": False,
+        # Stated explicitly rather than omitted, matching this response's
+        # existing style (has_stripe_customer, is_superuser) -- a visitor with
+        # no account has no confirmed address, and the banner logic keys off
+        # is_anonymous first anyway.
+        "is_verified": False,
         "locked_sell_realm": locked,
         "nickname": None,
         # Explicit boolean (matches this response's existing style, e.g.
@@ -937,6 +993,27 @@ def _list_snapshotted_realms() -> list[int]:
     return sorted(ids)
 
 
+@app.get("/api/auth-config")
+def api_auth_config() -> dict:
+    """Which optional auth mechanisms this deployment actually has configured
+    (2026-08-06). Public and free of per-user data by construction -- it
+    reports only whether two env vars are set, never their values.
+
+    Its own route rather than a field on /api/status because /api/status
+    requires a `sell` realm id, and login.html/register.html have no realm
+    context -- they'd have to invent one just to find out whether to draw a
+    button.
+
+    google: hides the "Continue with Google" button on a deployment where the
+    OAuth router isn't mounted, so it can't 404. email: lets /verify explain
+    that mail delivery isn't configured (local dev) instead of telling the user
+    to check an inbox nothing was ever sent to."""
+    return {
+        "google": auth.google_oauth_client is not None,
+        "email": mailer.configured(),
+    }
+
+
 @app.get("/api/status")
 def api_status(sell: int) -> dict:
     # No auth dependency (dropped 2026-08-03) -- same reasoning as
@@ -999,6 +1076,28 @@ def login_page() -> FileResponse:
 @app.get("/register")
 def register_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "register.html")
+
+
+@app.get("/verify")
+def verify_page() -> FileResponse:
+    """Landing page for the link in a verification email (2026-08-06). The
+    token arrives as `?token=...` but is consumed by a POST to /auth/verify
+    that verify.html makes itself -- FastAPI-Users' verify router takes the
+    token in a JSON body, and a GET that mutated state would be triggered by
+    every mail-client link prefetcher and corporate link scanner that touches
+    the message."""
+    return FileResponse(ROOT / "static" / "verify.html")
+
+
+@app.get("/forgot-password")
+def forgot_password_page() -> FileResponse:
+    return FileResponse(ROOT / "static" / "forgot-password.html")
+
+
+@app.get("/reset-password")
+def reset_password_page() -> FileResponse:
+    """Same token-in-the-query, POST-to-consume shape as /verify above."""
+    return FileResponse(ROOT / "static" / "reset-password.html")
 
 
 @app.get("/subscribe")

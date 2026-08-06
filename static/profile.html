@@ -118,6 +118,23 @@
   .badge.inactive { background: var(--alert-bg); color: var(--alert); border: 1px solid var(--alert); }
   .badge.pending { background: var(--pending-bg); color: var(--bullion); border: 1px solid var(--bullion); }
   .period-note { font-size: 0.76rem; color: var(--text-dim); }
+  /* Unverified-email notice (2026-08-06) -- alert-coloured left rule rather
+     than a filled alert background: the account still works, three specific
+     things are locked, so this is a state to resolve, not an error. */
+  .unverified-note {
+    font-size: 0.78rem; color: var(--text-dim); line-height: 1.5;
+    margin-top: 0.9rem; padding: 0.6rem 0.7rem;
+    border-left: 2px solid var(--alert); background: var(--paper); border-radius: 3px;
+  }
+  .unverified-note strong { color: var(--ink); }
+  .unverified-note #unverified-email {
+    font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  }
+  .unverified-note .linkish {
+    background: none; border: none; padding: 0; font: inherit; color: var(--bullion);
+    text-decoration: underline; cursor: pointer;
+  }
+  .unverified-note .linkish:disabled { opacity: 0.6; cursor: default; }
   .nickname-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding-top: 0.9rem; border-top: 1px solid var(--hairline); }
   .nickname-row label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); white-space: nowrap; }
   .nickname-row input {
@@ -278,6 +295,18 @@
     <div class="cap-note">Press Save to save changes.</div>
     <div id="nickname-error" class="error"></div>
     <div id="error" class="error"></div>
+    <!-- Unverified-email notice (2026-08-06). Sits at the bottom of the
+         account card rather than as a page-wide banner: this page is where a
+         user comes to fix account state, so it belongs with the address it's
+         about. Hidden entirely for a verified account. -->
+    <div id="unverified-note" class="unverified-note" style="display:none;">
+      <strong>Email not confirmed.</strong>
+      Subscribing, posting to the Snipe Board and Discord alerts stay locked
+      until you confirm <span id="unverified-email"></span>. Sniping is
+      unaffected.
+      <button type="button" class="linkish" id="resend-verify">Resend the link</button>
+      <span id="resend-verify-state"></span>
+    </div>
   </div>
 
   <section class="wow-accounts-section">
@@ -298,7 +327,7 @@
 
 <div class="contact">
   Issues with the site or payment? Email
-  <a href="mailto:rasmus2001@gmail.com">rasmus2001@gmail.com</a> or find
+  <a href="mailto:rasmusrosen2001@gmail.com">rasmusrosen2001@gmail.com</a> or find
   <b>rasmus5533</b> on Discord.
 </div>
 
@@ -662,6 +691,30 @@ async function deleteAccount(accountId) {
   if (data.is_anonymous) { window.location.href = "/login"; return; }
 
   $("email").textContent = data.email;
+  if (!data.is_verified) {
+    $("unverified-note").style.display = "block";
+    $("unverified-email").textContent = data.email;
+    $("resend-verify").addEventListener("click", async () => {
+      const btn = $("resend-verify");
+      const state = $("resend-verify-state");
+      btn.disabled = true;
+      state.textContent = " sending...";
+      try {
+        // Always 202 regardless of address state (FastAPI-Users swallows
+        // UserNotExists/AlreadyVerified to avoid leaking which emails have
+        // accounts), so there's nothing to branch on but a network failure.
+        await fetch("/auth/request-verify-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: data.email }),
+        });
+        state.textContent = " sent — check your inbox.";
+      } catch (e) {
+        state.textContent = " network error.";
+        btn.disabled = false;
+      }
+    });
+  }
   $("nickname").value = data.nickname || "";
   $("nickname-save").addEventListener("click", saveNickname);
   $("status-badge").innerHTML = badge(data.subscription_status, data.is_superuser);

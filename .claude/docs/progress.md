@@ -270,39 +270,43 @@ several entries around it, all dated 2026-08-01.
    restricted to Checkout/Customers/Subscriptions/Webhooks. **Human-only,
    asked explicitly**: do not rotate/swap this live credential without the
    human present, even when otherwise told to keep working autonomously.
-4. **Email verification for new registrations** (scoped 2026-07-26, not
-   started) — goal: require a verified email before an account reaches any
-   `current_active_user`-gated route (`/api/me`, `/api/snipes`,
-   `/api/realms`, `/api/status`), so a spam/throwaway registration can't
-   consume free-tier resources (server-side snipe queries, a realm-lock
-   slot). Current state: `db.py`'s `User` model already has an
-   `is_verified` column (inherited from FastAPI-Users' base table from day
-   one) but it's never read or written anywhere — no new migration needed
-   for the column itself. **No email-sending capability exists in this
-   project at all** (no SMTP config, no provider SDK, nothing in
-   `.env.example`) — that's the real gap. `auth.py`'s `UserManager` has no
-   `on_after_register`/`on_after_request_verify` hooks, and `dashboard.py`
-   never mounts `fastapi_users.get_verify_router(...)`. Open decisions
-   before this can be built:
-   - **Email provider** — picking one (Resend/SendGrid/Postmark/SMTP)
-     means creating a third-party account, a human-only step (same pattern
-     as the Battle.net API client below). Resend was the lightweight
-     recommendation (single REST POST via the `httpx` dependency already
-     present, no new library) but not decided.
-   - **Existing-account backfill** — production already has real accounts
-     (the founder/superuser account, any current subscribers) with
-     `is_verified=False` by default. Flipping the gate on without a
-     one-time backfill (mark every pre-existing account verified) would
-     lock all of them out on deploy.
-   - UX not yet designed: `register.html`'s post-registration messaging
-     (currently silently redirects to `/login`, no "check your email"
-     state), a `/verify?token=...` landing page, a "resend verification
-     email" affordance.
-   - `tests/test_auth.py` already exercises register/login/route-gating
-     end-to-end against a real throwaway SQLite DB — extending it (an
-     unverified-account-blocked case, updating the existing tests that
-     assume register+login alone reaches `/api/snipes`/`/api/status`) is
-     part of this work, not an afterthought.
+4. ~~**Email verification for new registrations**~~ — **built 2026-08-06**,
+   together with password reset and Google OAuth login (all three share one
+   prerequisite: a sender). See "Email verification, password reset, Google
+   login" in `modules-web.md` for the mechanism and the four traps, and
+   `history.md` for the narrative. What shipped differs from the 2026-07-26
+   scope in one deliberate way, and it matters:
+   - **The gate is soft, not hard.** The original goal was to block an
+     unverified account from every `current_active_user` route so a throwaway
+     registration couldn't consume free-tier resources. That rationale
+     evaporated on 2026-08-03, when the anonymous tier let a visitor with *no
+     account at all* run realm-locked `/api/snipes` queries — blocking an
+     unverified account from the same data protects nothing and only pushes
+     the person back to anonymous browsing. Human chose soft explicitly.
+     `auth.current_verified_user` (403, distinguishable from 401) guards
+     exactly three things: Stripe checkout, Snipe Board posting, and Discord
+     alerts (the last already covered by the subscription gate, so it needed
+     no change of its own). **Do not "finish" this by tightening it.**
+   - Provider: **Resend** (`mailer.py`, one `httpx` POST, no new dependency).
+     Logs the link instead of sending when unconfigured, which is how local
+     dev and CI work.
+   - Existing accounts were **grandfathered** by migration `b2d5f8a03c71`
+     (`UPDATE "user" SET is_verified = true`) — they were never asked to
+     confirm an address, so treating them as having failed to would invent a
+     fact, and without it the founder account and every subscriber would have
+     lost checkout on deploy.
+   - Google login links by email (`associate_by_email=True`) and counts as
+     verification, including on the association path — which needed a
+     `UserManager.oauth_callback` override, since FastAPI-Users'
+     `is_verified_by_default` only applies to newly-created accounts.
+   - The soft gate is why the 20 pre-existing `tests/test_auth.py` tests
+     needed no rewriting; the hard gate would have required changing most of
+     them. 19 new tests cover verification, reset, the gate, and OAuth
+     (including callback linking and the 302-not-204 regression).
+   - Still open, flagged not built: **no rate limiting** on registration or
+     `/auth/request-verify-token`, so nothing stops someone burning the
+     100/day Resend quota. Thresholds are human-specified in this project, so
+     this wasn't given a default.
 5. **TSM/Auctionator buylist export** (see "Future work" below) — no design done.
 6. **CLI parity for `sus_item_suspect`** (2026-07-31) — currently
    dashboard-only. Deferred, not because it's hard: the constants/predicate

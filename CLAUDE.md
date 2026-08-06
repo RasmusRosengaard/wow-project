@@ -11,7 +11,7 @@ unless the task actually touches them.
 | Read this | When |
 |---|---|
 | `.claude/docs/modules-pipeline.md` | Changing collection, scanning or pricing (`blizz`, `fetch_snapshot`, `scan_region`, `collect_all`, `snipe_check`, `diff_snapshots`, `analyze`, `appearance`, `item_names`, `tsm`, `tsm_import`) |
-| `.claude/docs/modules-web.md` | Changing the API, auth, billing or DB models (`dashboard.py`, `auth`, `db`, `billing`, `forum`, `wow_accounts`, `watchlist`, `admin`) |
+| `.claude/docs/modules-web.md` | Changing the API, auth, billing or DB models (`dashboard.py`, `auth`, `db`, `billing`, `forum`, `wow_accounts`, `watchlist`, `admin`, `mailer`) |
 | `.claude/docs/modules-frontend.md` | Changing any page under `static/` |
 | `.claude/docs/modules-infra.md` | Tests, Docker, migrations, dependencies, repo tooling |
 | `.claude/docs/architecture.md` | Data layout on disk, schemas, **Blizzard API facts** (trust these, don't guess) |
@@ -49,6 +49,17 @@ TSM (coarse regional sale rates, hostile UX), Saddlebag Exchange. Our edge:
 cross-realm snipe routing, and eventually appearance-level intelligence. The web
 dashboard has an anonymous tier, a free logged-in tier, a subscription, and an
 internal superuser tier.
+
+Cutting across those tiers since 2026-08-06: **email verification is a soft
+gate.** An unverified account has full free-tier access to the product itself —
+`/api/snipes`, `/api/me`, `/api/status`, `/api/realms` — and only three things
+need a confirmed address (`auth.current_verified_user`, which raises **403** so
+the frontend can tell it apart from a 401): Stripe checkout, posting to the Snipe
+Board, and Discord alerts (already covered by the subscription gate). Do not
+"tighten" this into the hard gate `.claude/docs/progress.md` originally scoped —
+it was made pointless by the anonymous tier and the human chose soft explicitly.
+Google login (`/auth/google/*`) links by email address and counts as
+verification.
 
 **Current phase: 0 — the sale-inference signal's validation gate was explicitly
 skipped** (human decision, 2026-07-20) in order to build ahead. The
@@ -157,6 +168,12 @@ full commit → push → watch-CI → confirm-deploy sequence.
 ## Human-only tasks (never attempt; ask and wait)
 
 - Creating the Battle.net API client and filling `.env`.
+- Creating the **Resend** account and adding its DKIM/SPF records to the DNS
+  (name.com holds `realm-arbitrage.com`'s zone, not Railway).
+- Creating the **Google Cloud OAuth client**, and enabling the **People API** on
+  that project — `httpx-oauth`'s Google client reads the address from
+  `people.googleapis.com/v1/people/me`, so login breaks at the final step
+  without it. Leave the default scopes alone for the same reason.
 - All in-game actions, including the verification protocol in `README.md`
   (posting, cancelling, expiring and buying test auctions) and reporting
   results.

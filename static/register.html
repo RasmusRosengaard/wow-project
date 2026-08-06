@@ -84,6 +84,48 @@
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
   .switch { font-size: 0.8rem; color: var(--text-dim); text-align: center; }
   .switch a { color: var(--bullion); }
+  /* Google sign-in (2026-08-06) -- neutral surface, not the gold primary
+     button: Google's brand guidelines ask for their mark on a plain
+     background, and it correctly reads as the secondary path. */
+  .oauth {
+    background: var(--card); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.55rem; cursor: pointer; font-size: 0.82rem;
+    font-weight: 600; text-transform: none; letter-spacing: 0; margin-top: 0;
+    display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+  }
+  .oauth:hover { background: var(--card); border-color: var(--bullion); }
+  .divider {
+    display: flex; align-items: center; gap: 0.6rem;
+    font-size: 0.65rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .divider::before, .divider::after {
+    content: ""; flex: 1; height: 1px; background: var(--hairline);
+  }
+  /* Post-registration "check your email" panel -- replaces the form in place
+     rather than redirecting to /login, which used to swallow the fact that a
+     verification email had just been sent. */
+  .panel {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
+    padding: 2rem; width: 100%; max-width: 320px;
+    display: flex; flex-direction: column; gap: 0.9rem;
+  }
+  .panel h2 { font-size: 0.95rem; margin: 0; color: var(--ink); }
+  .panel p { font-size: 0.82rem; color: var(--text-dim); margin: 0; line-height: 1.5; }
+  .panel strong { color: var(--ink); }
+  .note {
+    font-size: 0.78rem; color: var(--text-dim); background: var(--paper);
+    border: 1px dashed var(--hairline-strong); border-radius: 3px; padding: 0.6rem;
+    line-height: 1.45;
+  }
+  .linkish {
+    background: none; border: none; color: var(--bullion); cursor: pointer;
+    font-size: 0.8rem; padding: 0; margin: 0; text-transform: none;
+    letter-spacing: 0; font-weight: 600; text-decoration: underline;
+    font-family: inherit;
+  }
+  .linkish:hover { background: none; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -113,8 +155,35 @@
   <label>Password <input type="password" id="password" required autocomplete="new-password" minlength="8"></label>
   <div id="error" class="error"></div>
   <button type="submit" id="submit">Register</button>
+  <div class="divider" id="oauth-divider" hidden>or</div>
+  <button type="button" class="oauth" id="google-btn" hidden>
+    <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true">
+      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92a8.78 8.78 0 0 0 2.68-6.62z"/>
+      <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86a5.4 5.4 0 0 1-5.07-3.73H.96v2.34A8.99 8.99 0 0 0 9 18z"/>
+      <path fill="#FBBC05" d="M3.93 10.69a5.4 5.4 0 0 1 0-3.38V4.97H.96a9 9 0 0 0 0 8.06l2.97-2.34z"/>
+      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A8.99 8.99 0 0 0 .96 4.97l2.97 2.34A5.4 5.4 0 0 1 9 3.58z"/>
+    </svg>
+    Continue with Google
+  </button>
   <div class="switch">Already have an account? <a href="/login">Log in</a> &middot; <a href="/pricing">Pricing</a></div>
 </form>
+<div class="panel" id="sent" hidden>
+  <h2>Check your email</h2>
+  <p>We sent a confirmation link to <strong id="sent-to"></strong>. Click it to
+     finish setting up your account.</p>
+  <p>You can log in and start looking for snipes right away — confirming your
+     address is what unlocks subscribing, posting to the Snipe Board, and
+     Discord alerts.</p>
+  <div class="note" id="sent-note" hidden>
+    Email delivery isn't configured on this instance, so nothing was actually
+    sent — the confirmation link was written to the server log instead.
+  </div>
+  <div class="switch">
+    <button type="button" class="linkish" id="resend">Resend the email</button>
+    <span id="resend-state"></span>
+  </div>
+  <div class="switch"><a href="/login">Go to log in</a></div>
+</div>
 <script>
 // Same reasoning as login.html's own check -- an already-logged-in visitor
 // hitting /register directly used to just see the form again (2026-07-30
@@ -128,6 +197,71 @@
   const data = await me.json();
   if (!data.is_anonymous) window.location.href = "/snipes";
 })();
+
+// Whether this deployment can actually send mail -- decides if the
+// "check your email" panel promises an inbox or admits the link went to the
+// server log. Resolved once up front so the panel is already correct the
+// instant it's shown.
+let emailConfigured = true;
+
+// Google sign-up (2026-08-06). Shown only when the deployment has OAuth
+// credentials, since dashboard.py mounts /auth/google/* conditionally. Same
+// snippet as login.html -- duplicated on purpose, matching how these
+// standalone pages already repeat the theme toggle rather than share a script.
+(async function setUpAuthConfig() {
+  let cfg;
+  try {
+    cfg = await (await fetch("/api/auth-config")).json();
+  } catch (e) {
+    return;
+  }
+  emailConfigured = !!cfg.email;
+  if (!cfg.google) return;
+  const btn = document.getElementById("google-btn");
+  const err = document.getElementById("error");
+  btn.hidden = false;
+  document.getElementById("oauth-divider").hidden = false;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    err.textContent = "";
+    try {
+      // /authorize returns JSON rather than redirecting, and that same
+      // response sets the OAuth state/CSRF cookie -- so this must be a real
+      // same-origin fetch, not a plain link to the endpoint.
+      const r = await fetch("/auth/google/authorize");
+      if (!r.ok) throw new Error("authorize failed");
+      const data = await r.json();
+      window.location.href = data.authorization_url;
+    } catch (e) {
+      err.textContent = "Couldn't reach Google -- try again.";
+      btn.disabled = false;
+    }
+  });
+})();
+
+// Resend, from the panel. /auth/request-verify-token always answers 202
+// regardless of whether the address exists or is already verified (FastAPI-
+// Users swallows those cases deliberately, to avoid leaking which emails have
+// accounts) -- so there is no failure to report here beyond a network error.
+function setUpResend(email) {
+  const btn = document.getElementById("resend");
+  const state = document.getElementById("resend-state");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    state.textContent = " sending...";
+    try {
+      await fetch("/auth/request-verify-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      state.textContent = " sent.";
+    } catch (e) {
+      state.textContent = " network error.";
+      btn.disabled = false;
+    }
+  });
+}
 
 document.getElementById("form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -145,9 +279,18 @@ document.getElementById("form").addEventListener("submit", async (e) => {
       }),
     });
     if (r.ok) {
-      // Registered but not logged in yet -- FastAPI-Users doesn't auto-login
-      // on register; send them to log in with their new credentials.
-      window.location.href = "/login";
+      // Swap the form for a "check your email" panel instead of the silent
+      // redirect to /login this used to do (changed 2026-08-06): registration
+      // now also sends a confirmation email, and bouncing straight to a login
+      // form gave no hint that one had been sent or that it mattered.
+      // FastAPI-Users still doesn't auto-login on register, so the panel links
+      // to /login rather than /snipes.
+      const email = document.getElementById("email").value;
+      document.getElementById("sent-to").textContent = email;
+      document.getElementById("sent-note").hidden = emailConfigured;
+      document.getElementById("form").hidden = true;
+      document.getElementById("sent").hidden = false;
+      setUpResend(email);
       return;
     }
     const data = await r.json().catch(() => ({}));

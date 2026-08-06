@@ -148,6 +148,20 @@
   .anon-banner a { color: var(--bullion); }
   .anon-banner ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
   .anon-banner li { margin-top: 0.15rem; }
+  /* Unverified-email banner (2026-08-06). Shares .anon-banner's typography
+     but carries a left rule in the alert colour: unlike the anonymous nudge
+     (pure upsell), this one names three things the account currently cannot
+     do, so it should read as a state to resolve rather than an advert. */
+  .unverified-banner {
+    font-size: 0.72rem; color: var(--text-dim); line-height: 1.4;
+    margin-bottom: 0.6rem; padding-left: 0.55rem;
+    border-left: 2px solid var(--alert);
+  }
+  .unverified-banner a, .unverified-banner button.linkish { color: var(--bullion); }
+  .unverified-banner button.linkish {
+    background: none; border: none; padding: 0; font: inherit;
+    text-decoration: underline; cursor: pointer;
+  }
   .filters select:disabled { opacity: 0.65; cursor: not-allowed; }
   /* 2-column grid, not a stacked list -- halves the vertical space these
      checkbox groups take (added 2026-07-26 to fit the whole rail on one
@@ -420,6 +434,7 @@
   <aside class="filters">
     <div class="ticker" id="ticker"></div>
     <div id="anon-banner" class="anon-banner" style="display:none;"></div>
+    <div id="unverified-banner" class="unverified-banner" style="display:none;"></div>
     <label>Sell realm <select id="sell"></select></label>
     <div id="realm-lock-hint" class="realm-lock-hint" style="display:none;"></div>
     <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
@@ -1676,6 +1691,36 @@ function applyFreeTierRealmLock(lockedSellRealm) {
       `<li>Capped at ${meData.anon_cap} items</li>` +
       `<li><a href="/register">Create a free account</a> to raise your cap to ${meData.free_cap}</li>` +
       `</ul>`;
+  }
+  // Unverified-email banner (2026-08-06). Sniping itself is deliberately NOT
+  // gated on a confirmed address (see auth.current_verified_user for why the
+  // soft gate exists), so this states plainly what is blocked and offers the
+  // resend inline -- no redirect, since the user is mid-task on this page.
+  if (!meData.is_anonymous && !meData.is_verified) {
+    const banner = $("unverified-banner");
+    banner.style.display = "block";
+    banner.innerHTML =
+      `Email not confirmed — subscribing, Snipe Board posts and Discord alerts ` +
+      `are locked. Sniping works as normal. ` +
+      `<button type="button" class="linkish" id="resend-verify">Resend the link</button>` +
+      `<span id="resend-verify-state"></span>`;
+    $("resend-verify").addEventListener("click", async () => {
+      const btn = $("resend-verify");
+      const state = $("resend-verify-state");
+      btn.disabled = true;
+      state.textContent = " sending...";
+      try {
+        await fetch("/auth/request-verify-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: meData.email }),
+        });
+        state.textContent = " sent — check your inbox.";
+      } catch (e) {
+        state.textContent = " network error.";
+        btn.disabled = false;
+      }
+    });
   }
   // Skipped entirely for free-tier accounts -- they'd only ever get a 402
   // from /api/wow-accounts (see wow_accounts.py, current_subscribed_user),

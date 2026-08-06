@@ -187,8 +187,13 @@ from 15 to 60 connections — shipped the same day but doesn't fix the
 underlying pattern). Mirrors `fastapi_users.current_user(active=True)`'s real
 behavior exactly (confirmed by reading the installed package's
 `Authenticator._authenticate()`/`JWTStrategy.read_token()`): only the `active`
-check applies, since this app never uses `verified=True`/`superuser=True`
-anywhere — so replicating just that one check is complete, not partial.
+check applies — it is the `current_active_user` equivalent, not the
+`current_verified_user` one. That distinction became load-bearing on 2026-08-06
+when `current_verified_user` arrived: this helper's only callers (`api_me`,
+`api_snipes`) are exactly the routes the soft gate leaves open to an unverified
+account, so "active only" is complete *for them*, not an omission — anything
+needing verification must use `Depends(current_verified_user)` instead, because
+this function will never enforce it. `superuser=True` is still used nowhere.
 Returns `None` on any failure (no cookie, invalid/expired token, unknown user,
 inactive user) rather than raising — callers 401 themselves.
 `db.sessionmaker()`'s `expire_on_commit=False` means the returned `User`'s
@@ -238,6 +243,70 @@ a first-time visitor, not an edge case). Instead stashes the resolved token on
 reads it after `call_next()` and sets the cookie on the response middleware
 actually receives, which is the genuinely final one regardless of whether a
 route returned normally or raised — see that middleware's own docstring.
+
+### Email verification, password reset, Google login (2026-08-06)
+
+Three features shipped together because they share one prerequisite (a sender,
+`mailer.py`) and because a Google-created account has no usable password, which
+makes self-service reset the only route to also getting one.
+
+`UserManager` grew three hooks: `on_after_register` calls `request_verify()`
+(early-returning when the account is already verified, which is the Google case
+— otherwise a Google signup gets emailed a confirm link it has no reason to
+click), and `on_after_request_verify`/`on_after_forgot_password` send the mail.
+Routers mounted in `dashboard.py`: `get_verify_router`, `get_reset_password_router`,
+and `get_oauth_router` — the last only when `google_oauth_client is not None`, so
+a fresh checkout and CI can still import and serve everything else.
+`/api/auth-config` reports `{google, email}` so `login.html`/`register.html` can
+hide a button that would 404.
+
+Four non-obvious pieces, each of which was a real break during implementation:
+
+- **`RedirectCookieTransport`** — the OAuth callback ends in
+  `backend.login(...)`, and plain `CookieTransport.get_login_response()` returns
+  a bare **204**. The callback is a full browser navigation from Google, so a 204
+  leaves the user on a blank page: logged in, cookie set, no way to tell. A
+  second `AuthenticationBackend` (`oauth_redirect_backend`) over the *same* JWT
+  strategy and *same* `ah_auth` cookie returns a 302 to `/snipes` instead;
+  sessions from either backend are interchangeable.
+- **`PUBLIC_BASE_URL`** — passed to `get_oauth_router` as an explicit
+  `redirect_url` rather than letting it call `request.url_for()`. Google matches
+  `redirect_uri` byte-for-byte, and uvicorn here isn't configured to trust
+  Railway's proxy headers (`admin._client_ip()` parsing `X-Forwarded-For` by hand
+  is the tell), so the inferred scheme can be `http`. Also used for email links.
+- **`csrf_token_cookie_secure=COOKIE_SECURE`** — the OAuth state cookie defaults
+  to `Secure=True` and would silently vanish over local `http://`, the exact trap
+  `auth.py` already documents for `ah_auth`.
+- **`UserManager.oauth_callback` override** — FastAPI-Users'
+  `is_verified_by_default` applies *only to newly created* accounts; its
+  `associate_by_email` branch never touches `is_verified` (confirmed by reading
+  `BaseUserManager.oauth_callback`). Without the override, registering with a
+  password, never confirming, then logging in with Google on that same address
+  leaves the account unverified — still blocked, still bannered — right after
+  Google proved the very thing our confirmation email exists to prove. The
+  override is gated on an explicit `EMAIL_VERIFYING_OAUTH_PROVIDERS` allowlist,
+  not on "any OAuth login", so a future provider that doesn't validate addresses
+  can't inherit it by accident.
+
+`associate_by_email=True` + `is_verified_by_default=True` are safe *specifically*
+because Google guarantees the address; the standard warning against the former
+applies to providers that don't.
+
+## `mailer.py`
+
+One async function, `send(to, subject, html) -> bool`, POSTing to
+`api.resend.com/emails` through the `httpx` already in `requirements.txt` — no
+new dependency. Two deliberate behaviours:
+
+- **Unconfigured means log, not fail.** No `RESEND_API_KEY` → the message (with
+  its working link) goes to the log and `send()` returns. That's what makes a
+  fresh checkout usable and the test suite hermetic without mocking the network;
+  CI sets no key, so it takes this path. Same posture as `billing.py` tolerating
+  a missing Stripe key rather than refusing to import.
+- **Never raises.** Every failure is caught and logged. `on_after_register` calls
+  this, and an exception escaping there would turn a successfully-created account
+  into a 500 with no way to tell the registration itself worked. An undelivered
+  mail is recoverable via the resend affordance; that isn't.
 
 ## `db.py`
 
@@ -320,6 +389,32 @@ atomic-lock core (`dashboard._atomic_lock_first_realm`)
 `_enforce_realm_lock`/`_enforce_anon_realm_lock` both call. No cleanup/expiry
 mechanism, deliberately, same precedent as `ForumPost` rows never being
 reaped.
+
+**`OAuthAccount`** (added 2026-08-06, Google login): FastAPI-Users'
+`SQLAlchemyBaseOAuthAccountTableUUID` verbatim, no project-specific columns.
+Nothing ever reads the stored access/refresh tokens back — Google is used purely
+to establish "this person controls this address" at login, there's no Google API
+we call on the user's behalf; the columns exist because the base table defines
+them. `get_user_db` must pass it as the third `SQLAlchemyUserDatabase` argument
+or the OAuth callback raises `NotImplementedError` at its final step.
+
+⚠️ **`User.oauth_accounts` is mapped `lazy="selectin"`, deliberately against
+FastAPI-Users' own documented `lazy="joined"`.** Eager loading is mandatory, for
+two independent reasons: `auth.resolve_user_from_request()` closes its session
+before returning the `User`, and `add_oauth_account()` touches
+`user.oauth_accounts` after a `session.refresh()` — under asyncio a lazy
+collection load raises `MissingGreenlet` in both cases, so Google login breaks
+outright. But a *joined* eager load against a collection makes SQLAlchemy require
+`.unique()` on every `Result` returning `User` entities. The library's own queries
+do call it (`SQLAlchemyUserDatabase._get_user`); this app's don't — `admin.py`,
+`billing.py`, `watchlist.py` and `grant_free_month.py` all have their own
+`select(User)`, and **all six sites broke** when this first shipped as
+`lazy="joined"`. Every future `select(User)` would too, which is precisely the
+recurring-trap shape this project has been bitten by before. `selectin` is just as
+eager, needs `.unique()` nowhere, and costs one extra indexed SELECT against a
+table with one row per linked Google account. The migration adds an index on
+`user_id` that the base table doesn't declare, since that selectin load runs on
+every authenticated request.
 
 ## `billing.py`
 

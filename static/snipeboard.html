@@ -190,6 +190,11 @@
     <div>
       <button class="btn-primary" id="open-post" style="display:none;">+ Post a snipe</button>
       <a class="btn-secondary" href="/login" id="login-to-post">Log in to post</a>
+      <!-- Logged in but email unconfirmed (2026-08-06): posting is server-side
+           gated by auth.current_verified_user, so showing the post button would
+           only produce a 403 after the user picked an image. Points at /profile,
+           where the resend affordance lives. -->
+      <a class="btn-secondary" href="/profile" id="verify-to-post" style="display:none;">Confirm your email to post</a>
     </div>
   </div>
 
@@ -368,7 +373,14 @@ $("post-submit").addEventListener("click", async () => {
     const meData = await me.json();
     if (!meData.is_anonymous) {
       currentNickname = meData.nickname || null;
-      $("open-post").style.display = "inline-block";
+      // Unconfirmed email swaps the post button for a link to /profile rather
+      // than letting the user fill in the whole dialog and hit a 403 (see the
+      // markup above). Reading the board is unaffected either way.
+      if (meData.is_verified) {
+        $("open-post").style.display = "inline-block";
+      } else {
+        $("verify-to-post").style.display = "inline-block";
+      }
       $("login-to-post").style.display = "none";
       // This page is public, so the default markup is the logged-out nav.
       // Logged in, swap to the authenticated in-app nav dashboard.html uses:
