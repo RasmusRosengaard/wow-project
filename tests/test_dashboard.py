@@ -1200,6 +1200,78 @@ def test_snipes_serves_dashboard_html():
     assert b"Realm Arbitrage" in r.content
 
 
+SITE_ORIGIN = "https://realm-arbitrage.com"
+
+# Every page route that deliberately carries a noindex meta tag. Kept explicit
+# rather than derived so that removing a noindex tag has to be a deliberate
+# two-place edit, not a silently-passing test.
+NOINDEX_PATHS = ["/snipes", "/profile", "/subscribe", "/verify",
+                 "/forgot-password", "/reset-password", "/watchlist", "/admin"]
+
+
+def test_robots_txt_served_from_origin_root():
+    r = client.get("/robots.txt")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert f"Sitemap: {SITE_ORIGIN}/sitemap.xml" in r.text
+
+
+def test_robots_txt_does_not_disallow_the_noindex_pages():
+    """The two directives cancel out: a Disallow stops the crawler fetching
+    the page, so it never reads the noindex meta tag, and the URL can still
+    appear as a bare link from someone else's inbound link. Each URL gets one
+    lever or the other -- these pages use the meta tag, so adding a Disallow
+    for them here would quietly defeat it."""
+    disallowed = [line.split(":", 1)[1].strip()
+                  for line in client.get("/robots.txt").text.splitlines()
+                  if line.strip().lower().startswith("disallow:")]
+    for path in NOINDEX_PATHS:
+        assert not any(path.startswith(rule) for rule in disallowed), \
+            f"{path} relies on its noindex meta tag; robots.txt must let it be crawled"
+
+
+def test_noindex_pages_actually_carry_the_meta_tag():
+    for path in NOINDEX_PATHS:
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert b'name="robots" content="noindex' in r.content, path
+
+
+def test_sitemap_lists_only_indexable_absolute_urls():
+    """A sitemap entry and a noindex tag are contradictory signals, so the one
+    thing worth asserting is that no page reachable from the sitemap tells
+    Google to drop it."""
+    import xml.etree.ElementTree as ET
+
+    r = client.get("/sitemap.xml")
+    assert r.status_code == 200
+    assert "xml" in r.headers["content-type"]
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = [el.text for el in ET.fromstring(r.content).findall(".//s:loc", ns)]
+    assert locs, "sitemap is empty"
+
+    for loc in locs:
+        assert loc.startswith(f"{SITE_ORIGIN}/"), f"{loc} is not an absolute canonical URL"
+        page = client.get(loc[len(SITE_ORIGIN):])
+        assert page.status_code == 200, loc
+        assert b'name="robots" content="noindex' not in page.content, \
+            f"{loc} is in the sitemap but tells crawlers not to index it"
+
+
+def test_shared_link_previews_use_absolute_image_urls():
+    """Unfurlers (Discord, Reddit, Slack) fetch og:image out of band with no
+    page context, so a root-relative path resolves against their host and
+    silently yields a card with no image."""
+    for path in ["/", "/pricing", "/snipe-board", "/register"]:
+        html = client.get(path).text
+        assert 'property="og:title"' in html, path
+        for marker in ['property="og:url" content="', 'property="og:image" content="']:
+            if marker in html:
+                value = html.split(marker, 1)[1].split('"', 1)[0]
+                assert value.startswith("https://"), f"{path}: {marker} -> {value}"
+
+
 def test_html_pages_are_not_heuristically_cached():
     """A real live bug, 2026-07-31: FileResponse sets Last-Modified/ETag but
     no Cache-Control, so a browser can keep serving a page from before the

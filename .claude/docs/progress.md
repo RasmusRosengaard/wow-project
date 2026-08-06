@@ -105,6 +105,15 @@ several entries around it, all dated 2026-08-01.
 - `/` is now a public marketing landing page (`static/landing.html`,
   2026-07-26); the sniper tool itself moved to `/snipes`. Every page's
   brand mark links to `/`; nav "Dashboard" links point to `/snipes`.
+- **Technical SEO / link-preview basics** (2026-08-06): `/robots.txt` and
+  `/sitemap.xml` routes; Open Graph + Twitter card tags on the five public
+  pages, so a link pasted into Discord/Reddit unfurls as a card instead of a
+  bare URL (the actual point of the exercise — search is not the near-term
+  channel); `noindex` on the eight client-gated pages, which would otherwise
+  be indexed as empty pre-init shells; and `<meta name="viewport">` added to
+  the 11 pages that were missing it and rendering zoomed-out on phones.
+  Content/keyword SEO deliberately **not** started — see
+  `.claude/docs/modules-frontend.md` for the conventions and the two traps.
 - Sell price is the sell realm's own **current cheapest live listing**
   (not an inferred sold-price percentile — see `CLAUDE.md`'s "What this
   project is" for why that changed 2026-07-25).

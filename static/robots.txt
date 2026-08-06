@@ -1,0 +1,18 @@
+# Served at /robots.txt by a route in dashboard.py (a file under /static/
+# would be at the wrong path -- crawlers only ever look at the origin root).
+
+# Deliberately NOT disallowed here: /snipes, /profile, /subscribe, /verify,
+# /forgot-password, /reset-password, /watchlist, /admin. Those all carry a
+# <meta name="robots" content="noindex"> instead, and the two directives
+# cancel each other out if you use both: a Disallow stops the crawler from
+# fetching the page at all, so it never reads the noindex, and the URL can
+# still surface as a bare link from anyone else's inbound link. Blocking the
+# crawl and asking for removal are different requests -- pick one per URL.
+#
+# The paths below are JSON/redirect endpoints with no HTML to carry a meta
+# tag, so Disallow is the only lever available for them.
+User-agent: *
+Disallow: /api/
+Disallow: /auth/
+
+Sitemap: https://realm-arbitrage.com/sitemap.xml

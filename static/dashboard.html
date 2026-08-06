@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Realm Arbitrage</title>
+<!-- noindex: the route is public so the file can be served at all, but auth is
+     client-side, so a crawler only ever sees the empty pre-init() shell. That
+     is exactly the thin-content signal we don't want representing the site. -->
+<meta name="robots" content="noindex, follow">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
   // Runs before first paint, deliberately separate from the main script at

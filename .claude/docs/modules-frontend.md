@@ -3,6 +3,37 @@
 Static HTML + vanilla JS, no build step. Every page shares one visual identity
 and a localStorage dark-mode toggle.
 
+## `<head>` conventions (2026-08-06)
+
+Every page carries `<meta name="viewport">` — 11 of 13 were missing it before
+this date and rendered zoomed-out on phones.
+
+Pages split into exactly two groups, and `tests/test_dashboard.py` enforces the
+split (`NOINDEX_PATHS`, `test_sitemap_lists_only_indexable_absolute_urls`):
+
+- **Indexable** — `/`, `/pricing`, `/snipe-board`, `/login`, `/register`: a
+  description, a `rel="canonical"` and Open Graph/Twitter tags. All four
+  indexable-and-advertised ones are listed in `static/sitemap.xml` (`/login` is
+  indexable but deliberately not advertised there).
+- **`noindex`** — `/snipes`, `/profile`, `/subscribe`, `/verify`,
+  `/forgot-password`, `/reset-password`, `/watchlist`, `/admin`: auth is
+  client-side on all of these, so a crawler only ever sees the empty pre-init
+  shell. `/verify`, `/reset-password` and `/admin` use `noindex, nofollow` (the
+  first two carry a token in the query string).
+
+Two traps that have already cost a fix here:
+
+- **`og:` URLs must be absolute.** Unfurlers fetch them out of band with no
+  page context, so a root-relative path resolves against *their* host and
+  silently produces a card with no image.
+- **Never add a `Disallow` to `robots.txt` for a page that carries a `noindex`
+  meta tag.** They cancel out: the Disallow stops the fetch, so the crawler
+  never reads the noindex, and the URL can still surface as a bare link from
+  someone else's inbound link. One lever per URL. `robots.txt` therefore only
+  disallows `/api/` and `/auth/`, which have no HTML to carry a meta tag.
+- `static/sitemap.xml` is hand-maintained, and **XML comments cannot contain
+  `--`** — the house comment style breaks the file (caught by a failing test).
+
 ## `static/dashboard.html`
 
 Single static file, vanilla JS, no build step; "assay ledger" visual identity

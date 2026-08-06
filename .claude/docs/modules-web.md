@@ -39,7 +39,11 @@ subscribed accounts and anonymous sessions alike lock to their first-queried
 realm. Routes: `/` → `landing.html`, `/snipes` → `dashboard.html`, plus
 `/snipe-board`, `/watchlist`, `/pricing`, `/profile`, `/admin`; `GET
 /api/realms/eu` (subscriber-only, fans out to one entry per *member* realm
-name) backs `wow_accounts.py`. Middleware: `no_cache_html` (`Cache-Control:
+name) backs `wow_accounts.py`. `/robots.txt` and `/sitemap.xml` (2026-08-06)
+serve the matching files out of `static/` with explicit media types — they
+can't live under the `/static` mount because crawlers only read them from the
+origin root; `no_cache_html` ignores both (it keys on `text/html`), so they
+cache normally. Middleware: `no_cache_html` (`Cache-Control:
 no-cache` on every HTML response — without it browsers serve a stale page
 after a deploy), `ensure_anon_cookie` (sets `ah_anon` on the genuinely final
 response; a route-local `Response` param is invisible when a route raises

@@ -1150,6 +1150,20 @@ def admin_page() -> FileResponse:
     return FileResponse(ROOT / "static" / "admin.html")
 
 
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt() -> FileResponse:
+    """Crawlers only ever read this from the origin root, so it can't just live
+    under the /static mount below."""
+    return FileResponse(ROOT / "static" / "robots.txt", media_type="text/plain")
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml() -> FileResponse:
+    """Hand-maintained -- there are four indexable URLs and they change about
+    never. Generate it only if that stops being true."""
+    return FileResponse(ROOT / "static" / "sitemap.xml", media_type="application/xml")
+
+
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
