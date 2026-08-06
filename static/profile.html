@@ -135,6 +135,14 @@
     text-decoration: underline; cursor: pointer;
   }
   .unverified-note .linkish:disabled { opacity: 0.6; cursor: default; }
+  /* Complimentary-access note (2026-08-06). Neutral hairline, not the alert
+     rule the unverified notice uses -- nothing is wrong here, it's just
+     explaining why an "Active" account is being offered a subscription. */
+  .comp-note {
+    font-size: 0.78rem; color: var(--text-dim); line-height: 1.5;
+    margin-top: 0.9rem; padding: 0.6rem 0.7rem;
+    border-left: 2px solid var(--hairline-strong); background: var(--paper); border-radius: 3px;
+  }
   .nickname-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding-top: 0.9rem; border-top: 1px solid var(--hairline); }
   .nickname-row label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); white-space: nowrap; }
   .nickname-row input {
@@ -295,6 +303,13 @@
     <div class="cap-note">Press Save to save changes.</div>
     <div id="nickname-error" class="error"></div>
     <div id="error" class="error"></div>
+    <!-- Shown only for a comped account: active access with no Stripe customer
+         (grant_free_month.py). Without this, "Active" sitting next to a "Get
+         subscription" button reads as a contradiction. -->
+    <div id="comp-note" class="comp-note" style="display:none;">
+      Your access was granted directly — there's no card on file and nothing is
+      being billed. Starting a subscription keeps it going and funds the hosting.
+    </div>
     <!-- Unverified-email notice (2026-08-06). Sits at the bottom of the
          account card rather than as a page-wide banner: this page is where a
          user comes to fix account state, so it belongs with the address it's
@@ -719,17 +734,42 @@ async function deleteAccount(accountId) {
   $("nickname-save").addEventListener("click", saveNickname);
   $("status-badge").innerHTML = badge(data.subscription_status, data.is_superuser);
 
-  if (data.subscription_current_period_end && !data.is_superuser) {
+  // Also requires a real Stripe customer (added 2026-08-06). A manual grant
+  // from grant_free_month.py sets subscription_current_period_end purely so
+  // this line has something to show, but that date is informational only --
+  // auth.has_active_subscription() never reads it, so the access neither
+  // renews nor expires; it lasts until --revoke is run. Rendering it as
+  // "Renews <date>" was therefore telling the user something untrue twice
+  // over. Comped accounts get the honest label below instead.
+  if (data.subscription_current_period_end && !data.is_superuser && data.has_stripe_customer) {
     $("period-end-wrap").style.display = "inline";
     $("period-end").textContent = new Date(data.subscription_current_period_end).toLocaleDateString();
   }
 
+  // Keyed on has_stripe_customer, NOT on subscription_status (fixed
+  // 2026-08-06, reported from live use). The old condition was
+  // `subscription_status === "active" || has_stripe_customer`, which showed
+  // "Manage subscription" to an account that has no Stripe customer at all --
+  // and /billing/portal's first act is to 400 with "No Stripe customer on file
+  // yet" precisely because it needs one. That state is reachable and
+  // deliberate, not corrupt data: grant_free_month.py comps an account by
+  // setting subscription_status="active" while bypassing Stripe entirely, for
+  // "first N feedback DMs get a free month". So the button was guaranteed to
+  // fail for exactly the people being done a favour.
+  //
+  // Only a real Stripe customer can reach the portal, so only they get the
+  // manage button. A comped account is offered the thing it actually can do --
+  // start a real subscription (human's call: "maybe it should show get
+  // subscription or premium or something").
   const actions = $("actions");
   if (data.is_superuser) {
     actions.innerHTML = "";
-  } else if (data.subscription_status === "active" || data.has_stripe_customer) {
+  } else if (data.has_stripe_customer) {
     actions.innerHTML = `<button id="manage">Manage subscription</button>`;
     $("manage").addEventListener("click", startPortal);
+  } else if (data.subscription_status === "active") {
+    actions.innerHTML = `<a class="btn" href="/subscribe">Get subscription</a>`;
+    $("comp-note").style.display = "block";
   } else {
     actions.innerHTML = `<a class="btn" href="/subscribe">Subscribe</a>`;
   }
