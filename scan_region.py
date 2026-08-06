@@ -7,7 +7,14 @@ run only against your chosen sell realm(s).
 
 Each sweep also records when Blizzard actually published each realm's dump,
 into data/state/sweep_publish.json — see _publish_state_path() for why that
-is worth keeping.
+is worth keeping — and sends those back as If-Modified-Since, so a realm
+whose dump hasn't changed costs a 304 rather than a full download.
+
+Measured 2026-08-06: Blizzard publishes **the entire EU region at once**, not
+per realm on staggered offsets. All 92 realms' dumps carried a Last-Modified
+within one second of each other (88 at 05:41:26, 4 at 05:41:27). So the vast
+majority of sweeps at the current 60s cadence re-download data that cannot
+have changed, which is exactly what the conditional request now avoids.
 
 Usage:
   python scan_region.py                 # one sweep of every EU connected realm
@@ -67,11 +74,8 @@ def setup_logging() -> None:
 # the whole region is one small JSON file written once per sweep, not once
 # per realm.
 #
-# Deliberately a *record*, not a fetch optimisation. Feeding these back as
-# If-Modified-Since to skip unchanged realms is the obvious next step and
-# would cut the sweep's bandwidth by ~60x at the current 60s cadence, but it
-# changes what lands on disk (a 304 leaves the parquet, and its fetched_ts,
-# untouched) and so is left as its own change.
+# These are also fed back as If-Modified-Since (see _conditional_for()), so
+# an unchanged realm costs a 304 instead of a full dump download.
 #
 # A function, not a module-level constant, because the tests monkeypatch
 # DATA -- same reason watchlist._rule_state_path() is one.
@@ -82,9 +86,9 @@ def _publish_state_path() -> Path:
 def load_publish_state() -> dict:
     """{cr_id (str): {last_modified, published_ts, first_seen_ts}} for every
     realm a sweep has seen. `published_ts` is Blizzard's own publish moment;
-    `first_seen_ts` is the sweep that first observed that value, so the
-    difference is our detection lag for that realm. Empty dict if no sweep
-    has recorded anything yet."""
+    `first_seen_ts` is when we first observed that value, so the difference
+    is our detection lag for that realm. Empty dict if no sweep has recorded
+    anything yet."""
     try:
         return json.loads(_publish_state_path().read_text())
     except FileNotFoundError:
@@ -104,6 +108,25 @@ def _save_publish_state(state: dict) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state))
     os.replace(tmp, path)
+
+
+def _conditional_for(cr: int, state: dict) -> str | None:
+    """The If-Modified-Since value to send for this realm, or None to request
+    the dump in full.
+
+    Guarded on the parquet actually existing: a 304 means "you already have
+    this", so sending the header while the file is missing would leave the
+    realm with no listings at all until its *next* publish -- up to an hour
+    of a realm silently absent from the sweep. The state file and the
+    listings directory are separate files on the volume and can legitimately
+    disagree (a file deleted by hand, a partial restore, or the malformed-body
+    path above having written one without the other)."""
+    entry = state.get(str(cr))
+    if not entry or not entry.get("last_modified"):
+        return None
+    if not (DATA / "listings" / f"{cr}.parquet").exists():
+        return None
+    return entry["last_modified"]
 
 
 def _parse_http_date(value: str | None) -> int | None:
@@ -156,14 +179,25 @@ def rows(payload: dict, cr: int, ts: int) -> list[dict]:
     return out
 
 
-def scan_one(cr: int, ts: int) -> tuple[int, str | None]:
+def scan_one(cr: int, ts: int, if_modified_since: str | None = None) -> tuple[int | None, str | None]:
     """Fetch one realm's current listings and overwrite its parquet. Returns
     (row count written, this dump's Last-Modified header).
+
+    A row count of **None** means Blizzard answered 304 Not Modified: this
+    realm's dump is unchanged, nothing was rewritten, and the parquet already
+    on disk is still current. Same `None means nothing new` convention
+    fetch_snapshot.fetch_once() already uses. 0, by contrast, means a real
+    response we could not use.
 
     The Last-Modified is returned rather than recorded here so sweep() can
     write the whole region's timings in one file write instead of a
     read-modify-write per realm -- see _publish_state_path()."""
-    r = get_auctions_with_backoff(cr, headers={})
+    headers = {"If-Modified-Since": if_modified_since} if if_modified_since else {}
+    r = get_auctions_with_backoff(cr, headers=headers)
+    if r.status_code == 304:
+        # Checked before raise_for_status(), same order as fetch_once(). 304
+        # is not in RETRYABLE, so the backoff wrapper returns it immediately.
+        return None, if_modified_since
     r.raise_for_status()
     last_modified = r.headers.get("Last-Modified")
     try:
@@ -172,7 +206,9 @@ def scan_one(cr: int, ts: int) -> tuple[int, str | None]:
         log.error("cr %s: malformed JSON body, skipping", cr)
         # (0, None), not (0, last_modified): nothing was written, so claiming
         # we hold this publish would overstate the freshness of the parquet
-        # still sitting on disk from the previous sweep.
+        # still sitting on disk from the previous sweep. Leaving it unrecorded
+        # also means the next sweep sends no If-Modified-Since and re-requests
+        # this dump in full rather than 304ing onto a file we never wrote.
         return 0, None
 
     table = pa.Table.from_pylist(rows(payload, cr, ts), schema=LISTING_SCHEMA)
@@ -199,10 +235,14 @@ def sweep(exclude: set[int]) -> None:
     ts = int(time.time())
     state = load_publish_state()
     republished = 0
+    unchanged = 0
     for cr in realms:
         try:
-            n, last_modified = scan_one(cr, ts)
-            log.info("cr %s: %s listings", cr, n)
+            n, last_modified = scan_one(cr, ts, if_modified_since=_conditional_for(cr, state))
+            if n is None:
+                unchanged += 1
+            else:
+                log.info("cr %s: %s listings", cr, n)
         except Exception:                # one bad realm shouldn't kill the sweep
             log.exception("cr %s: sweep failed, continuing", cr)
             continue
@@ -212,24 +252,30 @@ def sweep(exclude: set[int]) -> None:
         if prev and prev.get("last_modified") == last_modified:
             continue                     # same dump as last sweep, nothing new
         published_ts = _parse_http_date(last_modified)
+        # Wall clock *at this realm*, not the sweep's start `ts`.
+        #
+        # It was the sweep start originally, on the reasoning that a
+        # sequential ~92-realm walk would otherwise fold its own position
+        # into the number. Production disproved that within the hour: the
+        # 06:41:46 publish landed mid-sweep on 2026-08-06 and every realm
+        # visited after it recorded a *negative* lag (min -108s), because the
+        # sweep had started before the dump existed. The walk's position is
+        # not noise -- it is genuinely part of how long it took us to see the
+        # dump, which is the whole quantity being measured.
+        seen_ts = int(time.time())
         state[str(cr)] = {"last_modified": last_modified,
                           "published_ts": published_ts,
-                          # This sweep's start, not time.time() at this point
-                          # in the loop: a sweep is a sequential ~92-realm
-                          # walk taking minutes, so per-realm wall clock would
-                          # fold that walk's own position into a number meant
-                          # to measure detection lag.
-                          "first_seen_ts": ts}
+                          "first_seen_ts": seen_ts}
         republished += 1
         if published_ts is not None:
-            log.info("cr %s: new dump published %ss before this sweep started",
-                     cr, ts - published_ts)
+            log.info("cr %s: new dump, detected %ss after publish",
+                     cr, seen_ts - published_ts)
     try:
         _save_publish_state(state)
     except Exception:                    # diagnostics must not fail a sweep
         log.exception("could not save publish state")
-    log.info("sweep done: %s of %s realms republished since the last sweep",
-             republished, len(realms))
+    log.info("sweep done: %s of %s realms republished, %s unchanged (304)",
+             republished, len(realms), unchanged)
 
 
 def main() -> None:

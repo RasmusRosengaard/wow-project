@@ -33,10 +33,21 @@ data/state/sweep_publish.json — when Blizzard actually published each realm's
 sweep by `scan_region.sweep()`, read by `scan_region.load_publish_state()`.
 
 `published_ts` is Blizzard's own publish moment (the dump's `Last-Modified`,
-parsed); `first_seen_ts` is the sweep that **first** observed that value, so
+parsed); `first_seen_ts` is when we **first** observed that value, so
 `first_seen_ts - published_ts` is our detection lag for that realm.
 `first_seen_ts` deliberately does not move while the dump is unchanged —
 otherwise it would measure our poll cadence rather than the lag.
+
+`first_seen_ts` is per-realm wall clock, **not** the sweep's start time. It
+was the sweep start for the first few hours of this file's existence, on the
+reasoning that a sequential ~92-realm walk would otherwise fold its own
+position into the number. Production disproved that the same morning: the
+06:41:46 publish landed mid-sweep and every realm visited after it recorded a
+negative lag (down to -108s), since the sweep had begun before the dump
+existed. The walk's position is not noise — it is part of how long we took to
+see the dump. Any lag figures recorded before 2026-08-06 07:00 UTC are
+unreliable for this reason, as are first-ever observations of a realm (which
+measure "how old was the dump when we cold-started", not detection lag).
 
 Added because the buy side previously threw the `Last-Modified` header away
 (`scan_one()` fetches unconditionally), which made a sniper-list alert
@@ -47,12 +58,41 @@ produce the latter — the 4h `watchlist.NOTIFY_COOLDOWN_SECONDS` expiring, the
 appearance entries converging via `collect_all.py`'s prewarms. This file is
 what tells them apart.
 
-It is also the raw material for the **per-realm learned publish offset** that
-`dashboard.py`'s `TIGHT_WINDOW_*` comment already names as the likely endgame:
-one hand-aimed window cannot fit every realm's own offset, and a slot that
-re-phased once (2026-08-05, Draenor :18-:26 -> :38-:48) will re-phase again.
-Note the tight window only helps the ~36 deep-collected sell realms; the
-sniper-list feed is region-sweep-only and gets no benefit from it.
+### Blizzard publishes the whole EU region at once (measured 2026-08-06)
+
+The first production read of this file settled a question the codebase had
+been guessing at. **All 92 EU connected realms publish simultaneously**, not
+on staggered per-realm offsets:
+
+```
+publish 1     05:41:26  ->  88 realms      publish 2     06:41:46  ->  ~12 realms
+              05:41:27  ->   4 realms                    06:41:47  ->  ~16 realms
+              spread: 1 second                           06:41:48  ->   ~1 realm
+```
+
+(The second publish's counts are partial — it was caught mid-sweep.) Two
+consecutive publishes, both region-wide within ~2 seconds, **60m20s apart**.
+So the cadence is near-hourly with a slow forward drift, not a fixed clock
+time — about +20s/hour here. Corroborated across days: `4f88ccd` recorded
+Draenor at 08:41:26 UTC on 2026-08-05, the same second-of-hour as publish 1.
+
+The drift is why any tight polling window has to be re-aimed periodically
+(`dashboard.py` has done this twice by hand) and why a *learned* offset
+beats a hardcoded one — but one learned offset for the whole region, not 92.
+
+Two consequences:
+
+- The **per-realm learned publish offset** that comment names as the likely
+  endgame is the wrong design. There is one region-wide offset, not 92.
+- At the current 60s cadence the sweep re-downloads ~92 full dumps a minute
+  to catch one publish an hour. `scan_region._conditional_for()` now sends
+  `If-Modified-Since` so unchanged realms cost a 304, which fixes the
+  bandwidth. It does **not** reduce request *count* — that needs a cadence
+  change, which is a latency tradeoff and therefore a human call, not an
+  autonomous one.
+
+Caveat: the tight window only ever helped the ~36 deep-collected sell realms;
+the sniper-list feed is region-sweep-only and never benefited from it.
 
 **Manual/ad-hoc path only** (diff_snapshots.py is no longer run automatically): a
 human who wants the sale-classification signal first accumulates real history

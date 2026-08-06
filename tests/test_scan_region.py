@@ -140,6 +140,94 @@ def test_scan_one_reports_no_publish_time_for_malformed_body(monkeypatch, tmp_pa
     assert scan_region.scan_one(1403, ts=0) == (0, None)
 
 
+# --- conditional requests (If-Modified-Since) -------------------------------
+
+def test_scan_one_sends_if_modified_since_when_given():
+    sent = {}
+
+    def fake_get(cr, headers):
+        sent.update(headers)
+        return FakeResponse(304)
+
+    import scan_region as sr
+    original = sr.get_auctions_with_backoff
+    sr.get_auctions_with_backoff = fake_get
+    try:
+        n, lm = sr.scan_one(1403, ts=0, if_modified_since="Thu, 06 Aug 2026 05:44:43 GMT")
+    finally:
+        sr.get_auctions_with_backoff = original
+
+    assert sent == {"If-Modified-Since": "Thu, 06 Aug 2026 05:44:43 GMT"}
+    # None row count = unchanged, and the cursor is echoed back so sweep()
+    # keeps the realm's existing state entry rather than dropping it.
+    assert (n, lm) == (None, "Thu, 06 Aug 2026 05:44:43 GMT")
+
+
+def test_scan_one_304_writes_nothing(monkeypatch, tmp_path):
+    """A 304 must leave the existing parquet exactly as it was -- that file
+    is still current, and rewriting it would be pure churn."""
+    payload = {"auctions": [{"id": 1, "item": {"id": 2}, "buyout": 100,
+                             "quantity": 1, "time_left": "LONG"}]}
+    monkeypatch.setattr(scan_region, "DATA", tmp_path)
+    monkeypatch.setattr(scan_region, "get_auctions_with_backoff",
+                        lambda *a, **k: FakeResponse(200, payload=payload))
+    scan_region.scan_one(1403, ts=1_700_000_000)
+    parquet = tmp_path / "listings" / "1403.parquet"
+    before = parquet.read_bytes()
+
+    monkeypatch.setattr(scan_region, "get_auctions_with_backoff",
+                        lambda *a, **k: FakeResponse(304))
+    n, _lm = scan_region.scan_one(1403, ts=1_700_000_100, if_modified_since="x")
+    assert n is None
+    assert parquet.read_bytes() == before
+
+
+def test_conditional_for_needs_both_cursor_and_parquet(monkeypatch, tmp_path):
+    """Sending If-Modified-Since without the parquet on disk would 304 the
+    realm into having no listings at all until its next publish."""
+    monkeypatch.setattr(scan_region, "DATA", tmp_path)
+    state = {"1403": {"last_modified": "Thu, 06 Aug 2026 05:44:43 GMT"}}
+
+    # Cursor but no parquet -> full request.
+    assert scan_region._conditional_for(1403, state) is None
+
+    (tmp_path / "listings").mkdir(parents=True)
+    (tmp_path / "listings" / "1403.parquet").write_bytes(b"x")
+    assert scan_region._conditional_for(1403, state) == "Thu, 06 Aug 2026 05:44:43 GMT"
+
+    # Parquet but no cursor (or an empty one) -> full request.
+    assert scan_region._conditional_for(1403, {}) is None
+    assert scan_region._conditional_for(1403, {"1403": {"last_modified": None}}) is None
+
+
+def test_sweep_sends_cursors_and_keeps_state_across_a_304(monkeypatch, tmp_path):
+    """End to end: first sweep downloads and records, second sweep sends the
+    recorded cursor, gets a 304, and leaves the state entry intact."""
+    monkeypatch.setattr(scan_region, "DATA", tmp_path)
+    monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [1096])
+    monkeypatch.setattr(scan_region.time, "time", lambda: 1785995100)
+    monkeypatch.setattr(scan_region, "scan_one",
+                        lambda cr, ts, if_modified_since=None: (3, "Thu, 06 Aug 2026 05:44:43 GMT"))
+    scan_region.sweep(exclude=set())
+    first = scan_region.load_publish_state()["1096"]
+
+    seen = {}
+
+    def fake_scan_one(cr, ts, if_modified_since=None):
+        seen[cr] = if_modified_since
+        return None, if_modified_since       # 304
+
+    # The parquet must exist for _conditional_for() to hand over the cursor.
+    (tmp_path / "listings").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "listings" / "1096.parquet").write_bytes(b"x")
+    monkeypatch.setattr(scan_region, "scan_one", fake_scan_one)
+    monkeypatch.setattr(scan_region.time, "time", lambda: 1785995160)
+    scan_region.sweep(exclude=set())
+
+    assert seen == {1096: "Thu, 06 Aug 2026 05:44:43 GMT"}
+    assert scan_region.load_publish_state()["1096"] == first
+
+
 # --- publish-time recording -----------------------------------------------
 
 def test_parse_http_date_survives_garbage():
@@ -153,7 +241,7 @@ def test_sweep_records_publish_times(monkeypatch, tmp_path):
     monkeypatch.setattr(scan_region, "DATA", tmp_path)
     monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [1096, 1305])
     monkeypatch.setattr(scan_region, "scan_one",
-                        lambda cr, ts: (3, "Thu, 06 Aug 2026 05:44:43 GMT"))
+                        lambda cr, ts, if_modified_since=None: (3, "Thu, 06 Aug 2026 05:44:43 GMT"))
     monkeypatch.setattr(scan_region.time, "time", lambda: 1785995100)
 
     scan_region.sweep(exclude=set())
@@ -173,7 +261,7 @@ def test_sweep_keeps_first_seen_ts_until_the_dump_actually_changes(monkeypatch, 
     monkeypatch.setattr(scan_region, "DATA", tmp_path)
     monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [1096])
     monkeypatch.setattr(scan_region, "scan_one",
-                        lambda cr, ts: (3, "Thu, 06 Aug 2026 05:44:43 GMT"))
+                        lambda cr, ts, if_modified_since=None: (3, "Thu, 06 Aug 2026 05:44:43 GMT"))
 
     monkeypatch.setattr(scan_region.time, "time", lambda: 1785995100)
     scan_region.sweep(exclude=set())
@@ -183,7 +271,7 @@ def test_sweep_keeps_first_seen_ts_until_the_dump_actually_changes(monkeypatch, 
 
     # A genuinely new publish does move it.
     monkeypatch.setattr(scan_region, "scan_one",
-                        lambda cr, ts: (3, "Thu, 06 Aug 2026 06:41:26 GMT"))
+                        lambda cr, ts, if_modified_since=None: (3, "Thu, 06 Aug 2026 06:41:26 GMT"))
     monkeypatch.setattr(scan_region.time, "time", lambda: 1785998500)
     scan_region.sweep(exclude=set())
     entry = scan_region.load_publish_state()["1096"]
@@ -195,7 +283,7 @@ def test_sweep_excludes_realms_and_survives_one_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(scan_region, "list_connected_realms",
                         lambda: [1096, 1403, 1305])
 
-    def fake_scan_one(cr, ts):
+    def fake_scan_one(cr, ts, if_modified_since=None):
         if cr == 1305:
             raise RuntimeError("HTTP 500")
         return 3, "Thu, 06 Aug 2026 05:44:43 GMT"
@@ -215,7 +303,7 @@ def test_sweep_survives_unreadable_publish_state(monkeypatch, tmp_path):
     (tmp_path / "state" / "sweep_publish.json").write_text("{truncated")
     monkeypatch.setattr(scan_region, "list_connected_realms", lambda: [1096])
     monkeypatch.setattr(scan_region, "scan_one",
-                        lambda cr, ts: (3, "Thu, 06 Aug 2026 05:44:43 GMT"))
+                        lambda cr, ts, if_modified_since=None: (3, "Thu, 06 Aug 2026 05:44:43 GMT"))
 
     scan_region.sweep(exclude=set())     # must not raise
     assert "1096" in scan_region.load_publish_state()

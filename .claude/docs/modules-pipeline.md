@@ -79,15 +79,33 @@ Diagnostics only; nothing on the pricing path reads it. See
 version: without it, a sniper-list alert timestamp can't be told apart from
 an old listing that merely became newly eligible).
 
-`scan_one()` returns `(row_count, last_modified)` — a malformed body yields
-`(0, None)`, never `(0, header)`, since the parquet on disk is still the
-*previous* sweep's and recording the new publish would overstate its
-freshness.
+Those recorded times are fed back as `If-Modified-Since` (`_conditional_for()`),
+so a realm whose dump hasn't changed costs a 304 instead of a full download —
+which is nearly every realm on nearly every sweep, since the whole region
+publishes once an hour (see `.claude/docs/architecture.md`).
 
-**Not** yet fed back as `If-Modified-Since`. Doing so would cut the sweep's
-bandwidth by roughly 60x at the current 60s cadence (~92 full dumps/minute
-today), but a 304 leaves the parquet — and its `fetched_ts` — untouched, so
-it changes what lands on disk and is left as its own change.
+`scan_one()` returns `(row_count, last_modified)`:
+
+- `row_count is None` — 304 Not Modified, nothing rewritten, the parquet on
+  disk is still current. Same `None means nothing new` convention as
+  `fetch_snapshot.fetch_once()`.
+- `(0, None)` — a real response we couldn't use (malformed body). Never
+  `(0, header)`: the parquet is still the *previous* sweep's, so recording
+  the new publish would overstate its freshness, and leaving it unrecorded
+  makes the next sweep re-request in full rather than 304 onto a file that
+  was never written.
+
+`_conditional_for()` only sends the header when the realm's parquet actually
+exists. The state file and the listings dir are separate files on the volume
+and can legitimately disagree; without the guard a missing parquet plus a
+stored cursor would 304 the realm into having no listings at all until its
+next publish, up to an hour later.
+
+A 304 leaves the parquet's `fetched_ts` at the last real download. Nothing
+reads that column — it is written by `rows()` and never queried — so this is
+a semantic change with no consumer today. Worth knowing before anything
+starts treating it as a freshness signal; `data/state/sweep_publish.json` is
+the correct source for that.
 
 ## `collect_all.py`
 
