@@ -19,6 +19,7 @@ unless the task actually touches them.
 | `.claude/docs/roadmap.md` | Build order and every deliberate deviation from it |
 | `.claude/docs/progress.md` | Scannable done/not-done status per feature |
 | `.claude/docs/history.md` | *Why* a constant, threshold or design choice exists — search it for the item id or file name in a nearby comment |
+| `INTEGRATIONS.md` | **Read before touching any external service** — Railway/GitHub/Stripe/Resend/Google/Blizzard/Discord: which console, which env vars, what breaks without it, and the gotchas that have already cost time (Railway administers the DNS, *not* name.com; the People API must stay enabled; tests must never reach live Stripe) |
 
 ## What this project is
 

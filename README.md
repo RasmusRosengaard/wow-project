@@ -147,6 +147,14 @@ standalone for debugging/inspecting data — see their `--help` — but none of
 them are how the product actually runs anymore; `collect_all.py` inside the
 deployed app is.
 
+## External services
+
+Every third-party dependency — Blizzard, Railway (hosting *and* DNS), GitHub CI,
+Stripe, Resend, Google Cloud, Discord, plus the two no-account public data
+sources — is documented in **[`INTEGRATIONS.md`](INTEGRATIONS.md)**: which
+console, which env vars, what breaks without it, and the traps that have already
+cost time. Check there first when something external misbehaves.
+
 ## Email and Google login
 
 Added 2026-08-06. Accounts confirm their email address, can reset a forgotten
