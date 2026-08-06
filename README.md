@@ -160,17 +160,23 @@ a signup on a local instance. `send()` never raises: a provider outage must not
 turn a created account into a 500, and the resend affordance on `/verify` covers
 an undelivered mail.
 
-Two human-only setup steps, both required before this works for real users:
+Two external setups, both required before this works for real users:
 
-- **Resend:** create the account, add `realm-arbitrage.com`, and put its
-  DKIM/SPF records into **name.com**'s DNS panel — that's where the domain's
-  nameservers point. Railway hosts the app, not the DNS zone. Free tier is
-  3,000 emails/month capped at 100/day on one domain.
+- **Resend:** create the account, add `realm-arbitrage.com`, then add the DKIM
+  (TXT), SPF (MX + TXT on `send`) and DMARC records it gives you. **Those go in
+  Railway, not at a registrar** — the domain was bought through Railway, so
+  Railway manages the DNS zone and has a full record editor at
+  `railway.com/workspace/domains/realm-arbitrage.com` (MX included, with a
+  priority field). WHOIS names Name.com because it is Railway's backend
+  registrar; there is no name.com account for this domain, and hunting for one
+  is a dead end. Free tier is 3,000 emails/month capped at 100/day, one domain.
 - **Google Cloud:** create an OAuth client (Web application), register the
   redirect URI exactly as `https://realm-arbitrage.com/auth/google/callback`,
-  **and enable the People API** — `httpx-oauth`'s Google client reads the
-  address from `people.googleapis.com/v1/people/me` rather than the OIDC
-  userinfo endpoint, so login fails at the last step without it.
+  **enable the People API** — `httpx-oauth`'s Google client reads the address
+  from `people.googleapis.com/v1/people/me` rather than the OIDC userinfo
+  endpoint, so login fails at the last step without it — and **publish the
+  consent screen**, since in "Testing" only accounts added as test users can log
+  in at all.
 
 **The gate is soft, on purpose.** An unverified account keeps full free-tier
 access to the product — `/api/snipes`, `/api/me`, `/api/status`, `/api/realms`

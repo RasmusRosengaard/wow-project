@@ -4,8 +4,11 @@ Provider choice (human, 2026-08-06): Resend, because it needs no new
 dependency -- one authenticated POST through the `httpx` already required for
 the rest of this project. Free tier is 3,000 emails/month capped at 100/day on
 one custom domain, which is far above this product's signup volume. Its
-DKIM/SPF records live at name.com (where realm-arbitrage.com's nameservers
-point), not Railway -- Railway hosts the app, not the DNS zone.
+DKIM/SPF/DMARC records live in **Railway's** DNS editor
+(railway.com/workspace/domains/realm-arbitrage.com) -- the domain was purchased
+through Railway, so Railway manages the zone. WHOIS reports Name.com because
+that is Railway's backend registrar only; there is no separate registrar account
+for this domain.
 
 Two deliberate behaviors, both load-bearing:
 

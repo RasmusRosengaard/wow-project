@@ -168,8 +168,13 @@ full commit → push → watch-CI → confirm-deploy sequence.
 ## Human-only tasks (never attempt; ask and wait)
 
 - Creating the Battle.net API client and filling `.env`.
-- Creating the **Resend** account and adding its DKIM/SPF records to the DNS
-  (name.com holds `realm-arbitrage.com`'s zone, not Railway).
+- Creating the **Resend** account (done 2026-08-06). Its DNS records are *not*
+  human-only after all: `realm-arbitrage.com` was **bought through Railway**, so
+  Railway manages the zone and exposes a real record editor at
+  `railway.com/workspace/domains/realm-arbitrage.com` (A/AAAA/ANAME/CNAME/MX/NS/
+  SRV/TXT, priority field included). Name.com appears as the registrar in WHOIS
+  because it's Railway's backend registrar only — there is no name.com account
+  to log into, and looking for one wastes a lot of time.
 - Creating the **Google Cloud OAuth client**, and enabling the **People API** on
   that project — `httpx-oauth`'s Google client reads the address from
   `people.googleapis.com/v1/people/me`, so login breaks at the final step

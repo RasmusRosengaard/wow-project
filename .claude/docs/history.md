@@ -3465,3 +3465,46 @@ list. Also corrected a stale comment in `watchlist.py` claiming
 same-day 2026-08-05 request to flip it off. Both statements were true at
 different times, which is why it survived — existing rows kept their value, so
 nothing observable changed for anyone already enrolled.
+
+### The DNS detour, and a wrong assumption worth recording (2026-08-06)
+
+Resend's records took far longer than the code did, entirely because of a wrong
+inference that then got written into four files before it was caught.
+
+`realm-arbitrage.com`'s WHOIS/RDAP reports registrar **Name.com, Inc.** with
+name.com nameservers (`NS1KPV`/`NS2CVX`/`NS3GNV`/`NS4FPY.NAME.COM`). From that I
+concluded the DNS zone was managed at name.com and told the human to add the
+records there — and wrote that into `CLAUDE.md`, `README.md`, `.env.example` and
+`mailer.py`.
+
+Then signing into name.com showed **zero domains** across both of the human's
+Google-linked accounts (`3306210-4c78b35` and `3306212-8b908be`), which sent the
+investigation looking for a mythical third account. What actually settled it was
+the human saying they'd never used name.com at all: the domain was **bought
+through Railway** ($14/yr, expires 2027-07-26). Railway sells domains with
+Name.com as its *backend* registrar and manages the zone itself, exposing a full
+editor at `railway.com/workspace/domains/<domain>` — A/AAAA/ANAME/CNAME/**MX**/
+NS/SRV/TXT, with a priority field that already defaults to 10.
+
+Two lessons, both cheap to apply next time:
+
+- **A registrar in WHOIS is not evidence of where the zone is administered.**
+  Resold/managed domains show the reseller's backend registrar. The faster check
+  was available the whole time and was skipped: the apex `A` record pointed at
+  `69.46.46.21`, and `curl -I` on it returns `Server: railway-hikari` /
+  `x-railway-edge: ams1`. That said "Railway administers this" in one command.
+  (It also disproves the guess made in the same breath that 69.46.46.21 was a
+  name.com parking IP.)
+- A community report that Railway "deliberately doesn't support MX records" was
+  **out of date**. The live type dropdown offers MX. Worth checking the actual
+  UI before designing around a limitation found in a forum thread — the planned
+  fallback here was delegating the whole zone to Cloudflare, which would have
+  been real work for nothing.
+
+All four records went in through Railway's editor and were confirmed live
+against `8.8.8.8` (DKIM's 218-char key intact, ending `2dmwIDAQAB`; MX at
+priority 10; SPF; DMARC). Resend then sat at `Pending` / "Looking for DNS
+records" — it polls on its own rather than offering a re-check button.
+
+Also noted while in there, unrelated to email: **auto-renew is OFF** on the
+domain, so it lapses 2027-07-26.
