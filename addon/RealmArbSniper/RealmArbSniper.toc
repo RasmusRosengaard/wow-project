@@ -1,0 +1,18 @@
+## Interface: 110200
+## Title: Realm Arbitrage Sniper
+## Notes: Live single-realm auction scanner with unique-appearance and cross-realm price filters.
+## Author: Realm Arbitrage
+## Version: 0.0.1-dev
+## SavedVariables: RealmArbSniperDB
+## X-Category: Auction House
+
+# NOTE: the Interface number above is a placeholder and almost certainly
+# stale. Set it from the live client before shipping:
+#     /dump select(4, GetBuildInfo())
+# A wrong value only makes the addon show as out-of-date (it still loads
+# with "Load out of date AddOns" ticked), but it must be correct to publish.
+
+Data.lua
+Rules.lua
+Scan.lua
+Core.lua
