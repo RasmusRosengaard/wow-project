@@ -179,7 +179,18 @@ row per item rather than per bonus variant.
 2. **Delivery**: companion app vs. import string for v1.
 3. **Which reference price is the default rule baseline** — sell realm's
    current cheapest, or `region_median_cheapest`? Both exist in
-   `snipe_check.py`.
+   `snipe_check.py`. **Mechanism built, calibration still open**
+   (2026-08-08): `export_addon_data.py` ships *both* per item (`r` and
+   `m`), and `Rules.useRegionFallback` switches between them, defaulting
+   **off** (sell realm only). Deciding input: sole-source transmog items
+   are often unlisted on any single realm, so leaving the fallback off
+   caps what the addon can find at the sell realm's coverage. In the
+   first real export (cr 1403, 2066 items), **118 items — 5.7% — had no
+   sell-realm listing** and are invisible with the fallback off. Only
+   **1** item lacked a region median, so `m` has near-total coverage.
+   So the fallback buys ~6% more reachable items, not a transformative
+   amount — which is an argument for leaving it off and keeping the
+   baseline identical to the dashboard's.
 4. **Threshold defaults.** Per `CLAUDE.md`, pricing thresholds are
    human-specified — propose and wait, don't pick.
 5. **Tier gating**: is the addon's data feed free-tier or subscriber-only?

@@ -9,11 +9,14 @@
 --   s = source_count      -- how many distinct ItemIDs grant this appearance
 --                            (appearance.py / data/appearances.json).
 --                            1 == sole-source == "unique appearance".
---   r = reference_copper  -- cross-realm reference price, COPPER.
---                            Which baseline this is (sell realm's current
---                            cheapest vs region_median_cheapest) is open
---                            question 3 in the spec -- the exporter decides,
---                            the addon just compares.
+--   r = sell realm's own current cheapest listing, COPPER. Absent when the
+--       sell realm has nothing listed for the item.
+--   m = region_median_cheapest, COPPER -- the median of every other EU
+--       realm's own cheapest listing. Absent when nothing is listed anywhere.
+--
+-- Both ship because sole-source transmog items are frequently unlisted on any
+-- one realm. Rules.lua uses `r` and only consults `m` if useRegionFallback is
+-- turned on -- spec open question 3.
 --
 -- PRICES ARE COPPER, end to end, matching the rest of the project. Format as
 -- gold only at the display boundary (see Core.FormatMoney).
@@ -37,8 +40,8 @@ ns.Data = {
     -- scan loop has something to match against during development. Replace
     -- wholesale with exporter output; do not hand-maintain.
     items = {
-        [152510] = { s = 1, r = 2500000 },   -- used as the worked example in CLAUDE.md
-        [168487] = { s = 1, r = 180000 },
-        [122361] = { s = 4, r = 95000 },     -- shared appearance; should be filtered out
+        [152510] = { s = 1, r = 2500000, m = 2100000 },  -- CLAUDE.md's worked example
+        [168487] = { s = 1, m = 180000 },                -- unlisted on the sell realm
+        [122361] = { s = 4, r = 95000, m = 90000 },      -- shared look; must be filtered out
     },
 }

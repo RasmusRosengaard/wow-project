@@ -28,9 +28,35 @@ is a placeholder). Open an auction house, then:
 
 ## Layout
 
+## Generating Data.lua
+
+```
+python appearance.py --refresh          # first; the cache is manual by design
+python export_addon_data.py --sell 1403 --min-value-g 1000
+python export_addon_data.py --sell 1403 --stats-only   # counts, writes nothing
+```
+
+Real run against 91 realm sweeps + snapshots for 1403:
+
+```
+priced items region-wide : 18699
+  no appearance data     : -4013
+  shared appearance      : -11861
+  below value floor      : -749
+  profession slot        : -10
+exported                 : 2066      -> 94 KB
+```
+
+94 KB is small enough that the paste-in import string stays viable and no
+companion app is needed for v1.
+
+**The committed `Data.lua` is the three-row development stub.** Running the
+exporter overwrites it locally — that's intended, but don't commit the
+result: it's derived data, and it would put realm prices in git history.
+
 | File | Role |
 |---|---|
-| `Data.lua` | **Generated.** `itemID -> {s = source_count, r = reference_copper}`. Currently three invented stub rows. |
+| `Data.lua` | **Generated** by `export_addon_data.py`. `itemID -> {s, r, m}`. Committed copy is a three-row stub. |
 | `Rules.lua` | Pure filter evaluation. No API calls, no state. |
 | `Scan.lua` | The browse-diff poll loop and search-query budget. |
 | `Core.lua` | Lifecycle, saved vars, events, slash commands, output. |

@@ -22,6 +22,15 @@ Rules.defaults = {
     pctOfReference   = 0.40,     -- flag at <= 40% of the reference price
     requireReference = true,     -- skip items with no reference price at all
     minQuality       = 2,        -- Uncommon+. Enum.ItemQuality.Uncommon
+
+    -- Fall back to the region median (entry.m) when the sell realm has no
+    -- listing for the item (entry.r is nil). OFF by default: the exporter
+    -- ships both numbers so the switch exists, but which baseline the product
+    -- flags on is a human call (spec open question 3), not a default for the
+    -- addon to quietly assume. Worth knowing before deciding: sole-source
+    -- transmog items are frequently unlisted on any one realm, so leaving
+    -- this off means the sell realm's coverage caps what the addon can find.
+    useRegionFallback = false,
 }
 
 -- Blizzard takes a 5% cut on sale. Net proceeds, not gross, are what a
@@ -64,7 +73,16 @@ function Rules.Evaluate(itemID, unitPrice, entry, cfg)
     end
 
     info.sourceCount = entry.s
-    info.reference   = entry.r
+
+    -- Which reference this item gets judged against. entry.r is the sell
+    -- realm's own current cheapest listing (the product's baseline); entry.m
+    -- is the region median of per-realm cheapest listings.
+    local reference, baseline = entry.r, "sell_realm"
+    if not reference and cfg.useRegionFallback then
+        reference, baseline = entry.m, "region_median"
+    end
+    info.reference = reference
+    info.baseline  = baseline
 
     -- 1. Unique appearance. THE headline filter: "unique" means the look is
     --    sole-source, not that the player hasn't collected it.
@@ -80,7 +98,7 @@ function Rules.Evaluate(itemID, unitPrice, entry, cfg)
 
     -- 3. Cross-realm reference comparison -- the filter TSM/PBS cannot
     --    express, because they have no per-realm cross-realm view.
-    if not entry.r or entry.r <= 0 then
+    if not reference or reference <= 0 then
         if cfg.requireReference then
             return false, { reason = "no-reference" }
         end
@@ -88,14 +106,14 @@ function Rules.Evaluate(itemID, unitPrice, entry, cfg)
         return true, info
     end
 
-    local threshold = entry.r * cfg.pctOfReference
+    local threshold = reference * cfg.pctOfReference
     if unitPrice > threshold then
         return false, { reason = "over-pct-of-reference", threshold = threshold }
     end
 
     info.threshold  = threshold
-    info.pct        = unitPrice / entry.r
-    info.netProfit  = Rules.NetProceeds(entry.r) - unitPrice
+    info.pct        = unitPrice / reference
+    info.netProfit  = Rules.NetProceeds(reference) - unitPrice
     info.matchedOn  = "appearance+price"
     return true, info
 end
