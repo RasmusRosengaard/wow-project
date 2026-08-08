@@ -130,6 +130,48 @@ works around this by caching player class + armor type and checking
 manually; read its `code.lua` `CharacterCanLearnTransmog` before
 reimplementing.
 
+## Sniper filter — matching the Discord path
+
+Enabled by default (human request, 2026-08-08: "exactly like the discord
+thingy"). `sniper_filter_suspect` rejects a listing when several other
+**unique** realms are priced close to it: the item isn't actually rare
+there, so the "snipe" is more likely the sell realm being pricey than the
+listing being a steal.
+
+Two surfaces already implement this and they differ deliberately:
+
+| | Dashboard | Discord (`watchlist.py`) | Addon |
+|---|---|---|---|
+| Effect | flag; opt-in "Hide flagged" checkbox | **hard** — never send a flagged item | **hard**, matching Discord |
+| `SNIPER_FILTER_HIGH_VALUE_EXEMPT_G` | honored | **not honored** | **not honored** |
+
+The exemption only ever *suppresses* the flag (lets more through), and on
+a hard-reject path the conservative reading wins — `watchlist.py` makes
+exactly this call and the addon follows it.
+
+**Thresholds are never re-declared in Lua.** `export_addon_data.py` writes
+`snipe_check.SNIPER_FILTER_*` verbatim into `Data.lua`'s `sniperFilter`
+block, and `Rules.lua` reads them from there. `watchlist.py` imports the
+same constants for the same stated reason — so the rule "can never drift
+apart" across surfaces. `tests/test_addon_rules.py` asserts it.
+
+**Where the addon necessarily approximates.** The backend computes the
+cluster per `(buy_realm, item_id)`, excluding the candidate's own realm.
+The addon can't: that would mean shipping a per-realm cluster (~100x the
+table). It instead uses one cluster per item — ranks 2..N+1 of the
+per-realm floors, exactly as `watchlist._rule_candidates()` does. So:
+
+- If the player is standing on the region-cheapest realm, the exported
+  cluster is *identical* to what Discord computes.
+- Otherwise the cluster may include the player's own realm and omits
+  rank 1. With a 1.7x multiple over a 5-realm median this is a small
+  perturbation, and it errs toward flagging — i.e. toward rejecting, the
+  same direction Discord's conservatism already points.
+
+Per-realm floors are computed **before** the cluster, so one realm
+spamming N copies of an auction cannot inflate it — the "has to be unique
+realms" requirement.
+
 ## Getting our prices into the client
 
 **No HTTP in the addon sandbox** — no sockets, no fetch. The reference

@@ -3,8 +3,12 @@
 Skeleton for the Phase 5 in-game addon. Design and rationale live in
 `.claude/docs/feature-ingame-sniper.md` — read that first.
 
-**Status: written, never run.** No part of this has executed in a WoW
-client. Treat it as a structural first draft, not working code.
+**Status: the scan loop has never run in a WoW client.** Treat `Scan.lua`,
+`Core.lua` and the `.toc` as a structural first draft.
+
+`Rules.lua` is the exception: it is pure, and `tests/test_addon_rules.py`
+executes it in a real embedded Lua interpreter (`lupa`) against the same
+Sniper-filter vectors `tests/test_snipe_check.py` uses.
 
 ## Install for development
 
@@ -23,8 +27,15 @@ is a placeholder). Open an auction house, then:
 /realmarb pct 40     # flag at <= 40% of reference price
 /realmarb max 5000   # absolute ceiling, in gold
 /realmarb sources 1  # appearances with <= N source items
+/realmarb sniper     # toggle the Sniper filter (ON by default)
 /realmarb stop
 ```
+
+The **Sniper filter** is on by default and behaves like the Discord path,
+not the dashboard: a hard reject rather than an opt-in "hide", and it does
+not honor `SNIPER_FILTER_HIGH_VALUE_EXEMPT_G`. Its thresholds come from
+`Data.lua`'s `sniperFilter` block, written straight from
+`snipe_check.SNIPER_FILTER_*` — never re-declare them in Lua.
 
 ## Layout
 

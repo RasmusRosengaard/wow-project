@@ -163,15 +163,28 @@ SlashCmdList.REALMARB = function(msg)
             Core:Print("usage: /realmarb sources 1")
         end
 
+    elseif cmd == "sniper" then
+        cfg.sniperFilter = not cfg.sniperFilter
+        Core:Print("sniper filter " .. (cfg.sniperFilter and "ON" or "OFF")
+            .. (cfg.sniperFilter and "" or " -- expect corroborated, non-rare listings"))
+
     elseif cmd == "status" then
+        local sf = ns.Data.sniperFilter
         Core:Print(("%s | <= %d%% of ref | max %s | sources <= %d | budget %d/min left"):
             format(ns.Scan.running and "running" or "stopped",
                 math.floor(cfg.pctOfReference * 100),
                 Core.FormatMoney(cfg.maxPriceCopper),
                 cfg.maxSourceCount,
                 ns.Scan:BudgetRemaining()))
+        if cfg.sniperFilter and sf then
+            Core:Print(("sniper filter ON -- reject when >= %d other realms' "
+                .. "median sits within %.1fx the price"):format(sf.minRealms, sf.closeMultiple))
+        else
+            Core:Print("sniper filter OFF")
+        end
 
     else
-        Core:Print("/realmarb start | stop | status | pct <n> | max <gold> | sources <n>")
+        Core:Print("/realmarb start | stop | status | pct <n> | max <gold> "
+            .. "| sources <n> | sniper")
     end
 end

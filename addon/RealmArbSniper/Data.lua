@@ -18,6 +18,10 @@
 -- one realm. Rules.lua uses `r` and only consults `m` if useRegionFallback is
 -- turned on -- spec open question 3.
 --
+--   c = Sniper filter cluster median, COPPER -- the median of the N cheapest
+--       OTHER realms' own floors for this item.
+--   cn = how many realms were in that cluster.
+--
 -- PRICES ARE COPPER, end to end, matching the rest of the project. Format as
 -- gold only at the display boundary (see Core.FormatMoney).
 
@@ -35,13 +39,31 @@ ns.Data = {
     -- Which reference baseline the exporter used, for display honesty.
     baseline = "unset",
 
+    -- Sniper-filter thresholds. The exporter writes these straight from
+    -- snipe_check.SNIPER_FILTER_* so the addon can never drift from the
+    -- backend -- watchlist.py imports the same constants for the same
+    -- reason. Never hand-edit; never re-declare them in Rules.lua.
+    sniperFilter = {
+        n             = 5,
+        closeMultiple = 1.7,
+        minRealms     = 3,
+    },
+
     -- [itemID] = { s = source_count, r = reference_copper }
     -- STUB DATA -- three real item IDs with invented numbers, purely so the
     -- scan loop has something to match against during development. Replace
     -- wholesale with exporter output; do not hand-maintain.
     items = {
-        [152510] = { s = 1, r = 2500000, m = 2100000 },  -- CLAUDE.md's worked example
-        [168487] = { s = 1, m = 180000 },                -- unlisted on the sell realm
-        [122361] = { s = 4, r = 95000, m = 90000 },      -- shared look; must be filtered out
+        -- CLAUDE.md's worked example. Isolated cheap listing: the cluster
+        -- sits far above any plausible buy price, so the Sniper filter
+        -- leaves it alone.
+        [152510] = { s = 1, r = 2500000, m = 2100000, c = 2000000, cn = 5 },
+        -- Unlisted on the sell realm; only reachable with useRegionFallback.
+        [168487] = { s = 1, m = 180000, c = 175000, cn = 4 },
+        -- Shared look -- dropped by the appearance gate before anything else.
+        [122361] = { s = 4, r = 95000, m = 90000, c = 88000, cn = 5 },
+        -- Sole-source and cheap, but 5 other realms cluster right on top of
+        -- the price: exactly what the Sniper filter exists to reject.
+        [130000] = { s = 1, r = 400000, m = 420000, c = 444000, cn = 5 },
     },
 }

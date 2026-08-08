@@ -43,7 +43,8 @@ import duckdb
 
 from appearance import AppearanceCache
 from item_names import NameCache
-from snipe_check import NON_TRANSMOG_INVENTORY_TYPES
+from snipe_check import (NON_TRANSMOG_INVENTORY_TYPES, SNIPER_FILTER_CLOSE_MULTIPLE,
+                         SNIPER_FILTER_MIN_REALMS, SNIPER_FILTER_N)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -58,7 +59,10 @@ NAME_RESOLVE_LIMIT = 20000
 
 
 def _reference_prices(sell_cr: int) -> dict[int, dict]:
-    """{item_id: {"r": sell_realm_cheapest|None, "m": region_median|None}}, copper.
+    """{item_id: {"r":, "m":, "c":, "cn":}}, copper.
+
+    r/m are the two reference prices; c/cn are the Sniper-filter cluster
+    (median of the N cheapest *other* realms' floors, and how many there were).
 
     Deliberately equipment-only: rows carrying a pet identity are excluded,
     since caged pets have no transmog appearance and this table exists to feed
@@ -79,7 +83,16 @@ def _reference_prices(sell_cr: int) -> dict[int, dict]:
         WHERE cr_id != {int(sell_cr)} AND buyout IS NOT NULL
     """)
 
-    rows = con.execute("""
+    # The Sniper-filter cluster reads the sweep WITHOUT the sell-realm
+    # exclusion, matching watchlist._rule_candidates() (which has no sell realm
+    # at all and reads the directory raw). In practice scan_region.py is run
+    # with --exclude <sell>, so the two are usually the same rows anyway.
+    con.execute(f"""
+        CREATE VIEW listings_all AS
+        SELECT * FROM read_parquet('{listings_glob}') WHERE buyout IS NOT NULL
+    """)
+
+    rows = con.execute(f"""
         WITH sell_now AS (
             -- Overall cheapest current listing per item, across every
             -- bonus_key it has -- bonus/ilvl variance is one market
@@ -104,22 +117,59 @@ def _reference_prices(sell_cr: int) -> dict[int, dict]:
             SELECT item_id, median(realm_cheapest) AS region_median_cheapest
             FROM region_realm_floor
             GROUP BY item_id
+        ),
+        -- ---- Sniper filter ("does a cluster of other unique realms sit
+        -- close to this price?"). Mirrors watchlist._rule_candidates()'s
+        -- cluster CTE, which itself mirrors snipe_check's
+        -- sniper_filter_cluster: per-realm floors FIRST, so one realm
+        -- spamming N copies of an auction cannot inflate the cluster --
+        -- the human's explicit "has to be unique realms" requirement.
+        sniper_realm_floor AS (
+            SELECT item_id, cr_id,
+                   min(CAST(buyout AS DOUBLE) / greatest(quantity, 1)) AS realm_cheapest
+            FROM listings_all
+            WHERE pet_species_id IS NULL
+            GROUP BY item_id, cr_id
+        ),
+        sniper_ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                       PARTITION BY item_id ORDER BY realm_cheapest ASC
+                   ) AS rk
+            FROM sniper_realm_floor
+        ),
+        sniper_cluster AS (
+            -- Ranks 2..N+1: the N cheapest realms excluding the single
+            -- cheapest, exactly as watchlist does.
+            SELECT item_id,
+                   median(realm_cheapest) AS cluster_median,
+                   count(*)               AS cluster_realms
+            FROM sniper_ranked
+            WHERE rk BETWEEN 2 AND {int(SNIPER_FILTER_N) + 1}
+            GROUP BY item_id
+        ),
+        priced AS (
+            SELECT COALESCE(s.item_id, r.item_id) AS item_id,
+                   s.cheapest_now,
+                   r.region_median_cheapest
+            FROM sell_now s
+            FULL OUTER JOIN region_stats r ON s.item_id = r.item_id
         )
-        SELECT COALESCE(s.item_id, r.item_id) AS item_id,
-               s.cheapest_now,
-               r.region_median_cheapest
-        FROM sell_now s
-        FULL OUTER JOIN region_stats r ON s.item_id = r.item_id
+        SELECT p.item_id, p.cheapest_now, p.region_median_cheapest,
+               sc.cluster_median, sc.cluster_realms
+        FROM priced p
+        LEFT JOIN sniper_cluster sc ON p.item_id = sc.item_id
     """).fetchall()
     con.close()
 
     out: dict[int, dict] = {}
-    for item_id, cheapest_now, region_median in rows:
+    for item_id, cheapest_now, region_median, cluster_median, cluster_realms in rows:
         if item_id is None:
             continue
         out[int(item_id)] = {
             "r": round(cheapest_now) if cheapest_now is not None else None,
             "m": round(region_median) if region_median is not None else None,
+            "c": round(cluster_median) if cluster_median is not None else None,
+            "cn": int(cluster_realms or 0),
         }
     return out
 
@@ -178,7 +228,8 @@ def build_rows(sell_cr: int, max_sources: int, min_value_g: float | None) -> tup
             if best is None or best < floor_copper:
                 stats["below_value_floor"] += 1
                 continue
-        candidates[item_id] = {"s": source_count, "r": price["r"], "m": price["m"]}
+        candidates[item_id] = {"s": source_count, "r": price["r"], "m": price["m"],
+                               "c": price["c"], "cn": price["cn"]}
 
     dropped = _drop_profession_items(sorted(candidates))
     stats["profession_slot"] = len(dropped)
@@ -198,9 +249,12 @@ def render_lua(rows: dict, sell_cr: int, max_sources: int) -> str:
         f"-- items            : {len(rows)}",
         "--",
         "-- Schema, per item:",
-        "--   s = source_count       (1 == sole-source appearance)",
-        "--   r = sell realm's current cheapest listing, COPPER, nil if unlisted",
-        "--   m = region median of per-realm cheapest, COPPER, nil if unlisted",
+        "--   s  = source_count      (1 == sole-source appearance)",
+        "--   r  = sell realm's current cheapest listing, COPPER, nil if unlisted",
+        "--   m  = region median of per-realm cheapest, COPPER, nil if unlisted",
+        "--   c  = Sniper filter cluster median, COPPER -- median of the N",
+        "--        cheapest OTHER realms' own floors for this item",
+        "--   cn = how many realms were in that cluster",
         "",
         "local ADDON, ns = ...",
         "",
@@ -209,6 +263,17 @@ def render_lua(rows: dict, sell_cr: int, max_sources: int) -> str:
         f"    generated = {int(time.time())},",
         '    baseline = "sell_realm_cheapest",',
         "    sellRealm = %d," % sell_cr,
+        "",
+        "    -- Sniper-filter thresholds, written straight from",
+        "    -- snipe_check.SNIPER_FILTER_* so the addon can never drift from",
+        "    -- the backend. Never hand-edit or re-declare these in Lua --",
+        "    -- watchlist.py imports them for the same reason.",
+        "    sniperFilter = {",
+        f"        n             = {SNIPER_FILTER_N},",
+        f"        closeMultiple = {SNIPER_FILTER_CLOSE_MULTIPLE},",
+        f"        minRealms     = {SNIPER_FILTER_MIN_REALMS},",
+        "    },",
+        "",
         "    items = {",
     ]
     for item_id in sorted(rows):
@@ -218,6 +283,9 @@ def render_lua(rows: dict, sell_cr: int, max_sources: int) -> str:
             parts.append(f"r={row['r']}")
         if row["m"] is not None:
             parts.append(f"m={row['m']}")
+        if row["c"] is not None:
+            parts.append(f"c={row['c']}")
+            parts.append(f"cn={row['cn']}")
         lines.append(f"        [{item_id}]={{{','.join(parts)}}},")
     lines += ["    },", "}", ""]
     return "\n".join(lines)

@@ -31,6 +31,16 @@ Rules.defaults = {
     -- transmog items are frequently unlisted on any one realm, so leaving
     -- this off means the sell realm's coverage caps what the addon can find.
     useRegionFallback = false,
+
+    -- Sniper filter (snipe_check.SNIPER_FILTER_N, human-named, 2026-08-04).
+    -- Rejects a listing when several other UNIQUE realms are priced close to
+    -- it: the item isn't actually rare there, so the "snipe" is more likely
+    -- the sell realm being pricey than this listing being a steal.
+    --
+    -- On by default, matching the Discord path, where it is a hard "never
+    -- send a flagged item" rule rather than the dashboard's opt-in
+    -- "Hide flagged" checkbox.
+    sniperFilter = true,
 }
 
 -- Blizzard takes a 5% cut on sale. Net proceeds, not gross, are what a
@@ -96,7 +106,34 @@ function Rules.Evaluate(itemID, unitPrice, entry, cfg)
         return false, { reason = "over-max-price" }
     end
 
-    -- 3. Cross-realm reference comparison -- the filter TSM/PBS cannot
+    -- 3. Sniper filter. Thresholds come from ns.Data.sniperFilter, which the
+    --    exporter writes straight from snipe_check.SNIPER_FILTER_*, so they
+    --    cannot drift from the backend -- watchlist.py imports the same
+    --    constants for the same reason. Never re-declare them here.
+    --
+    --    Deliberately does NOT honor SNIPER_FILTER_HIGH_VALUE_EXEMPT_G. That
+    --    exemption only ever suppresses the flag (i.e. lets more through),
+    --    and like the Discord path this is a hard reject, so the conservative
+    --    reading wins. watchlist.py makes exactly the same call.
+    if cfg.sniperFilter then
+        local sf = ns.Data.sniperFilter
+        if sf and entry.c then
+            -- A missing/short cluster means "not enough data to judge
+            -- clustering", which is treated as DON'T flag -- not as
+            -- "unknown, assume clustered". Mirrors the COALESCE(...,0)
+            -- short-circuit in snipe_check's matches_flagged.
+            local count = entry.cn or 0
+            if count >= sf.minRealms and entry.c <= unitPrice * sf.closeMultiple then
+                return false, {
+                    reason        = "sniper-filter",
+                    clusterMedian = entry.c,
+                    clusterRealms = count,
+                }
+            end
+        end
+    end
+
+    -- 4. Cross-realm reference comparison -- the filter TSM/PBS cannot
     --    express, because they have no per-realm cross-realm view.
     if not reference or reference <= 0 then
         if cfg.requireReference then
