@@ -78,6 +78,20 @@ def login(client, email=EMAIL, password=PASSWORD):
     return client.post("/auth/login", data={"username": email, "password": password})
 
 
+def register_verified(client, email=EMAIL, password=PASSWORD):
+    """Registers an account and clears the verification gate in one step.
+
+    /auth/login has required a confirmed address since 2026-08-09
+    (requires_verification=True, dashboard.py), so any test whose subject is
+    something *other* than that gate has to get past it before it can log in.
+    Flips the flag directly, exactly as the grandfather migration did for
+    pre-existing accounts; the gate itself is covered by
+    test_login_requires_a_verified_email_address."""
+    r = register(client, email, password)
+    asyncio.run(_verify_user(client.session_factory, email))
+    return r
+
+
 def test_register_creates_user(client):
     r = register(client)
     assert r.status_code == 201
@@ -96,7 +110,7 @@ def test_register_duplicate_email_rejected(client):
 
 
 def test_login_sets_cookie_and_grants_access(client):
-    register(client)
+    register_verified(client)
     r = login(client)
     assert r.status_code == 204
     assert "ah_auth" in r.cookies
@@ -107,10 +121,31 @@ def test_login_sets_cookie_and_grants_access(client):
 
 
 def test_login_wrong_password_rejected(client):
-    register(client)
+    register_verified(client)
     r = login(client, password="wrongpassword")
     assert r.status_code == 400
     assert r.json()["detail"] == "LOGIN_BAD_CREDENTIALS"
+
+
+def test_login_requires_a_verified_email_address(client, sent_mail):
+    """The hard gate (2026-08-09 human decision, reversing the 2026-08-06 soft
+    gate): a manually-registered account cannot log in until it clicks the
+    emailed link. requires_verification=True lives on the auth router in
+    dashboard.py.
+
+    The rejection is 400 LOGIN_USER_NOT_VERIFIED, deliberately distinct from
+    LOGIN_BAD_CREDENTIALS -- login.html branches on it to say "confirm your
+    email" and offer a resend rather than claiming the password was wrong."""
+    register(client)
+    r = login(client)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "LOGIN_USER_NOT_VERIFIED"
+    assert "ah_auth" not in r.cookies
+
+    # ...and the same credentials work the moment the link is clicked, which is
+    # what proves verification was the only thing blocking them.
+    assert client.post("/auth/verify", json={"token": token_from(sent_mail[0][2])}).status_code == 200
+    assert login(client).status_code == 204
 
 
 def test_unauthenticated_request_to_api_me_returns_anonymous_session(client):
@@ -128,7 +163,7 @@ def test_unauthenticated_request_to_api_me_returns_anonymous_session(client):
 
 
 def test_logout_revokes_access(client):
-    register(client)
+    register_verified(client)
     login(client)
     assert client.get("/api/me").status_code == 200
 
@@ -170,7 +205,7 @@ def test_dashboard_api_routes_reachable_when_logged_in(client):
     test_free_tier_locks_to_first_sell_realm below), not whether the route
     is reachable at all."""
     UNCOLLECTED_REALM = 424242
-    register(client)
+    register_verified(client)
     login(client)
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
     assert client.get("/api/status", params={"sell": UNCOLLECTED_REALM}).status_code == 200
@@ -182,7 +217,7 @@ def test_dashboard_api_routes_require_active_subscription(client):
     subscription actually changes is the row cap (dashboard._snipe_cap),
     not reachability."""
     UNCOLLECTED_REALM = 424242
-    register(client)
+    register_verified(client)
     login(client)
     asyncio.run(_activate_subscription(client.session_factory, EMAIL))
 
@@ -203,7 +238,7 @@ def test_superuser_bypasses_subscription_check(client):
     """A superuser with subscription_status still None must still pass the
     gate -- is_superuser is a founder/admin bypass, not a Stripe concept."""
     UNCOLLECTED_REALM = 424242
-    register(client)
+    register_verified(client)
     login(client)
     asyncio.run(_make_superuser(client.session_factory, EMAIL))
 
@@ -224,7 +259,7 @@ def test_free_tier_locks_to_first_sell_realm(client):
     collected" business logic, so an uncollected realm still returns 400
     (not 403) on a permitted request."""
     REALM_A, REALM_B = 111111, 222222
-    register(client)
+    register_verified(client)
     login(client)
 
     r = client.get("/api/snipes", params={"sell": REALM_A})
@@ -241,7 +276,7 @@ def test_free_tier_locks_to_first_sell_realm(client):
 
 def test_active_subscription_is_never_realm_locked(client):
     REALM_A, REALM_B = 111111, 222222
-    register(client)
+    register_verified(client)
     login(client)
     asyncio.run(_activate_subscription(client.session_factory, EMAIL))
 
@@ -252,7 +287,7 @@ def test_active_subscription_is_never_realm_locked(client):
 
 def test_superuser_is_never_realm_locked(client):
     REALM_A, REALM_B = 111111, 222222
-    register(client)
+    register_verified(client)
     login(client)
     asyncio.run(_make_superuser(client.session_factory, EMAIL))
 
@@ -295,7 +330,7 @@ def test_api_snipes_inactive_user_falls_back_to_anonymous(client):
     2026-08-03, falls through to the anonymous path instead of 401ing. The
     deactivated account loses its real-account tier/lock, but can still
     browse anonymously like anyone else with no cookie at all."""
-    register(client)
+    register_verified(client)
     login(client)
     assert client.get("/api/me").status_code == 200  # sanity: really logged in first
 
@@ -479,21 +514,34 @@ def test_request_verify_token_resends_without_leaking_account_existence(client, 
 
 
 def test_api_me_reports_is_verified_for_both_tiers(client, sent_mail):
-    """Both branches of /api/me carry the field -- the frontend banner logic
-    reads it without first checking which shape it got."""
+    """Both branches of /api/me carry the field -- the frontend reads it without
+    first checking which shape it got.
+
+    Anonymous is always False (there is no address to confirm); a logged-in
+    account is now always True, because /auth/login stopped admitting unverified
+    ones on 2026-08-09."""
     anon = client.get("/api/me").json()
     assert anon["is_anonymous"] is True
     assert anon["is_verified"] is False
 
-    register(client)
+    register_verified(client)
     login(client)
-    assert client.get("/api/me").json()["is_verified"] is False
+    me = client.get("/api/me").json()
+    assert me["is_anonymous"] is False
+    assert me["is_verified"] is True
 
-    asyncio.run(_verify_user(client.session_factory, EMAIL))
-    assert client.get("/api/me").json()["is_verified"] is True
 
-
-# --- The soft gate: three write routes require a confirmed address ----------
+# --- current_verified_user: the second layer on three write routes ----------
+#
+# Since 2026-08-09 an unverified account cannot hold a session at all, so
+# auth.current_verified_user's 403 is defence in depth rather than a gate users
+# meet in normal use. It is still worth keeping and testing: it is what makes
+# the check read the live DB row instead of trusting a cookie that was minted
+# while the account happened to be verified.
+#
+# These tests therefore construct the state the product no longer produces --
+# log in verified, then clear the flag -- which is also precisely the scenario
+# the dependency exists to catch.
 
 
 def _post_forum(client):
@@ -525,9 +573,23 @@ def stripe_unconfigured(monkeypatch):
     monkeypatch.setattr(billing.stripe, "api_key", None)
 
 
+async def _unverify_user(session_factory, email: str) -> None:
+    """Clears is_verified on an account that is already logged in -- the one
+    state the product itself no longer produces, and exactly what
+    auth.current_verified_user is there to catch. Nothing about the session
+    cookie changes, so a route that trusted the token instead of the row would
+    sail straight through."""
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.email == email))).scalar_one()
+        user.is_verified = False
+        await session.commit()
+
+
 def test_unverified_account_cannot_start_checkout(client, sent_mail, stripe_unconfigured):
-    register(client)
+    register_verified(client)
     login(client)
+    asyncio.run(_unverify_user(client.session_factory, EMAIL))
+
     r = client.post("/billing/checkout")
     # 403, specifically -- NOT 401. subscribe.html branches on exactly this to
     # say "confirm your email" instead of bouncing an already-logged-in user
@@ -537,20 +599,19 @@ def test_unverified_account_cannot_start_checkout(client, sent_mail, stripe_unco
 
 
 def test_unverified_account_cannot_post_to_snipe_board(client, sent_mail):
-    register(client)
+    register_verified(client)
     login(client)
     asyncio.run(_set_nickname(client.session_factory, EMAIL, "Snipehunter"))
+    asyncio.run(_unverify_user(client.session_factory, EMAIL))
     assert _post_forum(client).status_code == 403
 
 
-def test_verified_account_passes_the_soft_gate(client, sent_mail, stripe_unconfigured):
-    """The same two requests as the two tests above, after verifying -- so a 403
-    there proves the gate, and a non-403 here proves the gate is the only thing
-    that was blocking them."""
-    register(client)
+def test_verified_account_passes_the_verification_gate(client, sent_mail, stripe_unconfigured):
+    """The same two requests as the two tests above without the un-verify step --
+    so a 403 there proves the gate, and a non-403 here proves the gate is the
+    only thing that was blocking them."""
+    register_verified(client)
     login(client)
-    token = token_from(sent_mail[0][2])
-    assert client.post("/auth/verify", json={"token": token}).status_code == 200
     asyncio.run(_set_nickname(client.session_factory, EMAIL, "Snipehunter"))
 
     assert _post_forum(client).status_code == 200
@@ -562,15 +623,15 @@ def test_verified_account_passes_the_soft_gate(client, sent_mail, stripe_unconfi
     assert client.post("/billing/checkout").status_code == 500
 
 
-def test_soft_gate_leaves_the_read_paths_open(client, sent_mail):
-    """The whole point of the soft gate (human decision, 2026-08-06): an
-    unverified account keeps full free-tier access to the product itself.
-    Anything less would just push the user back to anonymous browsing, which
-    since 2026-08-03 reaches the same data anyway."""
+def test_verification_gate_leaves_the_read_paths_open(client, sent_mail):
+    """The gate covers three write routes and nothing else. Guards against
+    someone "tightening" it by hanging current_verified_user on the read paths
+    too: those stay reachable, and are reachable anonymously anyway since
+    2026-08-03, so gating them would buy nothing."""
     UNCOLLECTED_REALM = 424242
-    register(client)
+    register_verified(client)
     login(client)
-    assert asyncio.run(_is_verified(client.session_factory, EMAIL)) is False
+    asyncio.run(_unverify_user(client.session_factory, EMAIL))
 
     assert client.get("/api/me").status_code == 200
     assert client.get("/api/snipes", params={"sell": UNCOLLECTED_REALM}).status_code == 400
@@ -593,7 +654,10 @@ async def _set_nickname(session_factory, email: str, nickname: str) -> None:
 
 def test_forgot_password_flow_replaces_the_password(client, sent_mail):
     NEW_PASSWORD = "a-brand-new-password-456"
-    register(client)
+    # Verified, because the assertions below are about which *password* works --
+    # an unverified account is refused at login whatever the password is
+    # (2026-08-09), which would make both of them pass for the wrong reason.
+    register_verified(client)
     sent_mail.clear()
 
     r = client.post("/auth/forgot-password", json={"email": EMAIL})
@@ -621,7 +685,7 @@ def test_forgot_password_does_not_leak_account_existence(client, sent_mail):
 
 
 def test_reset_password_rejects_garbage_token(client, sent_mail):
-    register(client)
+    register_verified(client)  # so the closing login() tests the password, not the gate
     r = client.post("/auth/reset-password",
                     json={"token": "not-a-real-token", "password": "irrelevant-123"})
     assert r.status_code == 400
@@ -746,10 +810,11 @@ def test_google_login_links_to_existing_password_account(client, fake_google, se
     must end up as ONE account with two ways in, not a duplicate. This is the
     case where getting it wrong silently splits a paying customer's account in
     two, so it is asserted on the row counts, not just the response."""
+    # Registered and never verified, so it cannot log in with its password at
+    # all (2026-08-09) -- the subscription is set directly, which is how
+    # billing.py's webhook would have written it anyway.
     register(client)
-    login(client)
     asyncio.run(_activate_subscription(client.session_factory, EMAIL))
-    client.post("/auth/logout")
     assert asyncio.run(_count_users(client.session_factory)) == 1
 
     assert google_callback(client).status_code == 302
@@ -769,6 +834,24 @@ def test_google_login_links_to_existing_password_account(client, fake_google, se
     # Linking also verified it -- Google vouched for the address the existing
     # password account had never confirmed.
     assert me["is_verified"] is True
+
+
+def test_google_login_unblocks_a_password_account_that_never_verified(client, fake_google):
+    """The two halves of the human's 2026-08-09 decision meeting each other:
+    password login is gated on verification, Google login is not.
+
+    Register with a password and never click the link, and password login is
+    refused. Sign in with Google on that same address and the association
+    verifies the account (UserManager.oauth_callback), which retroactively opens
+    the password path too. That's the escape hatch for a user whose confirmation
+    email never arrived, so it has to keep working."""
+    register(client)
+    assert login(client).json()["detail"] == "LOGIN_USER_NOT_VERIFIED"
+
+    assert google_callback(client).status_code == 302
+    client.post("/auth/logout")
+
+    assert login(client).status_code == 204
 
 
 def test_google_login_twice_reuses_the_same_link(client, fake_google):

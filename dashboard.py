@@ -229,7 +229,21 @@ async def ensure_anon_cookie(request: Request, call_next):
 
 
 app.include_router(admin.router)
-app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth", tags=["auth"])
+# requires_verification=True (2026-08-09, human decision) makes a confirmed
+# address a hard gate on **password** login: /auth/login answers 400
+# LOGIN_USER_NOT_VERIFIED until the emailed link is clicked. This reverses the
+# soft gate chosen on 2026-08-06 -- see .claude/docs/history.md.
+#
+# Google is deliberately unaffected, and needs no code here to stay that way:
+# get_oauth_router below runs with is_verified_by_default=True, and
+# auth.UserManager.oauth_callback covers the associate-by-email path, so a
+# Google account is already verified by the time any login check runs.
+#
+# Only this router is gated. The anonymous tier, /api/snipes, /api/me and the
+# rest of the free tier stay reachable without an account at all -- the gate is
+# on logging *in*, not on what a logged-in free user may do.
+app.include_router(fastapi_users.get_auth_router(auth_backend, requires_verification=True),
+                   prefix="/auth", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
 # Email verification + password reset (2026-08-06). Both routers only mint and
 # consume tokens; the actual sending happens in auth.UserManager's hooks via

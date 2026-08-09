@@ -91,6 +91,15 @@
   button:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
   button:disabled { opacity: 0.6; cursor: default; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
+  /* Same rule as register.html's -- see the duplication note on the Google
+     button below; these standalone pages repeat rather than share. */
+  .linkish {
+    background: none; border: none; color: var(--bullion); cursor: pointer;
+    font-size: 0.8rem; padding: 0; margin: 0; text-transform: none;
+    letter-spacing: 0; font-weight: 600; text-decoration: underline;
+    font-family: inherit;
+  }
+  .linkish:hover { background: none; }
   .switch { font-size: 0.8rem; color: var(--text-dim); text-align: center; }
   .switch a { color: var(--bullion); }
   /* Google sign-in (2026-08-06). Deliberately NOT styled like the gold
@@ -140,6 +149,10 @@
   <label>Email <input type="email" id="email" required autocomplete="username"></label>
   <label>Password <input type="password" id="password" required autocomplete="current-password"></label>
   <div id="error" class="error"></div>
+  <div class="switch" id="unverified" hidden>
+    <button type="button" class="linkish" id="resend">Resend the confirmation email</button>
+    <span id="resend-state"></span>
+  </div>
   <button type="submit" id="submit">Log in</button>
   <div class="switch"><a href="/forgot-password">Forgot your password?</a></div>
   <div class="divider" id="oauth-divider" hidden>or</div>
@@ -205,11 +218,40 @@
   });
 })();
 
+// Offered only after a LOGIN_USER_NOT_VERIFIED rejection, so the address is
+// known to have an unverified account. /auth/request-verify-token still answers
+// 202 unconditionally (it refuses to leak which emails exist), so there is
+// nothing to report here beyond a network error.
+function resendTo(email) {
+  const row = document.getElementById("unverified");
+  const btn = document.getElementById("resend");
+  const state = document.getElementById("resend-state");
+  state.textContent = "";
+  btn.disabled = false;
+  row.hidden = false;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    state.textContent = " sending...";
+    try {
+      await fetch("/auth/request-verify-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      state.textContent = " sent.";
+    } catch (e) {
+      state.textContent = " network error.";
+      btn.disabled = false;
+    }
+  };
+}
+
 document.getElementById("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = document.getElementById("submit");
   const err = document.getElementById("error");
   err.textContent = "";
+  document.getElementById("unverified").hidden = true;
   btn.disabled = true;
   try {
     const body = new URLSearchParams();
@@ -225,6 +267,14 @@ document.getElementById("form").addEventListener("submit", async (e) => {
       return;
     }
     const data = await r.json().catch(() => ({}));
+    // LOGIN_USER_NOT_VERIFIED (2026-08-09): the password was right, the address
+    // just isn't confirmed yet -- so this says so plainly and offers the resend
+    // rather than falling through to the generic failure.
+    if (data.detail === "LOGIN_USER_NOT_VERIFIED") {
+      err.textContent = "Confirm your email address first. Check your inbox for the link.";
+      resendTo(document.getElementById("email").value);
+      return;
+    }
     err.textContent = data.detail === "LOGIN_BAD_CREDENTIALS"
       ? "Incorrect email or password."
       : "Login failed -- try again.";

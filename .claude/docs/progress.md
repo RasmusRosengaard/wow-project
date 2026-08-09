@@ -285,17 +285,21 @@ several entries around it, all dated 2026-08-01.
    login" in `modules-web.md` for the mechanism and the four traps, and
    `history.md` for the narrative. What shipped differs from the 2026-07-26
    scope in one deliberate way, and it matters:
-   - **The gate is soft, not hard.** The original goal was to block an
-     unverified account from every `current_active_user` route so a throwaway
-     registration couldn't consume free-tier resources. That rationale
-     evaporated on 2026-08-03, when the anonymous tier let a visitor with *no
-     account at all* run realm-locked `/api/snipes` queries — blocking an
-     unverified account from the same data protects nothing and only pushes
-     the person back to anonymous browsing. Human chose soft explicitly.
-     `auth.current_verified_user` (403, distinguishable from 401) guards
-     exactly three things: Stripe checkout, Snipe Board posting, and Discord
-     alerts (the last already covered by the subscription gate, so it needed
-     no change of its own). **Do not "finish" this by tightening it.**
+   - **The gate started soft and was made hard on 2026-08-09.** It shipped
+     soft: the original goal was to block an unverified account from every
+     `current_active_user` route, and that rationale had evaporated on
+     2026-08-03 when the anonymous tier let a visitor with *no account at all*
+     run realm-locked `/api/snipes` queries. On 2026-08-09 the human reversed
+     it anyway and asked for verification to be required **to log in** —
+     `requires_verification=True` on the auth router, 400
+     `LOGIN_USER_NOT_VERIFIED`. Note this does not resurrect the originally
+     scoped hard gate: the *read paths stay open*, because the anonymous
+     argument above still holds against gating them. What changed is only
+     whether a password account can hold a session before confirming.
+     Google login is exempt (verified on creation, so it never meets the
+     check). `auth.current_verified_user` (403, distinguishable from 401)
+     still guards Stripe checkout, Snipe Board posting and Discord alerts,
+     now as defence in depth.
    - Provider: **Resend** (`mailer.py`, one `httpx` POST, no new dependency).
      Logs the link instead of sending when unconfigured, which is how local
      dev and CI work.
@@ -308,10 +312,13 @@ several entries around it, all dated 2026-08-01.
      verification, including on the association path — which needed a
      `UserManager.oauth_callback` override, since FastAPI-Users'
      `is_verified_by_default` only applies to newly-created accounts.
-   - The soft gate is why the 20 pre-existing `tests/test_auth.py` tests
-     needed no rewriting; the hard gate would have required changing most of
-     them. 19 new tests cover verification, reset, the gate, and OAuth
-     (including callback linking and the 302-not-204 regression).
+   - 19 tests cover verification, reset, the gate, and OAuth (including
+     callback linking and the 302-not-204 regression). The 2026-08-09 login
+     gate then did force the test churn the soft gate had avoided: every test
+     that logs in now goes through a `register_verified()` helper, and the
+     three `current_verified_user` tests construct their unverified-but-
+     logged-in state by clearing the flag *after* login, since the product no
+     longer produces it.
    - Still open, flagged not built: **no rate limiting** on registration or
      `/auth/request-verify-token`, so nothing stops someone burning the
      100/day Resend quota. Thresholds are human-specified in this project, so

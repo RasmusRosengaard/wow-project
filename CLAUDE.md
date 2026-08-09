@@ -51,16 +51,28 @@ cross-realm snipe routing, and eventually appearance-level intelligence. The web
 dashboard has an anonymous tier, a free logged-in tier, a subscription, and an
 internal superuser tier.
 
-Cutting across those tiers since 2026-08-06: **email verification is a soft
-gate.** An unverified account has full free-tier access to the product itself —
-`/api/snipes`, `/api/me`, `/api/status`, `/api/realms` — and only three things
-need a confirmed address (`auth.current_verified_user`, which raises **403** so
-the frontend can tell it apart from a 401): Stripe checkout, posting to the Snipe
-Board, and Discord alerts (already covered by the subscription gate). Do not
-"tighten" this into the hard gate `.claude/docs/progress.md` originally scoped —
-it was made pointless by the anonymous tier and the human chose soft explicitly.
-Google login (`/auth/google/*`) links by email address and counts as
-verification.
+Cutting across those tiers since 2026-08-09: **a confirmed email address is
+required to log in with a password.** `/auth/login` is mounted with
+`requires_verification=True` and answers **400 `LOGIN_USER_NOT_VERIFIED`** until
+the emailed link is clicked. This reversed the soft gate of 2026-08-06 on the
+human's explicit instruction — if you find older text describing the gate as
+soft, that text is stale, not a decision to restore.
+
+Two carve-outs, both deliberate:
+
+- **Google login is exempt** and needs no code to stay that way: `/auth/google/*`
+  runs with `is_verified_by_default=True` and `auth.UserManager.oauth_callback`
+  covers the associate-by-email path, so the account is verified before any login
+  check sees it. That also makes Google the escape hatch for a password account
+  whose confirmation mail never arrived.
+- **The anonymous tier is untouched.** `/api/snipes`, `/api/status` and
+  `/api/realms` need no account at all — the gate is on logging *in*, not on the
+  data. Don't extend it to the read paths.
+
+`auth.current_verified_user` (**403**, so the frontend can tell it apart from a
+401) still guards Stripe checkout, the Snipe Board and Discord alerts. Keep it:
+it re-reads the live DB row, which is what makes it hold for a session minted
+while the account was verified.
 
 **Current phase: 0 — the sale-inference signal's validation gate was explicitly
 skipped** (human decision, 2026-07-20) in order to build ahead. The

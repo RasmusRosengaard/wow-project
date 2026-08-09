@@ -120,8 +120,7 @@ def verification_email(link: str) -> tuple[str, str]:
     return ("Confirm your email — Realm Arbitrage", _button_email(
         heading="Confirm your email",
         body="You're one click from finishing your Realm Arbitrage account. "
-             "Confirming your address unlocks subscribing, posting to the Snipe "
-             "Board, and Discord alerts.",
+             "You need to confirm your address before you can log in.",
         link=link,
         cta="Confirm email",
         footer="This link expires in one hour. If you didn't sign up, ignore "

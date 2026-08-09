@@ -186,14 +186,26 @@ Two external setups, both required before this works for real users:
   consent screen**, since in "Testing" only accounts added as test users can log
   in at all.
 
-**The gate is soft, on purpose.** An unverified account keeps full free-tier
-access to the product — `/api/snipes`, `/api/me`, `/api/status`, `/api/realms`
-all stay open, with a banner asking it to confirm. Only three things require a
-confirmed address: Stripe checkout, posting to the Snipe Board, and (already,
-via the subscription gate) Discord alerts. The hard gate originally scoped for
-this stopped making sense once anonymous visitors could use `/snipes` at all
-(2026-08-03) — blocking an unverified *account* from the same data protects
-nothing and just pushes the person back to anonymous browsing.
+**Confirming the address is required to log in** (2026-08-09, human decision,
+reversing the soft gate this shipped with on 2026-08-06). `/auth/login` answers
+`400 LOGIN_USER_NOT_VERIFIED` until the emailed link is clicked;
+`/login` says so and offers a resend rather than reporting a bad password.
+
+Two things are deliberately *not* gated:
+
+- **Google sign-in.** Google has already proven the address, so a Google account
+  is verified on creation and never sees this. No code enforces the exemption —
+  it falls out of `is_verified_by_default=True` plus
+  `auth.UserManager.oauth_callback`, which also means signing in with Google is
+  the escape hatch for a password account whose confirmation mail never arrived.
+- **Anonymous browsing.** `/snipes`, `/api/snipes`, `/api/status` and
+  `/api/realms` need no account at all (2026-08-03), so this gates *logging in*,
+  not access to the data.
+
+`auth.current_verified_user` (403, distinguishable from 401) still guards Stripe
+checkout, posting to the Snipe Board, and Discord alerts. That is now defence in
+depth rather than a gate users meet — it reads the live DB row, so it holds even
+for a session minted while the account was verified.
 
 Every account that existed before this deployed was marked verified by a one-off
 migration (`b2d5f8a03c71`). They were never asked to confirm an address, so

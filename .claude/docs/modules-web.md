@@ -194,10 +194,13 @@ behavior exactly (confirmed by reading the installed package's
 check applies — it is the `current_active_user` equivalent, not the
 `current_verified_user` one. That distinction became load-bearing on 2026-08-06
 when `current_verified_user` arrived: this helper's only callers (`api_me`,
-`api_snipes`) are exactly the routes the soft gate leaves open to an unverified
-account, so "active only" is complete *for them*, not an omission — anything
-needing verification must use `Depends(current_verified_user)` instead, because
-this function will never enforce it. `superuser=True` is still used nowhere.
+`api_snipes`) are exactly the routes the verification gate leaves open, so
+"active only" is complete *for them*, not an omission — anything needing
+verification must use `Depends(current_verified_user)` instead, because this
+function will never enforce it. (Since 2026-08-09 login itself requires
+verification, so in practice every session reaching here is verified anyway —
+but that is the auth router's doing, not this function's, and it must not be
+relied on here.) `superuser=True` is still used nowhere.
 Returns `None` on any failure (no cookie, invalid/expired token, unknown user,
 inactive user) rather than raising — callers 401 themselves.
 `db.sessionmaker()`'s `expire_on_commit=False` means the returned `User`'s
@@ -295,6 +298,28 @@ Four non-obvious pieces, each of which was a real break during implementation:
 `associate_by_email=True` + `is_verified_by_default=True` are safe *specifically*
 because Google guarantees the address; the standard warning against the former
 applies to providers that don't.
+
+**Login gate (2026-08-09).** `get_auth_router` is mounted with
+`requires_verification=True`, so `/auth/login` answers **400
+`LOGIN_USER_NOT_VERIFIED`** for a password account that hasn't clicked the link.
+`login.html` branches on that detail specifically — it says "confirm your email"
+and offers a resend through `/auth/request-verify-token`, rather than falling
+through to the generic failure and implying the password was wrong.
+
+Three consequences worth knowing before touching this:
+
+- **Google is exempt with no exemption code.** The two settings above already
+  verify the account before any login check runs. That also makes "sign in with
+  Google" the recovery path for a password account whose mail never arrived, and
+  it is the `oauth_callback` override above that makes that path work.
+- **The read paths are untouched.** Anonymous visitors still reach `/api/snipes`,
+  `/api/status` and `/api/realms`, so this gates holding a session, not seeing
+  the data. Extending it to the read paths would gain nothing (see
+  `progress.md`).
+- **`current_verified_user` is now defence in depth**, not a gate users meet: no
+  product path yields an unverified logged-in account. Keep it anyway — it
+  re-reads the DB row, so it still holds if the flag is cleared under a live
+  session, which is exactly what its tests now construct.
 
 ## `mailer.py`
 

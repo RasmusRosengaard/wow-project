@@ -3508,3 +3508,71 @@ records" — it polls on its own rather than offering a re-check button.
 
 Also noted while in there, unrelated to email: **auto-renew is OFF** on the
 domain, so it lapses 2027-07-26.
+
+## Email verification became a hard login gate (2026-08-09)
+
+Three days after shipping the soft gate, the human reversed it: *"You must
+verify mail, if you created the acc manually (not necessary with Google
+login/create acc)."* One line in `dashboard.py` —
+`get_auth_router(auth_backend, requires_verification=True)` — plus the copy and
+test fallout described below.
+
+This is a **reversal of a documented decision, not a correction of a bug.** The
+2026-08-06 reasoning (recorded in `progress.md` and repeated in `CLAUDE.md` as
+"do not tighten this") was sound and still is: the anonymous tier means blocking
+an unverified *account* from the read paths protects nothing. The human's
+instruction doesn't contradict that — it gates *logging in*, and the read paths
+stayed open. So the originally-scoped hard gate was still not what shipped; what
+shipped is narrower. The session that made this change flagged the conflict with
+`CLAUDE.md` first and got the instruction restated, which is the only reason it
+proceeded.
+
+The Google carve-out needed **no code**. `is_verified_by_default=True` on
+`get_oauth_router`, plus the `UserManager.oauth_callback` override written on
+2026-08-06 for the associate-by-email path, already verify the account before any
+login check can see it. The pleasant side effect: signing in with Google is now
+the self-service recovery path for a password account whose confirmation mail
+never arrived — register, never confirm, get refused at login, sign in with
+Google on the same address, and the password login starts working. That's a
+regression test now
+(`test_google_login_unblocks_a_password_account_that_never_verified`), because it
+is the only recovery path that doesn't involve a human.
+
+**What the gate did to the test suite** is the interesting part, and it's exactly
+what `progress.md` predicted the hard gate would cost back when it was declined:
+15 tests went red immediately, all on `register(); login()`. Most took a
+mechanical fix (a `register_verified()` helper that flips the flag the way
+migration `b2d5f8a03c71` did for pre-existing accounts). Four did not, and they
+are worth understanding rather than pattern-matching:
+
+- The three `current_verified_user` tests asserted "an unverified account logs in
+  and gets 403". That state is now **unreachable through the product** — nothing
+  mints a session for an unverified account. Rather than delete the coverage,
+  they now log in verified and clear `is_verified` *afterwards*. That is a better
+  test than the original: it proves the dependency re-reads the live DB row
+  instead of trusting a token minted while the account was verified, which is the
+  only reason to keep the dependency at all now that login covers the normal
+  case.
+- `test_google_login_links_to_existing_password_account` had been quietly
+  weakened by the mechanical fix — its whole point is that Google verifies an
+  account that "had never confirmed", so registering it *verified* would have
+  made the final assertion vacuous. It now registers unverified and never logs in
+  with a password, setting the subscription directly (which is what billing.py's
+  webhook does anyway).
+
+Two other tests, `test_forgot_password_flow_replaces_the_password` and
+`test_reset_password_rejects_garbage_token`, would have kept passing while
+testing nothing: they assert which *password* works by calling `login()`, and an
+unverified account is refused whatever the password is. Both would have gone
+green for the wrong reason. Worth remembering as a general shape — adding an
+earlier gate can turn a downstream assertion into a tautology without turning it
+red.
+
+Copy changed in four places, all of which had promised the soft gate: the
+"check your email" panel on `/register` (the human asked for it short and
+dash-free), the success panel on `/verify`, the verification email body in
+`mailer.py`, and `login.html`, which now branches on `LOGIN_USER_NOT_VERIFIED`
+specifically and offers a resend instead of reporting a failed login. The
+`!is_verified` banners in `dashboard.html`, `profile.html` and `snipeboard.html`
+were left in place: unreachable in normal use now, harmless, and correct if the
+flag is ever cleared under a live session.

@@ -73,13 +73,22 @@ async def _get_user(session_factory, email: str) -> User:
 async def _verify_user(session_factory, email: str) -> None:
     """/billing/checkout requires a confirmed email address as of 2026-08-06
     (auth.current_verified_user -- don't start a recurring charge against an
-    address that may not exist). Registration leaves an account unverified, so
-    any test about checkout *mechanics* has to clear that gate first; the gate
-    itself is covered in tests/test_auth.py, not here."""
+    address that may not exist), and since 2026-08-09 so does /auth/login
+    itself. Registration leaves an account unverified, so any test about
+    checkout *mechanics* has to clear that gate first; the gate itself is
+    covered in tests/test_auth.py, not here."""
     async with session_factory() as session:
         user = (await session.execute(select(User).where(User.email == email))).scalar_one()
         user.is_verified = True
         await session.commit()
+
+
+def register_verified(client, email=EMAIL, password=PASSWORD):
+    """register() + _verify_user(), for the tests that then need to log in --
+    /auth/login refuses an unverified account outright (2026-08-09)."""
+    r = register(client, email, password)
+    asyncio.run(_verify_user(client.session_factory, email))
+    return r
 
 
 def sign_payload(payload: bytes, secret: str = WEBHOOK_SECRET, timestamp: int | None = None) -> tuple[bytes, str]:
@@ -110,9 +119,8 @@ def test_checkout_requires_login(client):
 
 
 def test_checkout_creates_session_and_returns_url(client, monkeypatch):
-    register(client)
+    register_verified(client)
     login(client)
-    asyncio.run(_verify_user(client.session_factory, EMAIL))
     user = asyncio.run(_get_user(client.session_factory, EMAIL))
 
     captured = {}
@@ -141,7 +149,7 @@ def test_portal_requires_login(client):
 
 
 def test_portal_requires_existing_stripe_customer(client):
-    register(client)
+    register_verified(client)
     login(client)
     r = client.post("/billing/portal")
     assert r.status_code == 400
@@ -149,7 +157,7 @@ def test_portal_requires_existing_stripe_customer(client):
 
 
 def test_portal_creates_session_and_returns_url(client, monkeypatch):
-    register(client)
+    register_verified(client)
     login(client)
     user = asyncio.run(_get_user(client.session_factory, EMAIL))
 
