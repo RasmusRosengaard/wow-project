@@ -3576,3 +3576,44 @@ specifically and offers a resend instead of reporting a failed login. The
 `!is_verified` banners in `dashboard.html`, `profile.html` and `snipeboard.html`
 were left in place: unreachable in normal use now, harmless, and correct if the
 flag is ever cleared under a live session.
+
+## New brand mark: coin in a reticle (2026-08-11)
+
+Human: "We need a new logo that is more unique", then "make 3 total different"
+and "Preferable include a gold coin and a sniper in the icons".
+
+The mark being replaced was the original **Validation Seal** (see the "assay
+ledger" entry above): a hairline ring with eight coin-edge ticks and a
+checkmark, in `--verified` teal. Two things were wrong with it. The small one is
+that a ring-and-check is the most reproduced shape in software and reads as a
+generic "approved" badge at tab size. The larger one is that it had gone
+*stale*: it was drawn while the product's differentiator was an inferred,
+validated sale price, and the 2026-07-25 pricing change made a snipe a plain
+listing-to-listing comparison. The seal was certifying a claim the product no
+longer makes.
+
+Three directions were drawn as real SVG and compared at the sizes that actually
+matter — 26px nav, 32px favicon, 16px tab — rather than pitched as description:
+
+- **A, "the Reticled Coin"** — one coin centred, crosshair cut through it.
+- **B, "the Spread in the Scope"** — two coins at two heights with the gap
+  between them; the only one that draws the arbitrage rather than the hunting.
+- **C, "the Locked Target"** — a field of faint coins with corner brackets
+  snapped onto one; the only non-circular silhouette.
+
+**A was chosen.** The deciding evidence was a 16px tab-strip mockup: B's two
+coins merge into one blob at that size, which is where a favicon lives most of
+its life. B remains the best idea on paper and the worst one small — worth
+remembering before anyone proposes it again for an OG card.
+
+Implementation note that's easy to get wrong: the knockouts are an SVG `<mask>`,
+not background-coloured paint. The seal sits on `--card` on the nine pages with
+a topbar and on `--paper` on the auth/admin pages, at two different sizes, so a
+painted knockout would have needed a per-page ground colour. See
+`modules-frontend.md`'s "The brand mark" section for the current shape of it.
+
+Also produced: `static/img/youtube-avatar.png` (800x800) and
+`youtube-banner.png` (2048x1152) for the channel. The banner's first cut put the
+wordmark at a hand-picked 96pt, which ran past YouTube's centred 1235x338 safe
+area and would have cropped the brand name on mobile; the generator now fits the
+type to that box and prints the measured extents so the failure can't be silent.

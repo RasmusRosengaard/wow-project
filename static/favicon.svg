@@ -1,16 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- A struck gold coin held in a sniper's reticle (replaced the ring-and-check
+       seal 2026-08-11). Same geometry as the in-page .seal mark, but committed to
+       the dark disc: a favicon is a fixed asset with no theme to react to, and the
+       masked crosshair cuts through the coin to reveal that disc. -->
+  <defs>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+      <rect width="32" height="32" fill="#fff"/>
+      <circle cx="16" cy="16" r="6.4" fill="none" stroke="#7a7a7a" stroke-width="0.7"/>
+      <g stroke="#000" stroke-width="1.5" stroke-linecap="round">
+        <line x1="16" y1="6" x2="16" y2="12.4"/>
+        <line x1="16" y1="19.6" x2="16" y2="26"/>
+        <line x1="6" y1="16" x2="12.4" y2="16"/>
+        <line x1="19.6" y1="16" x2="26" y2="16"/>
+      </g>
+      <circle cx="16" cy="16" r="1.5" fill="#000"/>
+    </mask>
+  </defs>
   <circle cx="16" cy="16" r="16" fill="#14161a"/>
-  <circle cx="16" cy="16" r="13" fill="none" stroke="#d4af61" stroke-width="1.3"/>
-  <circle cx="16" cy="16" r="10" fill="none" stroke="#d4af61" stroke-width="0.7"/>
-  <g stroke="#d4af61" stroke-width="1" stroke-linecap="round">
-    <line x1="16" y1="2" x2="16" y2="4.5"/>
-    <line x1="16" y1="27.5" x2="16" y2="30"/>
-    <line x1="2" y1="16" x2="4.5" y2="16"/>
-    <line x1="27.5" y1="16" x2="30" y2="16"/>
-    <line x1="6.1" y1="6.1" x2="7.9" y2="7.9"/>
-    <line x1="24.1" y1="24.1" x2="25.9" y2="25.9"/>
-    <line x1="6.1" y1="25.9" x2="7.9" y2="24.1"/>
-    <line x1="24.1" y1="7.9" x2="25.9" y2="6.1"/>
+  <circle cx="16" cy="16" r="12.2" fill="none" stroke="#d4af61" stroke-width="0.9" opacity="0.55"/>
+  <circle cx="16" cy="16" r="9" fill="#d4af61" mask="url(#cut)"/>
+  <g stroke="#d4af61" stroke-width="1.5" stroke-linecap="round">
+    <line x1="16" y1="1.5" x2="16" y2="6.2"/>
+    <line x1="16" y1="25.8" x2="16" y2="30.5"/>
+    <line x1="1.5" y1="16" x2="6.2" y2="16"/>
+    <line x1="25.8" y1="16" x2="30.5" y2="16"/>
   </g>
-  <path d="M10 16.5l4 4 8-9" fill="none" stroke="#3fa9a0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

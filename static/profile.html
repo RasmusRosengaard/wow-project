@@ -64,7 +64,11 @@
     font-size: 1.05rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
     text-transform: uppercase; color: var(--ink);
   }
-  .seal { color: var(--verified); flex-shrink: 0; }
+  .seal { --coin: var(--bullion); --line: var(--ink); flex-shrink: 0; }
+  /* The mark is two-tone now, so it drives --coin/--line instead of a
+     single `color`. It was var(--verified) teal while the product
+     claimed to certify a price; pricing became a listing-to-listing
+     comparison in July, so the seal no longer had a claim to make. */
   .nav { display: flex; gap: 0.4rem; align-items: center; }
   .nav a, .nav button {
     background: transparent; border: 1px solid transparent; color: var(--text-dim);
@@ -259,20 +263,36 @@
 <div class="topbar">
   <div class="brand">
     <a href="/" class="brand-link" aria-label="Realm Arbitrage home">
-    <svg class="seal" width="26" height="26" viewBox="0 0 30 30" aria-hidden="true">
-      <circle cx="15" cy="15" r="13" fill="none" stroke="currentColor" stroke-width="1.2"/>
-      <circle cx="15" cy="15" r="10" fill="none" stroke="currentColor" stroke-width="0.6"/>
-      <g stroke="currentColor" stroke-width="0.9" stroke-linecap="round">
-        <line x1="15" y1="1" x2="15" y2="3.4"/>
-        <line x1="15" y1="26.6" x2="15" y2="29"/>
-        <line x1="1" y1="15" x2="3.4" y2="15"/>
-        <line x1="26.6" y1="15" x2="29" y2="15"/>
-        <line x1="5.11" y1="5.11" x2="6.81" y2="6.81"/>
-        <line x1="23.19" y1="23.19" x2="24.89" y2="24.89"/>
-        <line x1="5.11" y1="24.89" x2="6.81" y2="23.19"/>
-        <line x1="23.19" y1="6.81" x2="24.89" y2="5.11"/>
+    <svg class="seal" width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+      <!-- A struck gold coin held in a sniper's reticle (replaced the ring-and-check
+           seal 2026-08-11). The crosshair arms and the centre are cut OUT of the coin
+           through a mask rather than painted in the page's own background colour --
+           the knockouts are genuinely transparent, so this one block works on the
+           topbar (--card), on the bare auth pages (--paper) and in both themes
+           without having to know what sits behind it. -->
+      <defs>
+        <mask id="seal-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+          <rect width="32" height="32" fill="#fff"/>
+          <!-- mid-grey = a partial cut, so the struck inner ring reads as milled
+               into the coin instead of punched clean through it -->
+          <circle cx="16" cy="16" r="6.4" fill="none" stroke="#7a7a7a" stroke-width="0.7"/>
+          <g stroke="#000" stroke-width="1.5" stroke-linecap="round">
+            <line x1="16" y1="6" x2="16" y2="12.4"/>
+            <line x1="16" y1="19.6" x2="16" y2="26"/>
+            <line x1="6" y1="16" x2="12.4" y2="16"/>
+            <line x1="19.6" y1="16" x2="26" y2="16"/>
+          </g>
+          <circle cx="16" cy="16" r="1.5" fill="#000"/>
+        </mask>
+      </defs>
+      <circle cx="16" cy="16" r="12.2" fill="none" stroke="var(--line)" stroke-width="0.9" opacity="0.55"/>
+      <circle cx="16" cy="16" r="9" fill="var(--coin)" mask="url(#seal-cut)"/>
+      <g stroke="var(--line)" stroke-width="1.5" stroke-linecap="round">
+        <line x1="16" y1="1.5" x2="16" y2="6.2"/>
+        <line x1="16" y1="25.8" x2="16" y2="30.5"/>
+        <line x1="1.5" y1="16" x2="6.2" y2="16"/>
+        <line x1="25.8" y1="16" x2="30.5" y2="16"/>
       </g>
-      <path d="M9.5 15.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
     <h1>Realm Arbitrage</h1>
     </a>
