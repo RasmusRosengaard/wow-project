@@ -181,6 +181,12 @@
   .filters input:focus-visible, .filters select:focus-visible,
   button:focus-visible, a:focus-visible { outline: 2px solid var(--bullion); outline-offset: 1px; }
   .filters input[type=checkbox] { width: auto; }
+  /* Safari/iOS style type=search as a pill with its own inner padding --
+     force it back to the same box every other input in the rail uses, and
+     keep the native clear button (Chrome/Safari) since that's how the
+     search gets cleared. */
+  .filters input[type=search] { -webkit-appearance: textfield; appearance: textfield; }
+  .filters input[type=search]::-webkit-search-cancel-button { -webkit-appearance: searchfield-cancel-button; cursor: pointer; }
   .filters .auto-label { flex-direction: row; align-items: center; gap: 0.4rem; text-transform: none; letter-spacing: 0; }
   /* ---------- Ledger table ---------- */
   .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hairline); border-radius: 6px; transition: opacity 0.15s ease; }
@@ -442,6 +448,9 @@
     <div id="unverified-banner" class="unverified-banner" style="display:none;"></div>
     <label>Sell realm <select id="sell"></select></label>
     <div id="realm-lock-hint" class="realm-lock-hint" style="display:none;"></div>
+    <label title="Filter the table by item name as you type. Case-insensitive; several words all have to match (in any order), so 'nightfall blade' finds 'Blade of Nightfall'. A purely numeric search matches the item id instead.">
+      Search item <input id="search" type="search" placeholder="e.g. nightfall" autocomplete="off" spellcheck="false">
+    </label>
     <label>Min discount % <input id="min_discount_pct" type="number" min="0" max="100" step="5" value="30"></label>
     <div class="filter-row">
       <label>Min buy (g) <input id="min_gold" type="number" step="1" min="0" placeholder="any"></label>
@@ -860,9 +869,31 @@ function buildGroups(rows) {
   });
 }
 
+// Splits the search box into lowercased terms. Every term has to match, in
+// any order ("nightfall blade" finds "Blade of Nightfall") -- one raw
+// substring match would fail on that, and word order is exactly what a user
+// typing a half-remembered item name gets wrong.
+function parseSearch(raw) {
+  return raw.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+// row.name is null for anything item_names.py hasn't resolved yet, in which
+// case the table shows the bare item id instead (see buildRowHtml) -- so an
+// all-digits search matches against the id, which is the only handle the
+// user has on those rows. Non-numeric searches deliberately never look at
+// the id: letting "3" match item 30183 would bury a real name search under
+// coincidental id hits.
+function matchesSearch(row, terms) {
+  const name = (row.name ?? "").toLowerCase();
+  return terms.every(t =>
+    name.includes(t) || (/^\d+$/.test(t) && String(row.item_id).includes(t)));
+}
+
 // All the filter-rail thresholds that used to be server-side query params --
 // now applied entirely in the browser against the cached batch (cachedRows),
-// so changing any of these never triggers a network request.
+// so changing any of these never triggers a network request. The search box
+// (added 2026-08-11) rides the same path -- it's a pure client-side filter
+// over the batch already in memory, not a new query param.
 function applyFilters(rows) {
   const minDiscount = Number($("min_discount_pct").value) || 0;
   const minGoldRaw = $("min_gold").value.trim();
@@ -886,8 +917,10 @@ function applyFilters(rows) {
   const belowSaleAvg = $("below_sale_avg").checked;
   const activeClasses = ITEM_CLASS_FILTERS.filter(c => $(`class_${c.key}`).checked);
   const activeQualities = QUALITY_FILTERS.filter(q => $(`quality_${q.key}`).checked);
+  const searchTerms = parseSearch($("search").value);
 
   return rows.filter(r => {
+    if (searchTerms.length && !matchesSearch(r, searchTerms)) return false;
     if (r.discount_pct < minDiscount) return false;
     if (minGold != null && r.buy_copper < minGold) return false;
     if (maxGold != null && r.buy_copper > maxGold) return false;
@@ -1219,7 +1252,13 @@ function renderTable(resetLimit = true) {
 
   $("rows").innerHTML = html.join("");
   $("empty").style.display = groups.length ? "none" : "block";
-  $("empty").textContent = "No snipes at these thresholds.";
+  // With a search active, "No snipes at these thresholds" points at the
+  // wrong control -- say which search came up empty so it's obvious the
+  // search box, not a threshold, is what's hiding everything.
+  const searchRaw = $("search").value.trim();
+  $("empty").textContent = searchRaw
+    ? `No items matching "${searchRaw}" at these thresholds.`
+    : "No snipes at these thresholds.";
 
   const remaining = groups.length - pageGroups.length;
   const moreBtn = $("show-more");
@@ -1527,7 +1566,11 @@ $("sell").addEventListener("change", onSellRealmChange);
 // cached batch -- see applyFilters()/renderTable(). "input" fires live as
 // the user types/adjusts, not just on blur, matching the instant feel the
 // client-side sort already established.
-const LIVE_FILTER_IDS = ["min_discount_pct", "min_gold", "max_gold",
+// "search" is in here for the same reason as the numeric thresholds: it's a
+// pure re-filter of cachedRows, and "input" (not "change") is what makes it
+// filter as you type -- it also catches the native type=search clear button,
+// which fires input but not change in some browsers.
+const LIVE_FILTER_IDS = ["search", "min_discount_pct", "min_gold", "max_gold",
                          "min_sell_now", "min_sale_rate_pct", "min_sale_avg"];
 LIVE_FILTER_IDS.forEach(id => $(id).addEventListener("input", () => {
   hideTooltip();

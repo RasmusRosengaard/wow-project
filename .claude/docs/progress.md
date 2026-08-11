@@ -121,7 +121,7 @@ several entries around it, all dated 2026-08-01.
   bonus/ilvl differences no longer gate a match at all (changed 2026-07-26,
   see `CLAUDE.md`'s "What this project is" matching-model note); the
   buy-side listing's actual variant is still shown per row for display.
-- Client-side filter rail (discount%, gold range, sell-now,
+- Client-side filter rail (item-name search, discount%, gold range, sell-now,
   min sale rate %, unique-transmog, 9-way item-class, 6-way rarity), instant
   table sorting/grouping, an `localStorage` batch cache so a page reload
   paints instantly. Manual Refresh button removed (2026-07-25) —

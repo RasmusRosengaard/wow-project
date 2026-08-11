@@ -58,8 +58,9 @@ headers — auto layout made every column jump on each filter change, and
 `RENDER_PAGE_SIZE=200` behind a "Show N more" button; building every row at
 once was ~90% of a ~1s re-render. Rows group by `(item_id, pet_species_id,
 pet_quality_id)` (`groupKey()`) with a `▾ N` expand toggle. **Filter rail, all
-client-side:** discount %, buy-price range, min sell price, min sale rate %,
-min sale avg (g), unique-transmog, "Hide flagged (sniper filter)" (ORs
+client-side:** item-name search, discount %, buy-price range, min sell price,
+min sale rate %, min sale avg (g), unique-transmog, "Hide flagged (sniper
+filter)" (ORs
 `sus_item_suspect`/`price_suspect`/`sniper_filter_suspect`; flagged rows
 always render a red ⚠ regardless of the checkbox, so the signal shows even
 when not filtering on it), "Buy below sale avg", 9-way item class, 6-way
@@ -69,6 +70,22 @@ A `null` TSM value fails any set TSM threshold, matching the server exactly.
 `escapeHtml()` is a real regex escaper applied to every row-derived string
 **including inside quoted attributes** — the `textContent`→`innerHTML` trick
 doesn't escape quotes, which was a real stored-XSS bug in this project.
+
+**Item-name search (`#search`, added 2026-08-11, human request):** a plain
+client-side filter over the same cached batch, no new query param.
+`parseSearch()` lowercases and splits on whitespace; `matchesSearch()` requires
+**every** term to appear somewhere in `row.name`, in any order, so "nightfall
+blade" finds "Blade of Nightfall" — one raw substring match fails that, and
+word order is exactly what a half-remembered item name gets wrong. An
+all-digits term matches `item_id` instead (that's the only handle on rows
+`item_names.py` hasn't resolved, which render as a bare id); non-numeric terms
+never look at the id, or "3" would bury a name search under coincidental id
+hits. It sits in `LIVE_FILTER_IDS` on the `input` event, not `change` —
+`input` is what makes it filter as you type *and* what the native
+`type=search` clear (×) fires. With a search active the empty state names it
+("No items matching "x" at these thresholds.") so it's obvious the search box,
+not a threshold, is what emptied the table. The message goes through
+`textContent`, not `innerHTML` — the search string is user input.
 `userRealmAccounts` (from `/api/wow-accounts`) backs the "Your account" column
 and is deliberately kept out of the shared row cache. Anonymous visitors get
 the full free-tier UI plus an `#anon-banner` reading its numbers from
