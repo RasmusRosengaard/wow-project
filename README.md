@@ -294,20 +294,40 @@ the normal snipe pricing pools every variant of an item under one price, which
 makes a tertiary stat invisible: a +Speed piece is priced as if it were the
 plain version, so it never surfaces on the Dashboard.
 
+The premise is that sellers list these without realising +Speed adds
+significant value, so the asking price reflects the plain item — which means no
+reference price has to *validate* a row. What you filter on instead is **armor
+type, quality and what you're willing to pay**, and rows lead with the cheapest.
+
 It shares **no logic with the snipe path** — no discount rule, no sell realm,
-no AH cut, no value floor. It is a census, not a validated snipe list, and it
-deliberately **filters and flags nothing by default**: gold validation is a
-later pass. Each row shows the listing's price, the item's typical +Speed
-price (median of the cheapest +Speed listing per realm), the gap between them,
-and the cheapest *plain* listing of the same item for comparison. A gap built
-on only two or three realms is dimmed rather than hidden.
+no AH cut, no value floor. It is a census, not a validated snipe list. Each row
+shows the listing's price, the item's typical +Speed price (median of the
+cheapest +Speed listing per realm), the gap between them as context only, and
+the cheapest *plain* listing of the same item. A gap built on only two or three
+realms is dimmed rather than hidden.
+
+Two quirks of Blizzard's own item data worth knowing when filtering: **cloaks
+count as Cloth** (including the plate-themed Commander's Cape), and jewelry
+sits in its own bucket rather than under an armor class. The Midnight Tarnished
+set is currently **all green** — the blue filter is wired up for when blues
+appear, but matches nothing today.
+
+The page opens on **Tarnished (Midnight) only** — the 58 "Tarnished Dawnlit"
+items, matched on that full phrase rather than bare "Tarnished", which also
+hits 22 legacy items going back to vanilla (Tarnished Chain Vest, Tarnished
+Plate Belt, Tarnished Claymore). Those Midnight items are listed on 20–60
+realms each, so their typical-price reference is much thicker than the census
+average. Untick the box for the full scan.
 
 Requires a logged-in, confirmed account (it's region-wide, so the free tier's
 one-realm lock doesn't apply to it). CLI equivalent:
 
 ```
-python speed_check.py --top 50 --names
-python speed_check.py --min-gap 3 --max-gold 5000
+python speed_check.py --tarnished --names             # Midnight set only
+python speed_check.py --tarnished --armor leather --max-gold 500
+python speed_check.py --armor cloth,mail --quality green,blue
+python speed_check.py --name-contains "Dawnlit Corsair"
+python speed_check.py --top 50 --names                # everything
 ```
 
 ## Verification protocol (algorithm validation, not a setup step)

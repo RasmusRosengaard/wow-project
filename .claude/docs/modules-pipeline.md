@@ -511,3 +511,81 @@ Measured on the live sweep it was built against (2,471,830 listings, 8,751
 **median 11.4x** its cheapest plain listing. Read that with care -- plain
 listings are far more numerous so their minimum is naturally lower; part of
 the multiple is sample-size asymmetry, not a measured premium.
+
+### The Tarnished / name filter (added same day)
+
+`resolve_name_filter(con, needle, items=None)` turns a **name substring** into
+the list of item_ids to hand `find_speed_listings()`'s `items` param.
+`--name-contains TEXT` / `--tarnished` on the CLI, `name_contains=` /
+`tarnished=true` on the API.
+
+Resolving the filter to ids **up front** rather than post-filtering fetched
+rows (the way `snipe_check.py`'s `_filter_by_appearance`/`_filter_by_sale_rate`
+work) is deliberate: a post-filter has to over-fetch — `snipe_check` widens its
+SQL limit 20x to compensate — and can still return fewer rows than asked for.
+The whole +Speed universe is only ~1,150 items, so one `ensure_many()` pass
+turns the name filter into a plain item_id filter and `top` keeps meaning
+exactly what it says. It's blocking (NameCache → Blizzard on a miss), so it
+runs inside the route's existing `to_thread` worker. Unresolved items can't
+match (`NameCache.get()` returns `"item <id>"`), so a cold cache that times out
+under-reports rather than over-reports.
+
+**`TARNISHED_NAME_MATCH = "Tarnished Dawnlit"`, not bare `"Tarnished"`** — the
+distinction was checked against the real name cache before wiring it up, and
+it matters. "Tarnished" alone also matches **22 legacy items** spanning vanilla
+to Legion: Tarnished Chain Vest (2379), Tarnished Plate Belt (25381),
+Tarnished Fanatic's Battlevest (94085), Tarnished Dreamkeeper's Gauntlets
+(141695), Tarnished Claymore, Tarnished Bastard Sword. None of them carried a
++Speed listing in the sweep this was built against — so bare "Tarnished" would
+have looked correct on the day and started quietly mixing vanilla greys into a
+Midnight view the first time one got listed. The Midnight set is the 58
+"Tarnished Dawnlit" items (ids 258908-258962, 266207-266210), and the two-word
+phrase separates them cleanly. `tests/test_speed_check.py` pins both halves of
+that (bare "Tarnished" catches the legacy item; the phrase doesn't).
+
+Side benefit worth knowing: the Tarnished set is listed on **20-62 realms per
+item**, versus 2-5 for the outliers that dominate the unfiltered census — so
+`speed_region_median` is built on a far thicker reference and `gap_x` is
+correspondingly more trustworthy there.
+
+### Armor type / quality filters, and why `price` is the default sort
+
+Clarified by the human 2026-08-12: *"the idea is to snipe these +speed items,
+that people list without knowing the +speed adds tons of value. So the price of
+the listing really doesn't matter... just show all these new midnight
+green,blues with speed and filter by armor type like leather/cloth etc,
+buyprice."*
+
+That settles what this view is for and reframes `gap_x`. The seller is assumed
+to have mispriced by ignoring the tertiary entirely, so **no reference price
+needs to validate a row** — every +Speed listing is a candidate. `gap_x` stays
+as context but stopped being the organizing principle: **`SORT_COLUMNS`'
+default flipped from `gap` to `price`** (cheapest first), because what a buyer
+decides on is what they'll pay.
+
+`resolve_name_filter()` generalized into **`resolve_item_filter()`**
+(`name_contains` / `qualities` / `armor_types`), all three being catalog
+properties that live in `NameCache` and can't be expressed in the listing SQL
+at all. One pass resolves the metadata regardless of how many filters are
+active. Unknown values **raise** rather than matching nothing — an empty page
+from a typo is far harder to diagnose than an error. The route validates them
+before entering the worker thread so a typo is a clean 400, not a 500.
+
+Two facts about the data that the filters had to be built around, both checked
+against the real cache rather than assumed:
+
+- **Cloaks are armor subclass 1 (Cloth)** — all four Tarnished Dawnlit capes,
+  including the plate-themed "Commander's Cape". So `--armor cloth` genuinely
+  returns every cloak. That's Blizzard's classification; re-bucketing them by
+  name would be inventing data, so the UI explains it instead. Pinned by
+  `test_cloaks_count_as_cloth`.
+- **Jewelry is armor subclass 0 ("Misc")**, hence its own bucket rather than
+  being lumped under an armor class nobody wears it as. Weapons are class 2
+  with ~15 subclasses, so that bucket carries subclass `None` = whole class.
+
+`QUALITY_ALIASES` maps player words (green/blue/epic) onto Blizzard tiers.
+**The Midnight Tarnished set is 59/59 UNCOMMON** — there is no blue in it, and
+no blue Midnight item carried a +Speed listing at all in the sweep this was
+built against (above id 250000 the only non-greens are 8 scattered EPICs). The
+`blue` filter is wired up anyway so those appear automatically if they land,
+rather than needing a code change at the moment they start mattering.

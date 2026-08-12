@@ -115,6 +115,12 @@
   .row { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
   .field.narrow { width: 120px; }
+  /* Sort's longest option ("Cheapest first") clipped inside the shared
+     120px narrow width -- caught in the browser, not in the diff. */
+  .field.sort-field { width: 145px; }
+  .toggle-row { display: flex; align-items: center; gap: 0.5rem; }
+  .toggle-row label { font-weight: 600; cursor: pointer; text-transform: none;
+                      letter-spacing: normal; font-size: 0.82rem; color: var(--ink); }
   .field.grow { flex: 1; min-width: 140px; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
   .info-icon {
@@ -226,21 +232,50 @@
   <div id="app" style="display:none;">
     <div class="card">
       <div class="experiment">
-        <strong>Experimental.</strong> These rows are unfiltered raw auction data &mdash;
-        the +Speed tertiary is invisible to the normal snipe pricing, which pools every
-        variant of an item under one price, so none of this shows up on the Dashboard.
-        Nothing here is validated as profitable: <strong>no gold check, no AH cut, no
-        sell-realm price.</strong> &ldquo;Gap&rdquo; compares a listing to the median of
-        the per-realm cheapest +Speed listings of the same item &mdash; thin, and
-        meaningless where only a realm or two lists it. Sort and judge by eye.
+        <strong>Experimental.</strong> Every current EU listing carrying the +Speed
+        tertiary. The premise: sellers list these without realising +Speed adds
+        significant value, so the asking price reflects the plain item &mdash; which is
+        also why none of it reaches the Dashboard, whose pricing pools every variant of
+        an item under one price and cannot see a tertiary at all.
+        <strong>Nothing here is validated as profitable</strong> &mdash; no AH cut, no
+        sell-realm price, no proof any given item resells. &ldquo;Gap&rdquo; is context
+        only (this listing vs the median of the per-realm cheapest +Speed listings), and
+        it&rsquo;s meaningless where only a realm or two lists the item.
       </div>
 
       <div class="row">
         <div class="field narrow">
+          <label for="armor">Armor type<span class="info-icon" tabindex="0">?<span class="info-tooltip">Blizzard&rsquo;s own item class/subclass. Note that <strong>cloaks count as Cloth</strong> &mdash; including the plate-themed Commander&rsquo;s Cape &mdash; because that&rsquo;s how they&rsquo;re classified, so &ldquo;Cloth&rdquo; returns every cape. Jewelry covers rings and necks.</span></span></label>
+          <select id="armor">
+            <option value="">All</option>
+            <option value="cloth">Cloth</option>
+            <option value="leather">Leather</option>
+            <option value="mail">Mail</option>
+            <option value="plate">Plate</option>
+            <option value="jewelry">Jewelry</option>
+            <option value="shield">Shield</option>
+            <option value="weapon">Weapon</option>
+          </select>
+        </div>
+        <div class="field narrow">
+          <label for="quality">Quality</label>
+          <select id="quality">
+            <option value="green,blue">Green + Blue</option>
+            <option value="green">Green only</option>
+            <option value="blue">Blue only</option>
+            <option value="epic">Epic</option>
+            <option value="">Any</option>
+          </select>
+        </div>
+        <div class="field narrow">
+          <label for="max-gold">Max buy price (g)</label>
+          <input type="number" id="max-gold" min="0" step="100" placeholder="any">
+        </div>
+        <div class="field narrow sort-field">
           <label for="sort">Sort</label>
           <select id="sort">
-            <option value="gap">Biggest gap</option>
             <option value="price">Cheapest first</option>
+            <option value="gap">Biggest gap</option>
             <option value="price_desc">Priciest first</option>
             <option value="median">Typical price</option>
             <option value="item">Item id</option>
@@ -249,10 +284,6 @@
         <div class="field narrow">
           <label for="min-gold">Min gold</label>
           <input type="number" id="min-gold" min="0" step="100" placeholder="any">
-        </div>
-        <div class="field narrow">
-          <label for="max-gold">Max gold</label>
-          <input type="number" id="max-gold" min="0" step="100" placeholder="any">
         </div>
         <div class="field narrow">
           <label for="min-gap">Min gap (x)</label>
@@ -267,6 +298,10 @@
           <input type="text" id="items" placeholder="e.g. 204414,204422">
         </div>
         <button id="run-btn">Scan</button>
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" id="tarnished" checked>
+        <label for="tarnished">Tarnished (Midnight) only<span class="info-icon" tabindex="0">?<span class="info-tooltip">Limits the scan to the 58 &ldquo;Tarnished Dawnlit&rdquo; items &mdash; the current Midnight set. Matched on the full two-word phrase, not bare &ldquo;Tarnished&rdquo;, which also hits 22 legacy items going back to vanilla (Tarnished Chain Vest, Tarnished Plate Belt, Tarnished Claymore). These items are listed on 20&ndash;60 realms each, so their typical-price reference is far thicker than the census average.</span></span></label>
       </div>
       <div class="error" id="error"></div>
       <div class="count" id="count"></div>
@@ -439,6 +474,11 @@ async function runScan() {
   if (maxGold) params.set("max_gold", maxGold);
   if (minGap) params.set("min_gap", minGap);
   if (items) params.set("items", items);
+  // The phrase itself lives on the server (speed_check.TARNISHED_NAME_MATCH)
+  // -- this only sends the flag, so there's no second copy to drift.
+  if ($("tarnished").checked) params.set("tarnished", "true");
+  if ($("armor").value) params.set("armor", $("armor").value);
+  if ($("quality").value) params.set("quality", $("quality").value);
   try {
     const res = await fetch("/api/speed?" + params.toString());
     if (!res.ok) {
@@ -447,7 +487,9 @@ async function runScan() {
     }
     const data = await res.json();
     renderRows(data.rows);
-    $("count").textContent = data.count + " +Speed listing(s) — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();
+    const scope = data.name_filter ? ' matching "' + data.name_filter + '"' : "";
+    $("count").textContent = data.count + " +Speed listing(s)" + scope
+      + " — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();
     $("caveat").textContent = data.caveat;
   } catch (e) {
     $("error").textContent = e.message;

@@ -3683,3 +3683,76 @@ display).
 conservative default, chosen because the census is region-wide and the free
 tier's one-realm lock has nothing to bite on — trivially reversible), and the
 deferred gold validation.
+
+### Same day — the Tarnished (Midnight) filter
+
+**Ask:** "make a only a 'tarnished' items as they are newest from midnight."
+
+Checked the real name cache before implementing rather than filtering on the
+literal word. "Tarnished" matches 80 cached items, and they split into two
+unrelated families: the 58 **"Tarnished Dawnlit"** Midnight items (258908-
+258962, 266207-266210) and **22 legacy items** spanning vanilla to Legion
+(Tarnished Chain Vest 2379, Tarnished Plate 25381-25388, Tarnished Fanatic's
+94085-94211, Tarnished Dreamkeeper's Gauntlets 141695, Tarnished Claymore,
+Tarnished Bastard Sword).
+
+Cross-referencing against the +Speed universe showed all 58 items that
+currently carry a +Speed listing are Dawnlit ones and **none** of the 22
+legacy items do — meaning a bare "Tarnished" filter would have produced an
+identical, correct-looking result on the day it was written, and started
+quietly mixing vanilla greys into a Midnight view the first time a legacy
+Tarnished piece got listed with +Speed. Matched on the two-word phrase for
+that reason; both halves are pinned by tests so the distinction can't be
+"simplified" away later.
+
+Implementation note: the filter resolves to item_ids *before* the SQL query
+rather than dropping rows after it. `snipe_check.py`'s post-filters
+(`_filter_by_appearance`, `_filter_by_sale_rate`) have to widen their SQL
+limit 20x to compensate for rows they'll discard and can still under-deliver
+against `top`; here the +Speed universe is only ~1,150 items, so one
+`ensure_many()` pass converts the name filter into a plain item_id filter and
+`top` keeps its exact meaning.
+
+Unplanned benefit, worth remembering when the deferred gold validation is
+designed: the Midnight items are listed on **20-62 realms each**, versus 2-5
+for the outliers that dominate the unfiltered census. Their
+`speed_region_median` rests on a far thicker reference, so `gap_x` is much
+more trustworthy in this view than in the general one — every row in the
+default view renders with the thick-reference styling rather than the dimmed
+thin-reference one.
+
+### Same day — the thesis clarified, and what it changed
+
+The human restated the product intent after seeing the first version: *"the
+idea is to snipe these +speed items, that people list without knowing the
++speed adds tons of value. So the price of the listing really doesn't matter,
+just show all these new midnight green,blues with speed and filter by armor
+type like leather/cloth etc, buyprice."*
+
+That resolved an ambiguity I had been building around. The first version was
+organized by `gap_x` — implicitly treating "is this cheap relative to a
+reference" as the question. Under the stated thesis it isn't: the seller has
+**already** mispriced by ignoring the tertiary, so every +Speed listing is a
+candidate and no reference has to validate one. What a buyer decides on is
+what they'll pay and what they can wear. So the default sort flipped from
+`gap` to `price`, `gap_x` was demoted to context in both the table and the
+banner copy, and armor-type/quality filters went in next to max buy price.
+
+Two data checks before building the filters, both of which changed the design:
+
+- **Cloaks are armor subclass 1 (Cloth)**, including "Commander's Cape" whose
+  name themes it to plate. Filtering `cloth` therefore returns every cloak.
+  Left as-is and explained in the UI rather than re-bucketed by name, which
+  would have meant inventing data on top of Blizzard's own classification.
+- **The Midnight Tarnished set is 59/59 UNCOMMON.** The human asked for
+  "green,blues" — there are no blues in it, and no blue Midnight item carries
+  a +Speed listing anywhere in the sweep (above id 250000 the only non-greens
+  are 8 scattered EPICs, not a set). Reported that rather than shipping a
+  quality filter that silently does nothing; wired `blue` up regardless so it
+  starts working on its own if blues appear.
+
+Also caught in browser verification (again — the diff looked fine): the Sort
+select clipped "Cheapest first" inside the shared 120px control width. One
+apparent filter failure during that check turned out to be my own test timing
+rather than a bug — `runScan()` disables the button while a scan is in flight,
+so a click landing during the page's initial auto-scan is correctly a no-op.

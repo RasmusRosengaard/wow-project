@@ -19,7 +19,11 @@ exclusivity across 7,932 live bonus_keys. **Deliberately un-calibrated**: no
 default filter or cutoff — the human deferred gold validation to a later pass,
 so it lists and sorts only. Auth gate (verified login) and the eventual gold
 validation are the two open decisions. Requires a verified login; row caps
-reuse the existing tier numbers.
+reuse the existing tier numbers. Same day, a **name filter** on top of it
+(`--tarnished`/`--name-contains`, `tarnished=`/`name_contains=`), with the
+page defaulting to the Midnight **"Tarnished Dawnlit"** set — matched on the
+two-word phrase, since bare "Tarnished" also hits 22 vanilla-through-Legion
+items that would have silently contaminated the view.
 
 2026-08-03 — new heuristic, **`price_suspect`**
 (`snipe_check.py`'s `PRICE_SUSPECT_MULTIPLE=10`): flags a row when the sell

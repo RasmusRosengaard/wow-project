@@ -737,7 +737,16 @@ Read-only wrapper over `speed_check.find_speed_listings()` — the +Speed
 tertiary listing census. **Shares no filter, threshold or pricing logic with
 `/api/snipes`**: no discount, no sell realm, no AH cut, no `MIN_VALUE_FLOOR_G`,
 no class quotas, no appearance/sale-rate filter. Query params `items`,
-`min_gold`, `max_gold`, `min_gap`, `top`, `sort`, `names`; rows are built by
+`min_gold`, `max_gold`, `min_gap`, `name_contains`, `tarnished`, `armor`,
+`quality`, `top`, `sort` (defaults to `price`, cheapest first), `names`;
+`armor`/`quality` are comma-separated and validated on the route so a typo is
+a 400 rather than a 500 raised inside the worker thread; `tarnished=true` resolves to the server-side
+`speed_check.TARNISHED_NAME_MATCH` rather than the page posting the phrase
+itself (same reasoning as `/api/me` sending the tier caps instead of letting
+the frontend keep a second, driftable copy), and the response echoes both
+`name_filter` and `tarnished_match` back for labelling. The name filter runs
+inside the existing `to_thread` worker — it resolves names via `NameCache`,
+which blocks on a cache miss. rows are built by
 `_speed_row_to_json()` (its own serializer — `_row_to_json()` is shaped around
 a snipe and reusing it would have meant faking `buy_realm`/`sell_now`/
 `discount` or widening a function the whole snipe path depends on). Money is

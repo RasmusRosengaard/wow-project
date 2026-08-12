@@ -945,8 +945,10 @@ def _speed_row_to_json(r: dict, names: NameCache | None) -> dict:
 @app.get("/api/speed")
 async def api_speed(request: Request, items: str | None = None,
                     min_gold: float | None = None, max_gold: float | None = None,
-                    min_gap: float | None = None,
-                    top: int = 50, sort: str = Query("gap"), names: bool = False) -> dict:
+                    min_gap: float | None = None, name_contains: str | None = None,
+                    tarnished: bool = False, armor: str | None = None,
+                    quality: str | None = None,
+                    top: int = 50, sort: str = Query("price"), names: bool = False) -> dict:
     """Experimental +Speed listing census (2026-08-12). **Shares no filter,
     threshold or pricing logic with /api/snipes** -- no discount, no sell
     realm, no AH cut, no junk/value floor, no class quotas, no appearance or
@@ -991,12 +993,35 @@ async def api_speed(request: Request, items: str | None = None,
     top = min(top, _snipe_cap(user))
 
     item_ids = snipe_check.parse_items(items, None)
+    # `tarnished=true` resolves to the server-side constant rather than the
+    # frontend posting the phrase itself -- same reasoning as /api/me sending
+    # the tier caps instead of letting the page hardcode a second, driftable
+    # copy. name_contains stays available for anything else.
+    needle = speed_check.TARNISHED_NAME_MATCH if tarnished else name_contains
+    armor_types = [a for a in (armor or "").split(",") if a.strip()] or None
+    qualities = [q for q in (quality or "").split(",") if q.strip()] or None
+    # Validated here rather than inside the worker so a typo'd filter is a
+    # clean 400 instead of a 500 from the thread.
+    for value, valid, label in ((armor_types, speed_check.ARMOR_TYPES, "armor"),
+                                (qualities, speed_check.QUALITY_ALIASES, "quality")):
+        for v in value or []:
+            if v.casefold() not in valid:
+                raise HTTPException(400, f"{label} must be one of {sorted(valid)}")
 
     def _run_query() -> list:
         con = speed_check.connect()
         try:
+            ids = item_ids
+            if needle or armor_types or qualities:
+                # Blocking (NameCache -> Blizzard on a miss); safe here
+                # because this whole function runs in a worker thread.
+                ids = speed_check.resolve_item_filter(
+                    con, name_contains=needle, qualities=qualities,
+                    armor_types=armor_types, items=item_ids)
+                if not ids:
+                    return []
             return speed_check.find_speed_listings(
-                con, items=item_ids, min_gold=min_gold, max_gold=max_gold,
+                con, items=ids, min_gold=min_gold, max_gold=max_gold,
                 min_gap=min_gap, top=top, sort=sort)
         finally:
             con.close()
@@ -1025,7 +1050,11 @@ async def api_speed(request: Request, items: str | None = None,
     out_rows = await asyncio.to_thread(_build_rows)
     return {"rows": out_rows, "count": len(out_rows), "caveat": speed_check.CAVEAT,
             "region": blizz.REGION, "tertiary": "Speed",
-            "bonus_id": speed_check.SPEED_BONUS_ID}
+            "bonus_id": speed_check.SPEED_BONUS_ID,
+            "name_filter": needle,
+            "tarnished_match": speed_check.TARNISHED_NAME_MATCH,
+            "armor_types": sorted(speed_check.ARMOR_TYPES),
+            "armor_filter": armor_types, "quality_filter": qualities}
 
 
 def _realms_payload(cr_ids: list[int]) -> list[dict]:

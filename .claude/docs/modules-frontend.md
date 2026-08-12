@@ -440,9 +440,20 @@ unchanged by this rebuild.
 
 ## `speed.html` (experimental, 2026-08-12)
 
-The `/speed` tab: the +Speed tertiary census. Controls are sort / min gold /
-max gold / min gap / rows / item ids, all **empty by default** — the page
-ships no filter of its own, matching the un-calibrated backend.
+The `/speed` tab: the +Speed tertiary census. Controls lead with the three a buyer actually decides on — **armor type,
+quality, max buy price** — then sort / min gold / min gap / rows / item ids.
+Sort defaults to **cheapest first**: the premise is that the seller already
+mispriced the item by ignoring the tertiary, so no reference validates a row
+and what matters is what you pay. The pricing inputs are **empty by default** — the page
+ships no *pricing* filter of its own, matching the un-calibrated backend.
+
+The one exception is the **"Tarnished (Midnight) only"** checkbox, which is
+**checked by default** (human request, 2026-08-12: "only tarnished items as
+they are newest from midnight"). It sends `tarnished=true` and nothing else —
+the matched phrase lives in `speed_check.TARNISHED_NAME_MATCH` on the server,
+so the page has no second copy to drift. Unchecking it restores the full
+census. The count line echoes the server's `name_filter` so the active scope
+is always visible rather than implied by a checkbox alone.
 
 A permanent, non-dismissible banner states that the rows are raw auction data
 with **no gold check, no AH cut and no sell-realm price**. That is load-bearing

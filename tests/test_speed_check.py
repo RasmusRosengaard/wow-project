@@ -189,8 +189,10 @@ def test_nothing_is_filtered_by_default(listings_dir):
     assert any(r["auction_id"] == 4 for r in rows)
 
 
-def test_sort_by_gap_is_the_default_order(listings_dir):
-    rows = run(listings_dir, top=100)
+def test_sort_by_gap(listings_dir):
+    """sort="gap" was the default until 2026-08-12 (see
+    test_default_sort_is_cheapest_first); still supported, now opt-in."""
+    rows = run(listings_dir, top=100, sort="gap")
     gaps = [r["gap_x"] for r in rows if r["gap_x"] is not None]
     assert gaps == sorted(gaps, reverse=True)
     assert rows[0]["auction_id"] == 1
@@ -247,6 +249,192 @@ def test_check_data_ready(tmp_path, monkeypatch):
     pq.write_table(pa.Table.from_pylist([listing_row(CR_A, 101, 1, 1)], schema=LISTING_SCHEMA),
                    tmp_path / "listings" / f"{CR_A}.parquet")
     assert speed_check.check_data_ready() is None
+
+
+# --------------------------------------------------------------------------
+# Name / Tarnished filter
+# --------------------------------------------------------------------------
+
+class FakeNames:
+    """Minimal NameCache stand-in -- resolve_item_filter() only needs
+    ensure_many/get/quality/item_class/item_subclass/save."""
+
+    def __init__(self, mapping, quality=None, classes=None):
+        self.mapping = mapping
+        self.qualities = quality or {}
+        self.classes = classes or {}   # item_id -> (item_class, item_subclass)
+        self.ensured = None
+
+    def ensure_many(self, item_ids, **kwargs):
+        self.ensured = list(item_ids)
+
+    def get(self, item_id):
+        # Mirrors the real NameCache: an unresolved item comes back as
+        # "item <id>", which is exactly why it can never match a name filter.
+        return self.mapping.get(item_id, f"item {item_id}")
+
+    def quality(self, item_id):
+        return self.qualities.get(item_id)
+
+    def item_class(self, item_id):
+        return self.classes.get(item_id, (None, None))[0]
+
+    def item_subclass(self, item_id):
+        return self.classes.get(item_id, (None, None))[1]
+
+    def save(self):
+        pass
+
+
+def test_speed_item_ids_are_the_speed_universe(listings_dir):
+    con = speed_check.connect()
+    try:
+        assert sorted(speed_check.speed_item_ids(con)) == [101, 202]
+    finally:
+        con.close()
+
+
+def test_resolve_name_filter_matches_case_insensitively(listings_dir):
+    names = FakeNames({101: "Tarnished Dawnlit Mace", 202: "Steelscale Striders"})
+    con = speed_check.connect()
+    try:
+        assert speed_check.resolve_name_filter(con, "tarnished dawnlit", names=names) == [101]
+        # Only the +Speed universe is ever resolved -- that bound is what
+        # makes this filter affordable (see the function's docstring).
+        assert sorted(names.ensured) == [101, 202]
+    finally:
+        con.close()
+
+
+def test_bare_tarnished_would_catch_legacy_items(listings_dir):
+    """The reason TARNISHED_NAME_MATCH is the two-word phrase. Item 202 here
+    stands in for the real legacy items ("Tarnished Chain Vest" 2379,
+    "Tarnished Plate Belt" 25381, "Tarnished Claymore" 25400 — 22 of them in
+    the live name cache, vanilla through Legion). Bare "Tarnished" pulls
+    them in; the Midnight phrase does not."""
+    names = FakeNames({101: "Tarnished Dawnlit Mace", 202: "Tarnished Chain Vest"})
+    con = speed_check.connect()
+    try:
+        assert sorted(speed_check.resolve_name_filter(con, "Tarnished", names=names)) == [101, 202]
+        assert speed_check.resolve_name_filter(
+            con, speed_check.TARNISHED_NAME_MATCH, names=names) == [101]
+    finally:
+        con.close()
+
+
+def test_resolve_name_filter_intersects_with_explicit_items(listings_dir):
+    names = FakeNames({101: "Tarnished Dawnlit Mace", 202: "Tarnished Dawnlit Band"})
+    con = speed_check.connect()
+    try:
+        assert speed_check.resolve_name_filter(
+            con, "Tarnished Dawnlit", items=[202], names=names) == [202]
+    finally:
+        con.close()
+
+
+def test_unresolved_items_cannot_match(listings_dir):
+    """A cold cache that times out mid-prewarm under-reports rather than
+    silently letting unnamed items through."""
+    names = FakeNames({})
+    con = speed_check.connect()
+    try:
+        assert speed_check.resolve_name_filter(con, "Tarnished Dawnlit", names=names) == []
+    finally:
+        con.close()
+
+
+def test_tarnished_match_is_the_two_word_phrase():
+    assert speed_check.TARNISHED_NAME_MATCH == "Tarnished Dawnlit"
+
+
+def test_armor_type_filter(listings_dir):
+    names = FakeNames({101: "Leather Hood", 202: "Cloth Robe"},
+                      classes={101: (4, 2), 202: (4, 1)})
+    con = speed_check.connect()
+    try:
+        assert speed_check.resolve_item_filter(con, armor_types=["leather"], names=names) == [101]
+        assert speed_check.resolve_item_filter(con, armor_types=["cloth"], names=names) == [202]
+        assert sorted(speed_check.resolve_item_filter(
+            con, armor_types=["cloth", "leather"], names=names)) == [101, 202]
+    finally:
+        con.close()
+
+
+def test_weapon_bucket_matches_the_whole_class(listings_dir):
+    """Weapons are class 2 with ~15 subclasses; the bucket has subclass None
+    so a dagger and a staff both match."""
+    names = FakeNames({101: "Dagger", 202: "Staff"},
+                      classes={101: (2, 15), 202: (2, 10)})
+    con = speed_check.connect()
+    try:
+        assert sorted(speed_check.resolve_item_filter(
+            con, armor_types=["weapon"], names=names)) == [101, 202]
+    finally:
+        con.close()
+
+
+def test_cloaks_count_as_cloth(listings_dir):
+    """Real Blizzard classification, not a bug: all four Tarnished Dawnlit
+    capes are armor subclass 1, including the plate-themed Commander's Cape.
+    Pinned so nobody "fixes" it into name-based re-bucketing later."""
+    names = FakeNames({101: "Tarnished Dawnlit Commander's Cape"}, classes={101: (4, 1)})
+    con = speed_check.connect()
+    try:
+        assert speed_check.resolve_item_filter(con, armor_types=["cloth"], names=names) == [101]
+        assert speed_check.resolve_item_filter(con, armor_types=["plate"], names=names) == []
+    finally:
+        con.close()
+
+
+def test_quality_filter_accepts_player_names(listings_dir):
+    names = FakeNames({101: "Green Thing", 202: "Blue Thing"},
+                      quality={101: "UNCOMMON", 202: "RARE"})
+    con = speed_check.connect()
+    try:
+        assert speed_check.resolve_item_filter(con, qualities=["green"], names=names) == [101]
+        assert speed_check.resolve_item_filter(con, qualities=["blue"], names=names) == [202]
+        assert sorted(speed_check.resolve_item_filter(
+            con, qualities=["green", "blue"], names=names)) == [101, 202]
+        # Raw Blizzard tier names work too.
+        assert speed_check.resolve_item_filter(con, qualities=["UNCOMMON"], names=names) == [101]
+    finally:
+        con.close()
+
+
+def test_filters_combine(listings_dir):
+    names = FakeNames({101: "Tarnished Dawnlit Corsair's Hood",
+                       202: "Tarnished Dawnlit Spellbinder's Robe"},
+                      quality={101: "UNCOMMON", 202: "UNCOMMON"},
+                      classes={101: (4, 2), 202: (4, 1)})
+    con = speed_check.connect()
+    try:
+        assert speed_check.resolve_item_filter(
+            con, name_contains="Tarnished Dawnlit", qualities=["green"],
+            armor_types=["leather"], names=names) == [101]
+    finally:
+        con.close()
+
+
+def test_unknown_filter_values_raise(listings_dir):
+    """A typo'd filter erroring beats one that silently returns an empty
+    page -- the empty page is much harder to diagnose."""
+    names = FakeNames({})
+    con = speed_check.connect()
+    try:
+        with pytest.raises(ValueError):
+            speed_check.resolve_item_filter(con, armor_types=["lether"], names=names)
+        with pytest.raises(ValueError):
+            speed_check.resolve_item_filter(con, qualities=["greeen"], names=names)
+    finally:
+        con.close()
+
+
+def test_default_sort_is_cheapest_first(listings_dir):
+    """Changed 2026-08-12: the buy price is what matters when sniping these,
+    not how far under a reference they sit."""
+    rows = run(listings_dir, top=100)
+    prices = [r["unit_price"] for r in rows]
+    assert prices == sorted(prices)
 
 
 # --------------------------------------------------------------------------
@@ -314,6 +502,67 @@ def test_api_speed_returns_rows(listings_dir, monkeypatch):
     assert top_row["speed_region_median_g"] == 1000
     assert top_row["plain_cheapest_g"] == 100
     assert top_row["gap_x"] == pytest.approx(5.0)
+
+
+def test_api_speed_tarnished_uses_the_server_side_phrase(listings_dir, monkeypatch):
+    """The frontend sends only a flag; the phrase itself never leaves the
+    server, so there's no second copy to drift."""
+    as_user(monkeypatch, VERIFIED_USER)
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {"name": "Tarnished Dawnlit Mace" if item_id == 101
+                                                 else "Tarnished Chain Vest",
+                                         "quality": None, "level": None,
+                                         "inventory_type": None, "item_class": 4,
+                                         "item_subclass": 2})
+    r = client.get("/api/speed", params={"tarnished": "true", "top": 100})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name_filter"] == "Tarnished Dawnlit"
+    assert body["tarnished_match"] == "Tarnished Dawnlit"
+    assert {row["item_id"] for row in body["rows"]} == {101}
+
+
+def test_api_speed_name_contains_filters(listings_dir, monkeypatch):
+    as_user(monkeypatch, VERIFIED_USER)
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {"name": f"Thing {item_id}", "quality": None,
+                                         "level": None, "inventory_type": None,
+                                         "item_class": 4, "item_subclass": 2})
+    r = client.get("/api/speed", params={"name_contains": "Thing 202", "top": 100})
+    assert r.status_code == 200
+    assert {row["item_id"] for row in r.json()["rows"]} == {202}
+
+
+def test_api_speed_name_filter_with_no_match_returns_empty(listings_dir, monkeypatch):
+    as_user(monkeypatch, VERIFIED_USER)
+    r = client.get("/api/speed", params={"name_contains": "nothing matches this", "top": 100})
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
+
+
+def test_api_speed_filters_by_armor_and_quality(listings_dir, monkeypatch):
+    as_user(monkeypatch, VERIFIED_USER)
+    details = {101: {"name": "Corsair's Hood", "quality": "UNCOMMON", "item_class": 4,
+                     "item_subclass": 2},
+               202: {"name": "Spellbinder's Robe", "quality": "RARE", "item_class": 4,
+                     "item_subclass": 1}}
+    monkeypatch.setattr(item_names, "_fetch_item_details",
+                        lambda item_id: {**details[item_id], "level": None,
+                                         "inventory_type": None})
+    r = client.get("/api/speed", params={"armor": "leather", "top": 100})
+    assert {row["item_id"] for row in r.json()["rows"]} == {101}
+    r = client.get("/api/speed", params={"quality": "blue", "top": 100})
+    assert {row["item_id"] for row in r.json()["rows"]} == {202}
+    r = client.get("/api/speed", params={"quality": "green,blue", "top": 100})
+    assert {row["item_id"] for row in r.json()["rows"]} == {101, 202}
+
+
+def test_api_speed_400s_on_unknown_filter_values(listings_dir, monkeypatch):
+    """Validated on the route, not inside the worker thread, so a typo is a
+    clean 400 rather than a 500."""
+    as_user(monkeypatch, VERIFIED_USER)
+    assert client.get("/api/speed", params={"armor": "lether"}).status_code == 400
+    assert client.get("/api/speed", params={"quality": "greeen"}).status_code == 400
 
 
 def test_api_speed_rejects_bad_sort(listings_dir, monkeypatch):
