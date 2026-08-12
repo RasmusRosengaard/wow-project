@@ -440,8 +440,11 @@ unchanged by this rebuild.
 
 ## `speed.html` (experimental, 2026-08-12)
 
-The `/speed` tab: the +Speed tertiary census. Controls lead with the three a buyer actually decides on — **armor type,
-quality, max buy price** — then sort / min gold / min gap / rows / item ids.
+The `/speed` tab: the +Speed tertiary census. Controls lead with **item level** — defaulting to `253 + 266`, the two Midnight
+tiers worth tracking — then the three a buyer decides on next (**armor type,
+quality, max buy price**). Every row shows its real ilvl in its own column,
+resolved from the upgrade-track bonus id, *not* from the modifier-28 value the
+rest of the site uses (which is junk for this family) — then sort / min gold / min gap / rows / item ids.
 Sort defaults to **cheapest first**: the premise is that the seller already
 mispriced the item by ignoring the tertiary, so no reference validates a row
 and what matters is what you pay. The pricing inputs are **empty by default** — the page

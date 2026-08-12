@@ -589,3 +589,60 @@ no blue Midnight item carried a +Speed listing at all in the sweep this was
 built against (above id 250000 the only non-greens are 8 scattered EPICs). The
 `blue` filter is wired up anyway so those appear automatically if they land,
 rather than needing a code change at the moment they start mattering.
+
+### Item level — where it actually lives, and why not modifier 28
+
+Human, 2026-08-12: *"ilvl is very important here. We only want ilvl the 266 and
+253 versions... it's exactly the new 253 versions and 266 versions we want to
+track."* This is the difference between a 73g listing and a 35,000g one on the
+same item name, so getting it right matters more than any other filter here.
+
+**It is not modifier 28.** That modifier claims to be an item level and is what
+`dashboard._variant_label()` displays elsewhere (guarded by `ilvl_plausible()`),
+but across this whole item family it reports junk — `m:28=3321/5381/7331` on
+gear whose real level is 192-266. That's precisely why those rows render as
+"N bonuses" rather than a level, and why trusting it would have stamped
+confidently wrong item levels on every row.
+
+The real level comes from an **upgrade-track `b:` bonus id**, verified the same
+way the tertiary ids were: each id rendered against a real listed item and the
+level read back off the tooltip, then confirmed **set-wide rather than
+per-item** (12817 gives 266 on both Sentinel's Cover 258931 and Corsair's Tunic
+258920). `ILVL_BONUS_IDS`: 12817→266, 13901→260, 13900→253, 12769→220,
+13613→207, 13573→201, 13730→198, 13729→192, 4790→80. Ids that carry no level at
+all and leave the item at its base 44 (6652, 12667, 13534, 13578, 13663, 13668,
+13695, 13696) are deliberately absent.
+
+`ILVL_SQL` is **generated from that dict** rather than hand-written — unlike
+`has_speed()`/`SPEED_FILTER_SQL`, there is only one copy of the mapping, so a
+table edit can't desync the two. The parity test checks the generated
+expression still evaluates like `ilvl_of()`.
+
+**Modifier 9 is the loot-time character level, and it scales the item down** —
+confirmed by the human: *"the 133/139/152 is the items but dropped at another
+character lvl e.g. if i looted the box at lvl 88 instead of 90 it would appear
+as this instead."* That explains the in-game levels no bonus id in the table
+can produce.
+
+So an upgrade-track id only gives the *full* level when the item was acquired
+at `MAX_CHARACTER_LEVEL` (90). Below that the table would overstate it — the
+same "confidently wrong number" that makes modifier 28 unusable here — so
+`ilvl_of()` reports **None (unknown)** for a downscaled listing rather than a
+level it cannot actually compute (the scaling curve isn't derivable from the
+data we hold, and a wrong level on a snipe list is worse than an absent one).
+A "266 looted at 88" therefore cannot masquerade as a real 266.
+
+Verified against production that this guard costs nothing real: **all 163
+ilvl-266 +Speed listings carry no `m:9` at all**, so every one still comes
+through. (Same check showed zero ilvl-253 +Speed listings currently — 13900
+never co-occurs with the Speed id in the live sweep.)
+
+The ilvl filter runs **in SQL**, unlike name/quality/armor — item level is a
+property of the listing's own `bonus_key`, not of the item catalog, so it needs
+no `NameCache` round trip. It is applied to `speed_rows` **and** to the `plain`
+CTE, deliberately: a 266's "typical +Speed price" must be built from other 266s,
+and its plain comparison from other 266s, not from the 192s that dominate the
+item by volume and are worth a fraction as much. Filtering there rather than at
+the end is what makes both reference numbers like-for-like — visible in the
+live UI as PLAIN CHEAPEST jumping from ~20-50g to ~230-350g once a tier is
+selected.

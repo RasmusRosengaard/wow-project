@@ -168,6 +168,7 @@
   .muted { color: var(--text-dim); }
   .variant { font-size: 0.75rem; color: var(--text-dim); }
   .gap { font-weight: 700; color: var(--bullion); }
+  .ilvl { font-weight: 700; font-variant-numeric: tabular-nums; }
   .thin { color: var(--text-dim); font-weight: 400; }
   .count { font-size: 0.8rem; color: var(--text-dim); }
   .caveat { font-size: 0.78rem; color: var(--text-dim); line-height: 1.6; }
@@ -244,6 +245,17 @@
       </div>
 
       <div class="row">
+        <div class="field narrow sort-field">
+          <label for="ilvl">Item level<span class="info-icon" tabindex="0">?<span class="info-tooltip">The <strong>real</strong> item level, read from the listing&rsquo;s upgrade-track bonus id &mdash; not the item-level modifier the rest of the site uses, which reports junk (3321, 5381&hellip;) for this family. 253 and 266 are the new Midnight tiers worth tracking. Filtering also narrows the typical-price reference to the same tier, so a 266 is compared against other 266s.</span></span></label>
+          <select id="ilvl">
+            <option value="253,266">253 + 266 (tracked)</option>
+            <option value="266">266 only</option>
+            <option value="253">253 only</option>
+            <option value="260">260</option>
+            <option value="220">220</option>
+            <option value="">Any</option>
+          </select>
+        </div>
         <div class="field narrow">
           <label for="armor">Armor type<span class="info-icon" tabindex="0">?<span class="info-tooltip">Blizzard&rsquo;s own item class/subclass. Note that <strong>cloaks count as Cloth</strong> &mdash; including the plate-themed Commander&rsquo;s Cape &mdash; because that&rsquo;s how they&rsquo;re classified, so &ldquo;Cloth&rdquo; returns every cape. Jewelry covers rings and necks.</span></span></label>
           <select id="armor">
@@ -313,6 +325,7 @@
           <thead>
             <tr>
               <th>Item</th>
+              <th class="num">ilvl</th>
               <th>Realm</th>
               <th class="num">Price</th>
               <th class="num">Typical +Speed<span class="info-icon" tabindex="0">?<span class="info-tooltip">Median of the cheapest +Speed listing on each realm that has one. Per-realm floors are medianed rather than raw auctions, so a realm with many sellers doesn&rsquo;t dominate the number.</span></span></th>
@@ -378,7 +391,7 @@ function renderRows(rows) {
   if (!rows.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 7;
+    td.colSpan = 8;
     td.className = "muted";
     td.textContent = "No +Speed listings matched.";
     tr.appendChild(td);
@@ -416,6 +429,11 @@ function renderRows(rows) {
     cell.appendChild(nameWrap);
     itemTd.appendChild(cell);
     tr.appendChild(itemTd);
+
+    const ilvlTd = document.createElement("td");
+    ilvlTd.className = "num ilvl";
+    ilvlTd.textContent = r.ilvl === null || r.ilvl === undefined ? "—" : r.ilvl;
+    tr.appendChild(ilvlTd);
 
     const realmTd = document.createElement("td");
     realmTd.textContent = r.realm_name;
@@ -479,6 +497,7 @@ async function runScan() {
   if ($("tarnished").checked) params.set("tarnished", "true");
   if ($("armor").value) params.set("armor", $("armor").value);
   if ($("quality").value) params.set("quality", $("quality").value);
+  if ($("ilvl").value) params.set("ilvl", $("ilvl").value);
   try {
     const res = await fetch("/api/speed?" + params.toString());
     if (!res.ok) {

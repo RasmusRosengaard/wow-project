@@ -3756,3 +3756,52 @@ select clipped "Cheapest first" inside the shared 120px control width. One
 apparent filter failure during that check turned out to be my own test timing
 rather than a bug — `runScan()` disables the button while a scan is in flight,
 so a click landing during the page's initial auto-scan is correctly a no-op.
+
+### Same day — item level, and a stale-local-data lesson
+
+Human: *"ilvl is very important here. We only want ilvl the 266 and 253
+versions"*, with an in-game AH screenshot showing one item name spanning ilvl
+133 to 266 at prices from 73g to 35,000g. That is a far bigger value driver
+than the tertiary itself, so a +Speed view without it is close to useless.
+
+**Modifier 28 is not the item level.** It claims to be, and it's what
+`_variant_label()` shows elsewhere, but this family reports `m:28=3321/5381/
+7331` on gear that is really 192-266 — which is why those rows had been
+rendering as "N bonuses". Building on it would have stamped confident nonsense
+on every row. The real level lives in an upgrade-track `b:` bonus id, resolved
+the same way the tertiary ids were (render the id against a real listed item,
+read the level off the tooltip), and confirmed set-wide rather than per-item.
+
+**The stale-data trap, worth remembering.** The first pass mapped every bonus
+id in the *local* `data/listings` and concluded the maximum available level was
+220 — i.e. that ilvl 253 and 266 did not exist at all. That conclusion was
+wrong, and the cause was that the local sweep is from **2026-07-23, twenty days
+stale** (this machine powers off nightly; production runs its own collector).
+Querying production via `railway ssh` immediately turned up five bonus ids
+absent locally, two of which were the answer: **12817 → 266** and **13900 →
+253**. Lesson: for anything about *current* content, the local `data/` is a
+development convenience, not a source of truth — check the age before drawing
+conclusions from it. Every earlier number in this feature's history (the 11.4x
+median, the 1,153-item count) comes from that same stale snapshot and should be
+read as indicative only.
+
+The filter runs in SQL (item level is a listing property, not a catalog one, so
+no NameCache round trip) and is applied to the reference CTEs as well as the
+visible rows — a 266's "typical +Speed price" and its plain comparison both
+have to come from other 266s. Visible immediately in the UI: PLAIN CHEAPEST
+went from ~20-50g to ~230-350g once a tier is selected, because it had been
+comparing against ilvl-192 junk.
+
+`ILVL_SQL` is generated from `ILVL_BONUS_IDS` rather than hand-written — a
+deliberate improvement on the `has_speed`/`SPEED_FILTER_SQL` pattern, where the
+same rule genuinely exists twice and needs a parity test to stay honest. Here
+only the *expression* is duplicated; the mapping has one home.
+
+That residual uncertainty was resolved by the human within the same session:
+modifier 9 **is** the loot-time character level and does scale the item down
+("if i looted the box at lvl 88 instead of 90 it would appear as this
+instead"). Acted on rather than just documented — `ilvl_of()` now returns None
+for any listing acquired below max level, because reporting the upgrade-track
+number there would repeat the exact modifier-28 mistake this whole mapping
+exists to avoid. Checked against production before shipping: all 163 live
+ilvl-266 +Speed listings carry no `m:9`, so the guard removes nothing real.

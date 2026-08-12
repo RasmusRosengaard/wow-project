@@ -296,8 +296,18 @@ plain version, so it never surfaces on the Dashboard.
 
 The premise is that sellers list these without realising +Speed adds
 significant value, so the asking price reflects the plain item — which means no
-reference price has to *validate* a row. What you filter on instead is **armor
-type, quality and what you're willing to pay**, and rows lead with the cheapest.
+reference price has to *validate* a row. What you filter on instead is **item
+level, armor type, quality and what you're willing to pay**, and rows lead with
+the cheapest.
+
+**Item level matters more than anything else here** — the same item name spans
+ilvl 192 to 266, and that gap is worth orders of magnitude. The page defaults to
+the two Midnight tiers worth tracking, **253 and 266**. Note this ilvl is *not*
+the item-level modifier used elsewhere on the site, which reports junk for this
+family (values like 3321/5381 on gear that is really 266); it's resolved from
+the listing's upgrade-track bonus id, each one verified against a rendered
+tooltip. Selecting a tier also narrows the typical-price and plain-price
+references to that same tier, so the comparison is like-for-like.
 
 It shares **no logic with the snipe path** — no discount rule, no sell realm,
 no AH cut, no value floor. It is a census, not a validated snipe list. Each row
@@ -323,7 +333,8 @@ Requires a logged-in, confirmed account (it's region-wide, so the free tier's
 one-realm lock doesn't apply to it). CLI equivalent:
 
 ```
-python speed_check.py --tarnished --names             # Midnight set only
+python speed_check.py --tarnished --tracked --names   # Midnight set, ilvl 253+266
+python speed_check.py --tarnished --ilvl 266 --armor plate
 python speed_check.py --tarnished --armor leather --max-gold 500
 python speed_check.py --armor cloth,mail --quality green,blue
 python speed_check.py --name-contains "Dawnlit Corsair"

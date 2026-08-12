@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 import auth
 import blizz
 import dashboard
+import fetch_snapshot
 import item_names
 import speed_check
 from db import User
@@ -249,6 +250,134 @@ def test_check_data_ready(tmp_path, monkeypatch):
     pq.write_table(pa.Table.from_pylist([listing_row(CR_A, 101, 1, 1)], schema=LISTING_SCHEMA),
                    tmp_path / "listings" / f"{CR_A}.parquet")
     assert speed_check.check_data_ready() is None
+
+
+# --------------------------------------------------------------------------
+# Item level
+# --------------------------------------------------------------------------
+
+# Real bonus_key shapes from the live sweep (2026-08-12), with the item level
+# each one renders at -- every value verified by rendering that exact bonus id
+# against a real listed item and reading the level off the tooltip, and
+# confirmed set-wide rather than per-item (12817 gives 266 on both Sentinel's
+# Cover 258931 and Corsair's Tunic 258920).
+ILVL_VECTORS = [
+    ("b:42,12817,13578|m:28=5381", 266),
+    ("b:6652,12817,13578|m:28=3321", 266),
+    ("b:13900,13578|m:9=90,28=5381", 253),
+    ("b:42,13901,13578|m:28=3321", 260),
+    ("b:42,12667,12769,13578|m:28=3321", 220),
+    ("b:6652,12667,13578,13730|m:9=90,28=3321", 198),
+    ("b:13578,13729|m:9=90,28=3321", 192),
+    # Carries only ids that turned out to have no item-level effect at all
+    # (they leave the item at its base 44), so there is nothing to report.
+    ("b:6652,13578,13663|m:28=3321", None),
+    ("", None),
+    # Looted below max character level, so the upgrade id overstates the real
+    # level -- reported as unknown rather than as a number we can't compute.
+    ("b:42,12817,13578|m:9=88,28=5381", None),
+    ("b:13578,13729|m:9=80,28=3321", None),
+]
+
+
+@pytest.mark.parametrize("bonus_key,expected", ILVL_VECTORS)
+def test_ilvl_of(bonus_key, expected):
+    # `==`, not `is`: CPython only interns ints up to 256, so `is` would pass
+    # for 253 and fail for 260/266 -- which is exactly what it did first time.
+    assert speed_check.ilvl_of(bonus_key) == expected
+
+
+@pytest.mark.parametrize("bonus_key,expected", ILVL_VECTORS)
+def test_ilvl_python_sql_parity(bonus_key, expected):
+    """ILVL_SQL is generated from ILVL_BONUS_IDS rather than hand-written, so
+    the mapping itself can't drift -- this checks the generated expression
+    evaluates the same way ilvl_of() does."""
+    con = duckdb.connect()
+    try:
+        got = con.execute(f"SELECT {speed_check.ILVL_SQL} FROM (SELECT ? AS bonus_key)",
+                          [bonus_key]).fetchone()[0]
+    finally:
+        con.close()
+    assert got == expected
+
+
+def test_ilvl_is_not_modifier_28():
+    """The whole point of ILVL_BONUS_IDS. Modifier 28 claims to be an item
+    level and is what dashboard._variant_label() shows elsewhere, but on this
+    family it reports junk -- 5381 on an item that is really 266. Trusting it
+    would put confidently wrong levels on every row."""
+    bk = "b:42,12817,13578|m:28=5381"
+    assert speed_check.ilvl_of(bk) == 266
+    assert fetch_snapshot.parse_bonus_key(bk)["mods"][28] == "5381"
+
+
+def test_downscaled_listing_cannot_masquerade_as_a_tracked_tier():
+    """Human, 2026-08-12: an item "dropped at another character lvl e.g. if i
+    looted the box at lvl 88 instead of 90" shows a lower level in game. So a
+    listing whose upgrade id says 266 but which was looted at 88 is NOT a 266,
+    and must not be sold to the user as one -- the same class of error that
+    makes modifier 28 unusable here."""
+    assert speed_check.ilvl_of("b:42,12817,13578|m:28=5381") == 266
+    assert speed_check.ilvl_of("b:42,12817,13578|m:9=90,28=5381") == 266
+    assert speed_check.ilvl_of("b:42,12817,13578|m:9=88,28=5381") is None
+
+
+@pytest.mark.parametrize("bonus_key,expected", [
+    ("b:42,12817,13578|m:9=88,28=5381", 88),
+    ("b:13578,13729|m:9=90,28=3321", 90),
+    ("b:42,12817,13578|m:28=5381", None),
+    # 28= and 19= must not be read as a modifier-9 value via their trailing 9.
+    ("b:13578|m:19=5,28=3321", None),
+    ("", None),
+])
+def test_acquired_level(bonus_key, expected):
+    assert speed_check.acquired_level(bonus_key) == expected
+
+
+def test_tracked_ilvls_are_the_two_midnight_tiers():
+    assert speed_check.TRACKED_ILVLS == [253, 266]
+    for lvl in speed_check.TRACKED_ILVLS:
+        assert lvl in speed_check.ILVL_BONUS_IDS.values()
+
+
+def test_ilvl_filter_narrows_rows_and_reference(tmp_path, monkeypatch):
+    """The filter applies to the reference stats too, not just the visible
+    rows: a 266's "typical +Speed price" must come from other 266s, not from
+    the 192s that dominate the item by volume and are worth a fraction as
+    much."""
+    monkeypatch.setattr(speed_check, "DATA", tmp_path)
+    d = tmp_path / "listings"
+    d.mkdir(parents=True)
+    hi, lo = "b:42,12817,13578", "b:42,13578,13729"      # 266, 192
+    rows = [
+        listing_row(CR_A, 101, 500 * 10_000, 1, bonus_key=hi),
+        listing_row(CR_B, 101, 900 * 10_000, 2, bonus_key=hi),
+        listing_row(CR_C, 101, 1100 * 10_000, 3, bonus_key=hi),
+        # Cheap low-ilvl listings that would drag the reference down.
+        listing_row(CR_A, 101, 10 * 10_000, 4, bonus_key=lo),
+        listing_row(CR_B, 101, 12 * 10_000, 5, bonus_key=lo),
+        listing_row(CR_C, 101, 14 * 10_000, 6, bonus_key=lo),
+    ]
+    pq.write_table(pa.Table.from_pylist(rows, schema=LISTING_SCHEMA), d / f"{CR_A}.parquet")
+
+    got = run(tmp_path, top=50, ilvls=[266])
+    assert {r["auction_id"] for r in got} == {1, 2, 3}
+    assert all(r["ilvl"] == 266 for r in got)
+    # Reference is the median of the three 266 per-realm floors (900g), not
+    # something pulled down by the 10-14g ilvl-192 listings.
+    assert got[0]["speed_region_median"] == 900 * 10_000
+
+    # Unfiltered, the same query pools both tiers and the reference collapses.
+    unfiltered = run(tmp_path, top=50)
+    assert len(unfiltered) == 6
+    assert unfiltered[0]["speed_region_median"] < 900 * 10_000
+
+
+def test_ilvl_column_present_when_unfiltered(listings_dir):
+    """Fixture bonus_keys carry no upgrade id, so ilvl is None rather than
+    absent -- the column always exists."""
+    rows = run(listings_dir, top=10)
+    assert all("ilvl" in r and r["ilvl"] is None for r in rows)
 
 
 # --------------------------------------------------------------------------
@@ -555,6 +684,30 @@ def test_api_speed_filters_by_armor_and_quality(listings_dir, monkeypatch):
     assert {row["item_id"] for row in r.json()["rows"]} == {202}
     r = client.get("/api/speed", params={"quality": "green,blue", "top": 100})
     assert {row["item_id"] for row in r.json()["rows"]} == {101, 202}
+
+
+def test_api_speed_filters_by_ilvl(tmp_path, monkeypatch):
+    as_user(monkeypatch, VERIFIED_USER)
+    monkeypatch.setattr(speed_check, "DATA", tmp_path)
+    d = tmp_path / "listings"
+    d.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([
+        listing_row(CR_A, 101, 500 * 10_000, 1, bonus_key="b:42,12817,13578"),   # 266
+        listing_row(CR_A, 202, 10 * 10_000, 2, bonus_key="b:42,13578,13729"),    # 192
+    ], schema=LISTING_SCHEMA), d / f"{CR_A}.parquet")
+
+    r = client.get("/api/speed", params={"ilvl": "253,266", "top": 100})
+    body = r.json()
+    assert {row["item_id"] for row in body["rows"]} == {101}
+    assert body["rows"][0]["ilvl"] == 266
+    assert body["ilvl_filter"] == [253, 266]
+    assert body["tracked_ilvls"] == [253, 266]
+    assert 266 in body["known_ilvls"] and 253 in body["known_ilvls"]
+
+
+def test_api_speed_400s_on_non_numeric_ilvl(listings_dir, monkeypatch):
+    as_user(monkeypatch, VERIFIED_USER)
+    assert client.get("/api/speed", params={"ilvl": "266,abc"}).status_code == 400
 
 
 def test_api_speed_400s_on_unknown_filter_values(listings_dir, monkeypatch):

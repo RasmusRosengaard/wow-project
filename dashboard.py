@@ -924,6 +924,11 @@ def _speed_row_to_json(r: dict, names: NameCache | None) -> dict:
         "realm_category": _realm_info(r["cr_id"]).get("category"),
         "item_id": r["item_id"],
         "auction_id": r["auction_id"],
+        # Real item level, from the listing's upgrade-track bonus id -- NOT
+        # modifier 28, which reports junk for this item family (see
+        # speed_check.ILVL_BONUS_IDS). None when the listing carries no
+        # upgrade id at all.
+        "ilvl": r["ilvl"],
         "name": names.get(r["item_id"]) if names else None,
         "icon": names.icon(r["item_id"]) if names else None,
         "quality": names.quality(r["item_id"]) if names else None,
@@ -947,7 +952,7 @@ async def api_speed(request: Request, items: str | None = None,
                     min_gold: float | None = None, max_gold: float | None = None,
                     min_gap: float | None = None, name_contains: str | None = None,
                     tarnished: bool = False, armor: str | None = None,
-                    quality: str | None = None,
+                    quality: str | None = None, ilvl: str | None = None,
                     top: int = 50, sort: str = Query("price"), names: bool = False) -> dict:
     """Experimental +Speed listing census (2026-08-12). **Shares no filter,
     threshold or pricing logic with /api/snipes** -- no discount, no sell
@@ -1007,6 +1012,10 @@ async def api_speed(request: Request, items: str | None = None,
         for v in value or []:
             if v.casefold() not in valid:
                 raise HTTPException(400, f"{label} must be one of {sorted(valid)}")
+    try:
+        ilvls = [int(v) for v in (ilvl or "").split(",") if v.strip()] or None
+    except ValueError:
+        raise HTTPException(400, "ilvl must be comma-separated integers, e.g. 253,266")
 
     def _run_query() -> list:
         con = speed_check.connect()
@@ -1022,7 +1031,7 @@ async def api_speed(request: Request, items: str | None = None,
                     return []
             return speed_check.find_speed_listings(
                 con, items=ids, min_gold=min_gold, max_gold=max_gold,
-                min_gap=min_gap, top=top, sort=sort)
+                min_gap=min_gap, ilvls=ilvls, top=top, sort=sort)
         finally:
             con.close()
 
@@ -1054,7 +1063,9 @@ async def api_speed(request: Request, items: str | None = None,
             "name_filter": needle,
             "tarnished_match": speed_check.TARNISHED_NAME_MATCH,
             "armor_types": sorted(speed_check.ARMOR_TYPES),
-            "armor_filter": armor_types, "quality_filter": qualities}
+            "armor_filter": armor_types, "quality_filter": qualities,
+            "ilvl_filter": ilvls, "tracked_ilvls": speed_check.TRACKED_ILVLS,
+            "known_ilvls": sorted(set(speed_check.ILVL_BONUS_IDS.values()), reverse=True)}
 
 
 def _realms_payload(cr_ids: list[int]) -> list[dict]:

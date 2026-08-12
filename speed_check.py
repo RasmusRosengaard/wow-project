@@ -120,19 +120,131 @@ def has_speed(bonus_key: str | None) -> bool:
     return str(SPEED_BONUS_ID) in parse_bonus_key(bonus_key)["bonus_ids"]
 
 
-# DuckDB counterpart to has_speed(). Filtering ~2.5M listings in SQL rather
-# than pulling them into Python is the difference between a sub-second
-# query and a multi-second one, so the logic genuinely does exist twice --
-# hence the parity test. Splits the `b:` segment on commas and casts each
-# element, so matching is element-wise and exact, same as the Python side.
-# A bonus_key with no `b:` segment (pets, plain items, `m:`-only keys)
-# yields [NULL] here, which list_contains() reports as false.
-SPEED_FILTER_SQL = (
-    "list_contains("
-    "  list_transform("
-    "    str_split(regexp_extract(bonus_key, 'b:([0-9,]+)', 1), ','),"
-    "    x -> try_cast(x AS INTEGER)"
-    f"  ), {SPEED_BONUS_ID})"
+# The `b:` segment parsed into a DuckDB list of ints -- shared by the speed
+# filter and the item-level expression below. Splits on commas and casts each
+# element, so every match built on it is element-wise and exact, same as the
+# Python side. A bonus_key with no `b:` segment (pets, plain items, `m:`-only
+# keys) yields [NULL], which list_contains() reports as false.
+BONUS_IDS_SQL = (
+    "list_transform("
+    "  str_split(regexp_extract(bonus_key, 'b:([0-9,]+)', 1), ','),"
+    "  x -> try_cast(x AS INTEGER))"
+)
+
+# DuckDB counterpart to has_speed(). Filtering millions of listings in SQL
+# rather than pulling them into Python is the difference between a sub-second
+# query and a multi-second one, hence the parity test in
+# tests/test_speed_check.py.
+SPEED_FILTER_SQL = f"list_contains({BONUS_IDS_SQL}, {SPEED_BONUS_ID})"
+
+# **Item level, and where it actually lives** (2026-08-12, human: "ilvl is
+# very important here. We only want ilvl the 266 and 253 versions").
+#
+# It is NOT modifier 28. That modifier claims to be an item level and is the
+# one dashboard.py's `_variant_label()` displays when `ilvl_plausible()`
+# accepts it -- but on this whole item family it reports junk (m:28=3321,
+# 5381, 7331 on gear whose real level is 192-266), which is exactly why those
+# rows render as "N bonuses" rather than a level. Trusting modifier 28 here
+# would have put confidently wrong item levels on every row.
+#
+# The real level comes from an **upgrade-track bonus-list id**. Verified the
+# same way the tertiary ids were -- each id rendered against a real listed
+# item and the level read back off the tooltip -- and confirmed set-wide
+# rather than per-item (12817 gives 266 on both Sentinel's Cover 258931 and
+# Corsair's Tunic 258920). Ids that turned out to carry no level at all
+# (6652, 12667, 13534, 13578, 13663, 13668, 13695, 13696) all leave the item
+# at its base 44 and are deliberately absent here.
+ILVL_BONUS_IDS = {
+    12817: 266,
+    13901: 260,
+    13900: 253,
+    12769: 220,
+    13613: 207,
+    13573: 201,
+    13730: 198,
+    13729: 192,
+    4790: 80,
+}
+
+# **Modifier 9 is the character level the item was looted at, and it scales
+# the item down** -- confirmed by the human 2026-08-12: "the 133/139/152 is
+# the items but dropped at another character lvl e.g. if i looted the box at
+# lvl 88 instead of 90 it would appear as this instead." That explains the
+# in-game levels no bonus id in the table above can produce.
+#
+# So the upgrade-track id alone is only the *full* item level when the item
+# was acquired at max level. Below that, the table would overstate it -- the
+# same "confidently wrong number" failure that makes modifier 28 unusable
+# here. `ilvl_of()` therefore reports **None (unknown)** for a downscaled
+# listing rather than a level it can't actually compute: the exact scaling
+# curve isn't derivable from the data we hold, and a wrong level on a snipe
+# list is worse than an absent one.
+#
+# This costs nothing on the tiers the feature exists for: in live data every
+# ilvl-266 +Speed listing carries **no m:9 at all** and every ilvl-253 one is
+# `m:9=90`, so both come through unaffected -- while a hypothetical
+# "266 looted at 88" can no longer masquerade as a real 266.
+MAX_CHARACTER_LEVEL = 90
+ACQUIRED_LEVEL_MODIFIER = 9
+
+
+def acquired_level(bonus_key: str | None) -> int | None:
+    """The character level this item was looted at (modifier 9), or None if
+    the listing doesn't carry one (which means it was not downscaled)."""
+    if not bonus_key:
+        return None
+    raw = parse_bonus_key(bonus_key)["mods"].get(ACQUIRED_LEVEL_MODIFIER)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def ilvl_of(bonus_key: str | None) -> int | None:
+    """The item level implied by this listing's upgrade-track bonus id, or
+    None if it carries none of them (base item) **or was looted below max
+    character level** (see MAX_CHARACTER_LEVEL above -- the upgrade id would
+    overstate the real level, so this reports "unknown" instead).
+
+    Pure, exact-match on the parsed `b:` ids, same discipline as
+    has_speed(). Returns the highest match if a listing somehow carries two
+    (not observed in live data, but makes the result order-independent
+    rather than dependent on dict iteration order)."""
+    if not bonus_key:
+        return None
+    acquired = acquired_level(bonus_key)
+    if acquired is not None and acquired < MAX_CHARACTER_LEVEL:
+        return None
+    ids = parse_bonus_key(bonus_key)["bonus_ids"]
+    found = [ilvl for bid, ilvl in ILVL_BONUS_IDS.items() if str(bid) in ids]
+    return max(found) if found else None
+
+
+# SQL counterpart, **generated from ILVL_BONUS_IDS above rather than written
+# out by hand** -- so unlike has_speed()/SPEED_FILTER_SQL there is only one
+# source of truth for the mapping itself and the two can't drift apart on a
+# table edit. Highest level first so a listing carrying two upgrade ids
+# resolves the same way ilvl_of()'s max() does.
+# Modifier 9 out of the `m:` segment. `9=` can only occur there -- the `b:`
+# segment is digits and commas with no `=` -- and requiring `m:` or `,`
+# immediately before it stops `19=`/`29=` matching on their trailing 9.
+ACQUIRED_LEVEL_SQL = (
+    f"try_cast(regexp_extract(bonus_key, '(?:m:|,){ACQUIRED_LEVEL_MODIFIER}=([0-9]+)', 1)"
+    " AS INTEGER)"
+)
+
+ILVL_SQL = (
+    # Downscaled listings report NULL rather than an overstated level -- see
+    # MAX_CHARACTER_LEVEL above.
+    f"CASE WHEN {ACQUIRED_LEVEL_SQL} IS NOT NULL"
+    f"      AND {ACQUIRED_LEVEL_SQL} < {MAX_CHARACTER_LEVEL} THEN NULL ELSE (CASE "
+    + " ".join(
+        f"WHEN list_contains({BONUS_IDS_SQL}, {bid}) THEN {ilvl}"
+        for bid, ilvl in sorted(ILVL_BONUS_IDS.items(), key=lambda kv: -kv[1])
+    )
+    + " END) END"
 )
 
 # The Midnight gear set (2026-08-12, human request: "only tarnished items as
@@ -205,8 +317,14 @@ SORT_COLUMNS = {
     "gap": "gap_x DESC NULLS LAST",
     "price_desc": "unit_price DESC",
     "median": "speed_region_median DESC NULLS LAST",
+    "ilvl": "ilvl DESC NULLS LAST, unit_price ASC",
     "item": "item_id ASC, unit_price ASC",
 }
+
+# What the human actually wants to track (2026-08-12): "it's exactly the new
+# 253 versions and 266 versions we want to track". Named here so the CLI, the
+# API and the page all reference one list instead of three copies.
+TRACKED_ILVLS = [253, 266]
 
 CAVEAT = ("NOTE: +Speed listings only, region-wide -- this is a listing "
           "census, not a validated snipe. No sell-realm price, no AH cut "
@@ -341,6 +459,7 @@ def find_speed_listings(con: duckdb.DuckDBPyConnection, *,
                         min_gold: float | None = None,
                         max_gold: float | None = None,
                         min_gap: float | None = None,
+                        ilvls: list[int] | None = None,
                         top: int = 50, sort: str = "price") -> list[dict]:
     """Every current listing carrying the +Speed tertiary, with pricing
     *context* attached but no judgement applied.
@@ -388,16 +507,29 @@ def find_speed_listings(con: duckdb.DuckDBPyConnection, *,
     gap_filter = ""
     if min_gap is not None:
         gap_filter = f" AND gap_x >= {float(min_gap)}"
+    # Item level is a property of the *listing's* bonus_key, not of the item
+    # catalog -- so unlike name/quality/armor it filters in SQL, before the
+    # reference stats are built, and needs no NameCache round trip at all.
+    ilvl_filter = ""
+    if ilvls:
+        ilvl_filter = f" AND ilvl IN ({','.join(str(int(i)) for i in ilvls)})"
 
     sql = f"""
         WITH tagged AS (
             SELECT cr_id, item_id, auction_id, bonus_key, buyout, quantity,
                    buyout * 1.0 / quantity AS unit_price,
-                   {SPEED_FILTER_SQL} AS is_speed
+                   {SPEED_FILTER_SQL} AS is_speed,
+                   {ILVL_SQL} AS ilvl
             FROM listings
         ),
         speed_rows AS (
-            SELECT * FROM tagged WHERE is_speed
+            -- The ilvl filter applies to the rows shown AND to the reference
+            -- stats below, deliberately: an ilvl-266 listing's "typical
+            -- +Speed price" should be built from other 266s, not from the
+            -- 192s that dominate the item by volume and are worth a
+            -- fraction as much. Filtering here rather than at the end is
+            -- what makes the comparison like-for-like.
+            SELECT * FROM tagged WHERE is_speed{ilvl_filter}
         ),
         speed_realm_floor AS (
             -- Cheapest +Speed listing per realm per item; the reference is
@@ -417,12 +549,15 @@ def find_speed_listings(con: duckdb.DuckDBPyConnection, *,
         ),
         plain AS (
             -- The same item WITHOUT the tertiary: what the snipe path's
-            -- item_id-only pooling would effectively price it at.
+            -- item_id-only pooling would effectively price it at. Carries
+            -- the same ilvl restriction as speed_rows, for the same reason
+            -- -- comparing a 266 +Speed listing against a 192 plain one
+            -- would answer a question nobody asked.
             SELECT item_id, min(unit_price) AS plain_cheapest
-            FROM tagged WHERE NOT is_speed GROUP BY item_id
+            FROM tagged WHERE NOT is_speed{ilvl_filter} GROUP BY item_id
         ),
         joined AS (
-            SELECT s.cr_id, s.item_id, s.auction_id, s.bonus_key,
+            SELECT s.cr_id, s.item_id, s.auction_id, s.bonus_key, s.ilvl,
                    s.buyout, s.quantity, s.unit_price,
                    st.speed_region_median, st.speed_realm_count,
                    sc.speed_listing_count, p.plain_cheapest,
@@ -463,13 +598,15 @@ def print_speed_listings(rows: list[dict], resolve_names: bool = False) -> None:
         g = copper / 10_000
         return f"{g:,.0f}" if g >= 10 else f"{g:,.2f}"
 
-    header = f"{'item':>8}  {'name':<34}  {'realm':>6}  {'price(g)':>11}  {'typical(g)':>11}  {'gap':>9}  {'plain(g)':>10}  {'n':>3}"
+    header = (f"{'item':>8}  {'name':<34}  {'ilvl':>4}  {'realm':>6}  {'price(g)':>11}  "
+              f"{'typical(g)':>11}  {'gap':>9}  {'plain(g)':>10}  {'n':>3}")
     print(header)
     print("-" * len(header))
     for r in rows:
         name = names.get(r["item_id"])[:34] if names else ""
         gap = f"{r['gap_x']:,.1f}x" if r["gap_x"] else "-"
-        print(f"{r['item_id']:>8}  {name:<34}  {r['cr_id']:>6}  "
+        ilvl = str(r["ilvl"]) if r["ilvl"] else "-"
+        print(f"{r['item_id']:>8}  {name:<34}  {ilvl:>4}  {r['cr_id']:>6}  "
               f"{gold(r['unit_price']):>11}  {gold(r['speed_region_median']):>11}  "
               f"{gap:>9}  {gold(r['plain_cheapest']):>10}  {r['speed_realm_count']:>3}")
     if names:
@@ -492,6 +629,11 @@ def main() -> None:
                          "(note: cloaks are classed as cloth by Blizzard)")
     ap.add_argument("--quality", metavar="TIERS",
                     help="comma-separated quality tiers, e.g. green,blue")
+    ap.add_argument("--ilvl", metavar="LEVELS",
+                    help="comma-separated item levels, e.g. 253,266 "
+                         f"(known: {','.join(str(v) for v in sorted(set(ILVL_BONUS_IDS.values()), reverse=True))})")
+    ap.add_argument("--tracked", action="store_true",
+                    help=f"shortcut for --ilvl {','.join(map(str, TRACKED_ILVLS))}")
     ap.add_argument("--min-gold", type=float, help="only listings at or above this unit price")
     ap.add_argument("--max-gold", type=float, help="only listings at or below this unit price")
     ap.add_argument("--min-gap", type=float,
@@ -522,9 +664,11 @@ def main() -> None:
                 raise SystemExit(str(e))
             if not items:
                 raise SystemExit("no +Speed listings match those item filters")
+        ilvls = TRACKED_ILVLS if args.tracked else (
+            [int(v) for v in args.ilvl.split(",") if v.strip()] if args.ilvl else None)
         rows = find_speed_listings(con, items=items, min_gold=args.min_gold,
                                    max_gold=args.max_gold, min_gap=args.min_gap,
-                                   top=args.top, sort=args.sort)
+                                   ilvls=ilvls, top=args.top, sort=args.sort)
     finally:
         # Explicit close, same reasoning as dashboard.api_snipes()'s
         # _run_query (2026-08-01): DuckDB's native buffers for a scan this

@@ -23,7 +23,14 @@ reuse the existing tier numbers. Same day, a **name filter** on top of it
 (`--tarnished`/`--name-contains`, `tarnished=`/`name_contains=`), with the
 page defaulting to the Midnight **"Tarnished Dawnlit"** set — matched on the
 two-word phrase, since bare "Tarnished" also hits 22 vanilla-through-Legion
-items that would have silently contaminated the view.
+items that would have silently contaminated the view. Then armor-type/quality
+filters, the default sort flipped to **cheapest first** (the seller already
+mispriced by ignoring the tertiary, so no reference validates a row), and
+finally a real **item-level** column and filter defaulting to the tracked
+**253 + 266** Midnight tiers — resolved from upgrade-track bonus ids
+(`ILVL_BONUS_IDS`, tooltip-verified), **not** modifier 28, which reports junk
+for this family. The ilvl filter also narrows the reference stats to the same
+tier so comparisons are like-for-like.
 
 2026-08-03 — new heuristic, **`price_suspect`**
 (`snipe_check.py`'s `PRICE_SUSPECT_MULTIPLE=10`): flags a row when the sell

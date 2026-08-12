@@ -54,6 +54,15 @@ scan only, shares no filter or threshold with `snipe_check.py`, and
 **flags/filters nothing by default** — gold validation was explicitly deferred
 by the human. Don't add a cutoff to it without them.
 
+Two things about that view that are easy to get wrong: **item level does not
+come from modifier 28** (which reports junk — 3321/5381 — for this family);
+it's resolved from upgrade-track bonus ids in `speed_check.ILVL_BONUS_IDS`,
+each tooltip-verified, and the tracked tiers are **253 and 266**. And any
+conclusion about *current* content must be checked against production data via
+`railway ssh`, not local `data/` — this machine powers off nightly, so the
+local sweep runs weeks stale and already produced one wrong conclusion
+("ilvl 266 doesn't exist").
+
 Business model (decided — don't revisit without the human): free in-game addon
 (Blizzard requires addons to be free) + paid external data service. Competitors:
 TSM (coarse regional sale rates, hostile UX), Saddlebag Exchange. Our edge:
@@ -167,6 +176,7 @@ python scan_region.py --exclude 1403          # one sweep of all EU realms
 python snipe_check.py --sell 1403             # flag discounted listings
 python speed_check.py --top 50                # +Speed tertiary census (experimental,
                                               # no sell realm, no filters by default)
+python speed_check.py --tarnished --tracked   # Midnight set, ilvl 253+266 only
 python dashboard.py --sell 1403               # local dev on 127.0.0.1:8000
                                               # (leave ENABLE_BACKGROUND_COLLECTION unset)
 ```

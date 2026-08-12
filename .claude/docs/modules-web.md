@@ -738,7 +738,8 @@ tertiary listing census. **Shares no filter, threshold or pricing logic with
 `/api/snipes`**: no discount, no sell realm, no AH cut, no `MIN_VALUE_FLOOR_G`,
 no class quotas, no appearance/sale-rate filter. Query params `items`,
 `min_gold`, `max_gold`, `min_gap`, `name_contains`, `tarnished`, `armor`,
-`quality`, `top`, `sort` (defaults to `price`, cheapest first), `names`;
+`quality`, `ilvl` (comma-separated levels; filters in SQL, and narrows the
+reference stats to the same tier), `top`, `sort` (defaults to `price`, cheapest first), `names`;
 `armor`/`quality` are comma-separated and validated on the route so a typo is
 a 400 rather than a 500 raised inside the worker thread; `tarnished=true` resolves to the server-side
 `speed_check.TARNISHED_NAME_MATCH` rather than the page posting the phrase
