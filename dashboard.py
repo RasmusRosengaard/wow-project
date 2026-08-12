@@ -922,6 +922,11 @@ def _speed_row_to_json(r: dict, names: NameCache | None) -> dict:
         "realm": r["cr_id"],
         "realm_name": _realm_info(r["cr_id"])["name"] or str(r["cr_id"]),
         "realm_category": _realm_info(r["cr_id"]).get("category"),
+        # Slug for the per-row Undermine Exchange link. dashboard.html builds
+        # its equivalent from the *sell* realm, which this page has no concept
+        # of -- here the useful destination is the realm the listing is
+        # actually on, so the slug rides along per row.
+        "realm_slug": _realm_info(r["cr_id"]).get("slug"),
         "item_id": r["item_id"],
         "auction_id": r["auction_id"],
         # Real item level, from the listing's upgrade-track bonus id -- NOT

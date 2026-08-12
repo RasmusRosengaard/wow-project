@@ -115,12 +115,10 @@
   .row { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
   .field.narrow { width: 120px; }
-  /* Sort's longest option ("Cheapest first") clipped inside the shared
-     120px narrow width -- caught in the browser, not in the diff. */
-  .field.sort-field { width: 145px; }
-  .toggle-row { display: flex; align-items: center; gap: 0.5rem; }
-  .toggle-row label { font-weight: 600; cursor: pointer; text-transform: none;
-                      letter-spacing: normal; font-size: 0.82rem; color: var(--ink); }
+  /* Widened for its longest option ("253 + 266 (tracked)"), which clipped
+     inside the shared 120px narrow width -- caught in the browser both times
+     it happened, never in the diff. */
+  .field.sort-field { width: 175px; }
   .field.grow { flex: 1; min-width: 140px; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
   .info-icon {
@@ -169,6 +167,9 @@
   .variant { font-size: 0.75rem; color: var(--text-dim); }
   .gap { font-weight: 700; color: var(--bullion); }
   .ilvl { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .account { font-size: 0.8rem; color: var(--verified); font-weight: 600; }
+  .item-cell a { display: inline-flex; text-decoration: none; }
+  .item-cell a:hover .item-icon { border-color: var(--bullion); }
   .thin { color: var(--text-dim); font-weight: 400; }
   .count { font-size: 0.8rem; color: var(--text-dim); }
   .caveat { font-size: 0.78rem; color: var(--text-dim); line-height: 1.6; }
@@ -219,7 +220,7 @@
 <div class="shell">
 <div class="wrap">
   <div>
-    <h2>+Speed Scan<span class="info-icon" tabindex="0">?<span class="info-tooltip">Every current EU listing carrying the +Speed tertiary stat (bonus id 42), straight from the raw region scan. No sell realm, no discount rule, no AH cut &mdash; this is a census, not a snipe list.</span></span></h2>
+    <h2>+Speed Scan<span class="info-icon" tabindex="0">?<span class="info-tooltip">Every current EU listing of a <strong>Midnight &ldquo;Tarnished Dawnlit&rdquo;</strong> item carrying the +Speed tertiary (bonus id 42), straight from the raw region scan. Matched on that full two-word phrase, not bare &ldquo;Tarnished&rdquo;, which also hits 22 legacy items back to vanilla. No sell realm, no discount rule, no AH cut &mdash; a census, not a snipe list.</span></span></h2>
   </div>
 
   <div id="logged-out-card" class="card" style="display:none;">
@@ -269,51 +270,7 @@
             <option value="weapon">Weapon</option>
           </select>
         </div>
-        <div class="field narrow">
-          <label for="quality">Quality</label>
-          <select id="quality">
-            <option value="green,blue">Green + Blue</option>
-            <option value="green">Green only</option>
-            <option value="blue">Blue only</option>
-            <option value="epic">Epic</option>
-            <option value="">Any</option>
-          </select>
-        </div>
-        <div class="field narrow">
-          <label for="max-gold">Max buy price (g)</label>
-          <input type="number" id="max-gold" min="0" step="100" placeholder="any">
-        </div>
-        <div class="field narrow sort-field">
-          <label for="sort">Sort</label>
-          <select id="sort">
-            <option value="price">Cheapest first</option>
-            <option value="gap">Biggest gap</option>
-            <option value="price_desc">Priciest first</option>
-            <option value="median">Typical price</option>
-            <option value="item">Item id</option>
-          </select>
-        </div>
-        <div class="field narrow">
-          <label for="min-gold">Min gold</label>
-          <input type="number" id="min-gold" min="0" step="100" placeholder="any">
-        </div>
-        <div class="field narrow">
-          <label for="min-gap">Min gap (x)</label>
-          <input type="number" id="min-gap" min="0" step="0.5" placeholder="none">
-        </div>
-        <div class="field narrow">
-          <label for="top">Rows</label>
-          <input type="number" id="top" min="1" step="10" value="100">
-        </div>
-        <div class="field grow">
-          <label for="items">Item ids (optional)</label>
-          <input type="text" id="items" placeholder="e.g. 204414,204422">
-        </div>
         <button id="run-btn">Scan</button>
-      </div>
-      <div class="toggle-row">
-        <input type="checkbox" id="tarnished" checked>
-        <label for="tarnished">Tarnished (Midnight) only<span class="info-icon" tabindex="0">?<span class="info-tooltip">Limits the scan to the 58 &ldquo;Tarnished Dawnlit&rdquo; items &mdash; the current Midnight set. Matched on the full two-word phrase, not bare &ldquo;Tarnished&rdquo;, which also hits 22 legacy items going back to vanilla (Tarnished Chain Vest, Tarnished Plate Belt, Tarnished Claymore). These items are listed on 20&ndash;60 realms each, so their typical-price reference is far thicker than the census average.</span></span></label>
       </div>
       <div class="error" id="error"></div>
       <div class="count" id="count"></div>
@@ -327,10 +284,9 @@
               <th>Item</th>
               <th class="num">ilvl</th>
               <th>Realm</th>
+              <th>Account<span class="info-icon" tabindex="0">?<span class="info-tooltip">Which of your registered WoW accounts has a character on that realm, so you know who to log in as. Register accounts and their realms on the Watchlist page. Subscriber feature &mdash; shows &ldquo;&mdash;&rdquo; otherwise.</span></span></th>
               <th class="num">Price</th>
-              <th class="num">Typical +Speed<span class="info-icon" tabindex="0">?<span class="info-tooltip">Median of the cheapest +Speed listing on each realm that has one. Per-realm floors are medianed rather than raw auctions, so a realm with many sellers doesn&rsquo;t dominate the number.</span></span></th>
-              <th class="num">Gap</th>
-              <th class="num">Plain cheapest<span class="info-icon" tabindex="0">?<span class="info-tooltip">Cheapest listing of the same item WITHOUT any tertiary, region-wide. This is roughly what the normal snipe pricing would value the item at &mdash; if the listing price is near this, the seller priced the +Speed at nothing.</span></span></th>
+              <th class="num">Gap<span class="info-icon" tabindex="0">?<span class="info-tooltip">How far under the typical price for this item at this item level the listing sits &mdash; the median of the cheapest +Speed listing on each realm that has one. Context only, and meaningless where only a realm or two lists it (see the Realms column).</span></span></th>
               <th class="num">Realms</th>
             </tr>
           </thead>
@@ -380,6 +336,36 @@ function moneyEl(copper) {
 // name's text colour -- dashboard.html made that call deliberately because
 // most of Blizzard's quality palette fails contrast as text on this design's
 // light "paper" background. Same reasoning applies here.
+// realm id -> [account label]. Populated from /api/wow-accounts, the same
+// source dashboard.html cross-references against its snipe rows. Kept out of
+// any cached row payload deliberately, same reasoning as there: these are the
+// user's own account labels, not shared data.
+let userRealmAccounts = new Map();
+let currentRegion = null;
+
+async function loadUserRealmAccounts() {
+  try {
+    const r = await fetch("/api/wow-accounts");
+    // 402 free tier / 401 logged out -- Map stays empty and the column
+    // shows "—" rather than the page failing.
+    if (!r.ok) return;
+    const data = await r.json();
+    const map = new Map();
+    for (const acct of data.accounts || []) {
+      for (const realmId of acct.realms || []) {
+        if (!map.has(realmId)) map.set(realmId, []);
+        map.get(realmId).push(acct.label);
+      }
+    }
+    userRealmAccounts = map;
+  } catch (e) { /* leave Map empty */ }
+}
+
+function undermineUrl(row) {
+  if (!currentRegion || !row.realm_slug) return null;
+  return "https://undermine.exchange/#" + currentRegion + "-" + row.realm_slug + "/" + row.item_id;
+}
+
 const QUALITY_COLORS = {
   POOR: "#9d9d9d", COMMON: "#ffffff", UNCOMMON: "#1eff00", RARE: "#0070dd",
   EPIC: "#a335ee", LEGENDARY: "#ff8000", ARTIFACT: "#e6cc80", HEIRLOOM: "#00ccff",
@@ -391,7 +377,7 @@ function renderRows(rows) {
   if (!rows.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 8;
+    td.colSpan = 7;
     td.className = "muted";
     td.textContent = "No +Speed listings matched.";
     tr.appendChild(td);
@@ -411,7 +397,22 @@ function renderRows(rows) {
       img.alt = "";
       img.loading = "lazy";
       if (r.quality && QUALITY_COLORS[r.quality]) img.style.setProperty("--q", QUALITY_COLORS[r.quality]);
-      cell.appendChild(img);
+      // Icon links to Undermine Exchange, same convention as the Dashboard.
+      // Difference: that page anchors on the *sell* realm, which doesn't
+      // exist here, so each row links to the realm the listing is actually
+      // on -- the one you'd be checking a price history for.
+      const url = undermineUrl(r);
+      if (url) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.title = "Price history on Undermine Exchange (" + r.realm_name + ")";
+        a.appendChild(img);
+        cell.appendChild(a);
+      } else {
+        cell.appendChild(img);
+      }
     }
     const nameWrap = document.createElement("div");
     const nameEl = document.createElement("div");
@@ -440,15 +441,21 @@ function renderRows(rows) {
     if (r.realm_category) realmTd.title = r.realm_category;
     tr.appendChild(realmTd);
 
+    const acctTd = document.createElement("td");
+    const labels = userRealmAccounts.get(r.realm) || [];
+    if (labels.length) {
+      acctTd.className = "account";
+      acctTd.textContent = labels.join(", ");
+    } else {
+      acctTd.className = "muted";
+      acctTd.textContent = "—";
+    }
+    tr.appendChild(acctTd);
+
     const priceTd = document.createElement("td");
     priceTd.className = "num";
     priceTd.appendChild(moneyEl(r.price_copper));
     tr.appendChild(priceTd);
-
-    const medTd = document.createElement("td");
-    medTd.className = "num muted";
-    medTd.appendChild(moneyEl(r.speed_region_median_copper));
-    tr.appendChild(medTd);
 
     const gapTd = document.createElement("td");
     gapTd.className = "num";
@@ -465,11 +472,6 @@ function renderRows(rows) {
     }
     tr.appendChild(gapTd);
 
-    const plainTd = document.createElement("td");
-    plainTd.className = "num muted";
-    plainTd.appendChild(moneyEl(r.plain_cheapest_copper));
-    tr.appendChild(plainTd);
-
     const realmsTd = document.createElement("td");
     realmsTd.className = "num muted";
     realmsTd.textContent = r.speed_realm_count;
@@ -485,18 +487,19 @@ async function runScan() {
   btn.disabled = true;
   $("error").textContent = "";
   $("count").textContent = "Scanning every EU realm's listings…";
-  const params = new URLSearchParams({ sort: $("sort").value, top: $("top").value, names: "true" });
-  const minGold = $("min-gold").value, maxGold = $("max-gold").value;
-  const minGap = $("min-gap").value, items = $("items").value.trim();
-  if (minGold) params.set("min_gold", minGold);
-  if (maxGold) params.set("max_gold", maxGold);
-  if (minGap) params.set("min_gap", minGap);
-  if (items) params.set("items", items);
-  // The phrase itself lives on the server (speed_check.TARNISHED_NAME_MATCH)
-  // -- this only sends the flag, so there's no second copy to drift.
-  if ($("tarnished").checked) params.set("tarnished", "true");
+  // Trimmed to two controls plus Scan (2026-08-12, human: "just keep the
+  // 253 + 266 and armortype and scan"). Everything else the API still
+  // supports -- sort, min/max gold, min gap, item ids, quality, top -- is
+  // fixed here rather than removed from the backend, so `speed_check.py`'s
+  // CLI keeps the full set. Tarnished is now permanent rather than a
+  // checkbox: this page IS the Midnight view.
+  const params = new URLSearchParams({
+    tarnished: "true",
+    sort: "price",   // cheapest first; the buy price is the decision
+    top: "100",
+    names: "true",
+  });
   if ($("armor").value) params.set("armor", $("armor").value);
-  if ($("quality").value) params.set("quality", $("quality").value);
   if ($("ilvl").value) params.set("ilvl", $("ilvl").value);
   try {
     const res = await fetch("/api/speed?" + params.toString());
@@ -505,6 +508,7 @@ async function runScan() {
       throw new Error(body.detail || ("request failed (" + res.status + ")"));
     }
     const data = await res.json();
+    currentRegion = data.region;
     renderRows(data.rows);
     const scope = data.name_filter ? ' matching "' + data.name_filter + '"' : "";
     $("count").textContent = data.count + " +Speed listing(s)" + scope
@@ -539,6 +543,10 @@ $("run-btn").addEventListener("click", runScan);
 
   $("app").style.display = "block";
   applyThemeButtonState();
+  // Must resolve before the first runScan() so the very first paint already
+  // has account labels, not just later re-renders (same ordering
+  // dashboard.html relies on).
+  await loadUserRealmAccounts();
   await runScan();
 })();
 

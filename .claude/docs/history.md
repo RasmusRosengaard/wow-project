@@ -3805,3 +3805,41 @@ for any listing acquired below max level, because reporting the upgrade-track
 number there would repeat the exact modifier-28 mistake this whole mapping
 exists to avoid. Checked against production before shipping: all 163 live
 ilvl-266 +Speed listings carry no `m:9`, so the guard removes nothing real.
+
+### Same day — trimming the table, and answering "does it cover everything?"
+
+Human: *"remove plaincheapest, not nessary, remove typical + speed also"*, plus
+*"show account if user has character on that realm"* and *"undermine link on
+the picture"*.
+
+Columns trimmed to Item · ilvl · Realm · Account · Price · Gap · Realms. Both
+removed numbers are still computed and still returned by the API — `gap_x` is
+derived from the typical price and the `median` sort needs it — they're just
+no longer displayed. `gap` was kept because it wasn't asked to go; with its
+basis now hidden, its tooltip explains what it compares against.
+
+Account and Undermine were both already-solved problems on `dashboard.html`,
+so both reuse that mechanism rather than a new one: `/api/wow-accounts` keyed
+by connected-realm id (subscriber-gated, degrading to "—" on any non-200), and
+the icon-as-Undermine-link convention. The one real difference is the anchor —
+the Dashboard builds its Undermine URL from the *sell* realm, which this page
+has no concept of, so each row links to the realm the listing is actually on
+and `_speed_row_to_json()` gained `realm_slug`.
+
+Also asked, and worth recording since it's the kind of thing that's easy to
+assume: *"is this tracking all tarnished dawnlit items? both armory, jewelry,
+leather-armor etc?"* Checked against production rather than reasoned about —
+yes: 174 tracked listings across 52 distinct items, spanning weapon (52),
+cloth (36), mail (23), plate (23), jewelry (22), leather (17) and shield (1).
+The Tarnished filter matches on the item *name*, so it covers the whole set
+regardless of slot, and the armor dropdown defaults to All.
+
+Stripped the control bar back the same day on human request — *"remove min
+gold, max gap, quality... just keep teh 253 + 266 and armortype and scan"* —
+leaving two selects and a button. Deliberately a **frontend-only** trim: every
+removed filter still exists on `/api/speed` and in the CLI, with the page
+fixing the values instead (`tarnished=true`, `sort=price`, `top=100`), so
+nothing has to be rebuilt if one comes back. Max buy price went with them,
+which is worth flagging against the earlier "filter by... buyprice" request —
+the later instruction was explicit about what to keep, so it won, and
+restoring it is one block of markup.

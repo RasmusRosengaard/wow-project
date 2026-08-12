@@ -440,9 +440,22 @@ unchanged by this rebuild.
 
 ## `speed.html` (experimental, 2026-08-12)
 
-The `/speed` tab: the +Speed tertiary census. Controls lead with **item level** — defaulting to `253 + 266`, the two Midnight
-tiers worth tracking — then the three a buyer decides on next (**armor type,
-quality, max buy price**). Every row shows its real ilvl in its own column,
+The `/speed` tab: the +Speed tertiary census. Controls are **two selects and a Scan button**: item level (defaulting to
+`253 + 266`, the two Midnight tiers worth tracking) and armor type. Stripped
+back on human request 2026-08-12 — *"just keep the 253 + 266 and armortype and
+scan"* — from a bar that had also carried quality, max buy price, min gold,
+min gap, rows, item ids and a Tarnished checkbox.
+
+Two things about that trim worth knowing. **Nothing was removed from the
+backend**: `/api/speed` and `speed_check.py`'s CLI still accept every one of
+those filters, and the page simply fixes them (`tarnished=true`, `sort=price`,
+`top=100`, no quality filter) — so restoring a control is a markup change, not
+a feature rebuild. And **Tarnished is now permanent rather than a checkbox**:
+this page *is* the Midnight view, so the explanation of why it matches
+"Tarnished Dawnlit" rather than bare "Tarnished" moved from the checkbox
+tooltip into the page heading rather than being lost.
+
+Every row shows its real ilvl in its own column,
 resolved from the upgrade-track bonus id, *not* from the modifier-28 value the
 rest of the site uses (which is junk for this family) — then sort / min gold / min gap / rows / item ids.
 Sort defaults to **cheapest first**: the premise is that the seller already
@@ -483,3 +496,22 @@ elsewhere in this app:
 A `gap_x` built on fewer than 4 realms renders dimmed rather than hidden
 (`.thin`) — the "flag, never silently filter" rule applies to the UI too.
 A single-realm item shows "—" with a tooltip saying why, rather than a number.
+
+**Columns** (trimmed 2026-08-12 on human request — "remove plaincheapest, not
+necessary, remove typical + speed also"): Item · ilvl · Realm · Account ·
+Price · Gap · Realms. The typical-price and plain-cheapest *numbers* are still
+computed and still returned by `/api/speed` — `gap_x` is derived from the
+first and the `median` sort option needs it — they are simply no longer shown.
+
+**Account** cross-references each row's realm against `/api/wow-accounts`
+(`wow_accounts.py`), so a row says which of your registered accounts has a
+character on that realm. Exactly the mechanism `dashboard.html` already uses
+for snipe rows, including the failure behaviour: that endpoint is
+`current_subscribed_user`, so a free-tier or logged-out visitor gets a
+non-200, the Map stays empty and the column shows "—" instead of the page
+erroring. Loaded once before the first scan so the first paint already has it.
+
+**The item icon links to Undermine Exchange**, same convention as the
+Dashboard — but anchored on **the row's own realm**, not a sell realm (this
+page has no such concept), which is why `_speed_row_to_json()` carries
+`realm_slug` per row.
