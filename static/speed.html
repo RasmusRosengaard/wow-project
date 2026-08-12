@@ -88,17 +88,6 @@
   .upsell { font-size: 0.9rem; }
   .upsell a { color: var(--bullion); font-weight: 700; text-decoration: none; }
   .upsell a:hover { text-decoration: underline; }
-  /* The experimental banner is deliberately loud and permanent, not a
-     dismissible toast: every number on this page is un-validated (no gold
-     check, no AH cut, no sell-realm price), and a user who misses that
-     reads gap_x as a profit multiple. */
-  .experiment {
-    border-left: 3px solid var(--bullion); background: var(--paper);
-    padding: 0.8rem 1rem; font-size: 0.82rem; line-height: 1.6; color: var(--text-dim);
-    border-radius: 0 4px 4px 0;
-  }
-  .experiment strong { color: var(--ink); }
-
   label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
   input[type=text], input[type=number], .field select {
     background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
@@ -121,22 +110,6 @@
   .field.sort-field { width: 175px; }
   .field.grow { flex: 1; min-width: 140px; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
-  .info-icon {
-    position: relative; display: inline-flex; align-items: center; justify-content: center;
-    width: 15px; height: 15px; border-radius: 50%; background: var(--hairline-strong);
-    color: var(--text-dim); font-size: 0.65rem; font-weight: 700; font-style: normal;
-    text-transform: none; letter-spacing: normal; cursor: help; margin-left: 0.4rem;
-    vertical-align: middle;
-  }
-  .info-icon:hover, .info-icon:focus { background: var(--bullion); color: #fff; outline: none; }
-  .info-icon .info-tooltip {
-    display: none; position: absolute; top: 135%; left: 0; z-index: 50;
-    background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 4px;
-    padding: 0.55rem 0.7rem; font-size: 0.76rem; font-weight: 400; color: var(--ink);
-    width: 280px; line-height: 1.45; box-shadow: 0 6px 16px rgba(0,0,0,0.18);
-    text-align: left;
-  }
-  .info-icon:hover .info-tooltip, .info-icon:focus .info-tooltip { display: block; }
 
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -180,7 +153,6 @@
   /* Blizzard republishes hourly, so past ~90 minutes the sweep is behind at
      least one publish and rows may already be bought. */
   .collected .age.stale { color: var(--alert); }
-  .caveat { font-size: 0.78rem; color: var(--text-dim); line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -228,7 +200,7 @@
 <div class="shell">
 <div class="wrap">
   <div>
-    <h2>+Speed Scan<span class="info-icon" tabindex="0">?<span class="info-tooltip">Every current EU listing of a <strong>Midnight &ldquo;Tarnished Dawnlit&rdquo;</strong> item carrying the +Speed tertiary (bonus id 42), straight from the raw region scan. Matched on that full two-word phrase, not bare &ldquo;Tarnished&rdquo;, which also hits 22 legacy items back to vanilla. No sell realm, no discount rule, no AH cut &mdash; a census, not a snipe list.</span></span></h2>
+    <h2>+Speed Scan</h2>
   </div>
 
   <div id="logged-out-card" class="card" style="display:none;">
@@ -241,21 +213,9 @@
 
   <div id="app" style="display:none;">
     <div class="card">
-      <div class="experiment">
-        <strong>Experimental.</strong> Every current EU listing carrying the +Speed
-        tertiary. The premise: sellers list these without realising +Speed adds
-        significant value, so the asking price reflects the plain item &mdash; which is
-        also why none of it reaches the Dashboard, whose pricing pools every variant of
-        an item under one price and cannot see a tertiary at all.
-        <strong>Nothing here is validated as profitable</strong> &mdash; no AH cut, no
-        sell-realm price, no proof any given item resells. &ldquo;Gap&rdquo; is context
-        only (this listing vs the median of the per-realm cheapest +Speed listings), and
-        it&rsquo;s meaningless where only a realm or two lists the item.
-      </div>
-
       <div class="row">
         <div class="field narrow sort-field">
-          <label for="ilvl">Item level<span class="info-icon" tabindex="0">?<span class="info-tooltip">The <strong>real</strong> item level, read from the listing&rsquo;s upgrade-track bonus id &mdash; not the item-level modifier the rest of the site uses, which reports junk (3321, 5381&hellip;) for this family. 253 and 266 are the new Midnight tiers worth tracking. Filtering also narrows the typical-price reference to the same tier, so a 266 is compared against other 266s.</span></span></label>
+          <label for="ilvl">Item level</label>
           <select id="ilvl">
             <option value="253,266">253 + 266 (tracked)</option>
             <option value="266">266 only</option>
@@ -263,7 +223,7 @@
           </select>
         </div>
         <div class="field narrow">
-          <label for="armor">Armor type<span class="info-icon" tabindex="0">?<span class="info-tooltip">Blizzard&rsquo;s own item class/subclass. Note that <strong>cloaks count as Cloth</strong> &mdash; including the plate-themed Commander&rsquo;s Cape &mdash; because that&rsquo;s how they&rsquo;re classified, so &ldquo;Cloth&rdquo; returns every cape. Jewelry covers rings and necks.</span></span></label>
+          <label for="armor">Armor type</label>
           <select id="armor">
             <option value="">All</option>
             <option value="cloth">Cloth</option>
@@ -292,14 +252,13 @@
               <th>Realm</th>
               <th>Account</th>
               <th class="num">Price</th>
-              <th class="num">Gap<span class="info-icon" tabindex="0">?<span class="info-tooltip">How far under the typical price for this item at this item level the listing sits &mdash; the median of the cheapest +Speed listing on each realm that has one. Context only, and meaningless where only a realm or two lists it (see the Realms column).</span></span></th>
+              <th class="num">Gap</th>
               <th class="num">Realms</th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
-      <div class="caveat" id="caveat"></div>
     </div>
   </div>
 </div>
@@ -549,7 +508,6 @@ async function runScan() {
     const scope = data.name_filter ? ' matching "' + data.name_filter + '"' : "";
     $("count").textContent = data.count + " +Speed listing(s)" + scope
       + " — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();
-    $("caveat").textContent = data.caveat;
   } catch (e) {
     $("error").textContent = e.message;
     $("count").textContent = "";
