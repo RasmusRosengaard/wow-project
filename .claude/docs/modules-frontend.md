@@ -511,6 +511,16 @@ for snipe rows, including the failure behaviour: that endpoint is
 non-200, the Map stays empty and the column shows "—" instead of the page
 erroring. Loaded once before the first scan so the first paint already has it.
 
+**Freshness** sits under the result count: how long ago the region sweep
+behind these rows ran, plus the absolute local time. Blizzard republishes
+auction data roughly hourly, so past 90 minutes the age turns red and says so
+— that's the difference between a buyable listing and one already taken. It
+reads `collected_ts` from the API, which comes from the listings' own
+`fetched_ts` column read on the same connection as the rows (so it always
+describes the data actually returned), not the file mtime `/api/status` uses.
+Unlike dashboard.html's topbar ticker this isn't per-realm — one sweep backs
+every row on the page.
+
 **The item icon links to Undermine Exchange**, same convention as the
 Dashboard — but anchored on **the row's own realm**, not a sell realm (this
 page has no such concept), which is why `_speed_row_to_json()` carries

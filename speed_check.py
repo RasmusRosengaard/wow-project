@@ -357,6 +357,15 @@ def connect() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def latest_sweep_ts(con: duckdb.DuckDBPyConnection) -> int | None:
+    """Epoch seconds of the most recent region sweep, or None if there's no
+    data. Read from the listings' own `fetched_ts` column rather than the
+    parquet files' mtime (which `/api/status` uses): the column records when
+    the sweep actually ran, and survives a file being rewritten or copied.
+    Cheap -- DuckDB reads one column, not the row bodies."""
+    return con.execute("SELECT max(fetched_ts) FROM listings").fetchone()[0]
+
+
 def speed_item_ids(con: duckdb.DuckDBPyConnection) -> list[int]:
     """The distinct item_ids that have at least one +Speed listing. Small by
     construction (1,153 on the sweep this was built against, out of ~180k

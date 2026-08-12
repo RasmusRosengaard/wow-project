@@ -1022,9 +1022,13 @@ async def api_speed(request: Request, items: str | None = None,
     except ValueError:
         raise HTTPException(400, "ilvl must be comma-separated integers, e.g. 253,266")
 
-    def _run_query() -> list:
+    def _run_query() -> tuple[list, int | None]:
         con = speed_check.connect()
         try:
+            # Sweep timestamp read on the same connection as the rows, so the
+            # freshness shown always describes the data actually returned
+            # rather than a separately-fetched (possibly newer) sweep.
+            swept = speed_check.latest_sweep_ts(con)
             ids = item_ids
             if needle or armor_types or qualities:
                 # Blocking (NameCache -> Blizzard on a miss); safe here
@@ -1033,10 +1037,10 @@ async def api_speed(request: Request, items: str | None = None,
                     con, name_contains=needle, qualities=qualities,
                     armor_types=armor_types, items=item_ids)
                 if not ids:
-                    return []
+                    return [], swept
             return speed_check.find_speed_listings(
                 con, items=ids, min_gold=min_gold, max_gold=max_gold,
-                min_gap=min_gap, ilvls=ilvls, top=top, sort=sort)
+                min_gap=min_gap, ilvls=ilvls, top=top, sort=sort), swept
         finally:
             con.close()
 
@@ -1046,7 +1050,7 @@ async def api_speed(request: Request, items: str | None = None,
     # burn over every realm's parquet, and names=true's NameCache lookups
     # fall back to blocking Blizzard calls on a cold cache. Neither may run
     # on the event loop.
-    rows = await asyncio.to_thread(_run_query)
+    rows, swept_ts = await asyncio.to_thread(_run_query)
 
     def _build_rows() -> list[dict]:
         name_cache = NameCache() if names else None
@@ -1069,6 +1073,10 @@ async def api_speed(request: Request, items: str | None = None,
             "tarnished_match": speed_check.TARNISHED_NAME_MATCH,
             "armor_types": sorted(speed_check.ARMOR_TYPES),
             "armor_filter": armor_types, "quality_filter": qualities,
+            # When the region sweep behind these rows actually ran (epoch
+            # seconds). Blizzard republishes AH data hourly, so a user
+            # needs to know how old this is before acting on it.
+            "collected_ts": swept_ts,
             "ilvl_filter": ilvls, "tracked_ilvls": speed_check.TRACKED_ILVLS,
             "known_ilvls": sorted(set(speed_check.ILVL_BONUS_IDS.values()), reverse=True)}
 

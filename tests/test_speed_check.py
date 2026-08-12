@@ -243,6 +243,28 @@ def test_bad_sort_rejected(listings_dir):
         con.close()
 
 
+def test_latest_sweep_ts(listings_dir):
+    """Read from the listings' own fetched_ts column, not file mtime -- the
+    column records when the sweep actually ran and survives a file copy."""
+    con = speed_check.connect()
+    try:
+        assert speed_check.latest_sweep_ts(con) == T1
+    finally:
+        con.close()
+
+
+def test_latest_sweep_ts_is_none_without_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(speed_check, "DATA", tmp_path)
+    d = tmp_path / "listings"
+    d.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([], schema=LISTING_SCHEMA), d / "empty.parquet")
+    con = speed_check.connect()
+    try:
+        assert speed_check.latest_sweep_ts(con) is None
+    finally:
+        con.close()
+
+
 def test_check_data_ready(tmp_path, monkeypatch):
     monkeypatch.setattr(speed_check, "DATA", tmp_path)
     (tmp_path / "listings").mkdir()
@@ -631,6 +653,19 @@ def test_api_speed_returns_rows(listings_dir, monkeypatch):
     assert top_row["speed_region_median_g"] == 1000
     assert top_row["plain_cheapest_g"] == 100
     assert top_row["gap_x"] == pytest.approx(5.0)
+    # Freshness of the sweep these rows came from (Blizzard republishes
+    # hourly, so the user needs to know how old this is before acting).
+    assert body["collected_ts"] == T1
+
+
+def test_api_speed_reports_collected_ts_even_with_no_matches(listings_dir, monkeypatch):
+    """The timestamp describes the sweep, not the rows -- an empty result
+    still has to say how fresh the data behind it is."""
+    as_user(monkeypatch, VERIFIED_USER)
+    r = client.get("/api/speed", params={"name_contains": "nothing matches", "top": 100})
+    body = r.json()
+    assert body["count"] == 0
+    assert body["collected_ts"] == T1
 
 
 def test_api_speed_tarnished_uses_the_server_side_phrase(listings_dir, monkeypatch):

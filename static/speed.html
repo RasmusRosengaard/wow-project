@@ -172,6 +172,14 @@
   .item-cell a:hover .item-icon { border-color: var(--bullion); }
   .thin { color: var(--text-dim); font-weight: 400; }
   .count { font-size: 0.8rem; color: var(--text-dim); }
+  /* Freshness sits directly under the result count, not in a topbar ticker
+     like dashboard.html's: there it describes a realm you picked, here it
+     describes the one region sweep every row on the page came from. */
+  .collected { font-size: 0.8rem; color: var(--text-dim); }
+  .collected .age { font-weight: 700; color: var(--ink); }
+  /* Blizzard republishes hourly, so past ~90 minutes the sweep is behind at
+     least one publish and rows may already be bought. */
+  .collected .age.stale { color: var(--alert); }
   .caveat { font-size: 0.78rem; color: var(--text-dim); line-height: 1.6; }
 </style>
 </head>
@@ -274,6 +282,7 @@
       </div>
       <div class="error" id="error"></div>
       <div class="count" id="count"></div>
+      <div class="collected" id="collected"></div>
     </div>
 
     <div class="card">
@@ -359,6 +368,35 @@ async function loadUserRealmAccounts() {
     }
     userRealmAccounts = map;
   } catch (e) { /* leave Map empty */ }
+}
+
+// Blizzard republishes auction data roughly hourly and the region scanner
+// sweeps on its own cadence, so "how old is this" is the difference between a
+// buyable listing and one someone already took. Shown as an age plus the
+// absolute local time, since a bare timestamp makes the reader do the
+// subtraction and a bare age hides which publish it came from.
+const STALE_AFTER_MINUTES = 90;
+
+function renderCollected(ts) {
+  const el = $("collected");
+  if (!ts) { el.textContent = ""; return; }
+  const when = new Date(ts * 1000);
+  const mins = Math.max(0, Math.round((Date.now() - when.getTime()) / 60000));
+  // Days above 48h -- "483h 15m ago" is technically right and useless to
+  // read. Production data is minutes old, but a stalled collector is exactly
+  // when this line matters most, so it has to stay legible when very old.
+  const age = mins < 1 ? "just now"
+    : mins < 60 ? mins + " min ago"
+    : mins < 2880 ? Math.floor(mins / 60) + "h " + (mins % 60) + "m ago"
+    : Math.floor(mins / 1440) + "d " + Math.floor((mins % 1440) / 60) + "h ago";
+  el.textContent = "";
+  el.appendChild(document.createTextNode("Auction data collected "));
+  const span = document.createElement("span");
+  span.className = "age" + (mins > STALE_AFTER_MINUTES ? " stale" : "");
+  span.textContent = age;
+  el.appendChild(span);
+  el.appendChild(document.createTextNode(" — " + when.toLocaleString()
+    + (mins > STALE_AFTER_MINUTES ? " (Blizzard republishes hourly; listings may be gone)" : "")));
 }
 
 function undermineUrl(row) {
@@ -510,6 +548,7 @@ async function runScan() {
     const data = await res.json();
     currentRegion = data.region;
     renderRows(data.rows);
+    renderCollected(data.collected_ts);
     const scope = data.name_filter ? ' matching "' + data.name_filter + '"' : "";
     $("count").textContent = data.count + " +Speed listing(s)" + scope
       + " — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();
