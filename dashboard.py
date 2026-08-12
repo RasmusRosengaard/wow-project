@@ -39,6 +39,7 @@ import db
 import fetch_snapshot
 import forum
 import mailer
+import scan_region
 import snipe_check
 import speed_check
 import watchlist
@@ -909,6 +910,34 @@ async def api_snipes(request: Request, sell: int, items: str | None = None,
     }
 
 
+def _region_published_ts() -> int | None:
+    """When Blizzard published the auction data behind the region sweep, or
+    None if no sweep has recorded a publish time yet.
+
+    **This, not the sweep's own `fetched_ts`, is what /speed shows** (fixed
+    2026-08-12 after a human spotted /dashboard and /speed disagreeing by ~4
+    minutes for the same data). They were measuring different clocks:
+    /dashboard's "Last auction data" is Blizzard's `Last-Modified` header,
+    while `fetched_ts` is `int(time.time())` at the moment our scanner ran
+    (see scan_region.sweep()). Our fetch is always a few minutes after the
+    publish, so the two could never agree. Reporting the publish moment makes
+    the number mean the same thing on both pages.
+
+    Takes the **oldest** publish time across realms, so the figure is never
+    fresher than the stalest data on the page. In practice that's the same
+    number for every realm -- Blizzard publishes the whole EU region at once
+    (see scan_region.py's module docstring: all 92 realms within one second),
+    confirmed live again here -- so `min` is a safety property rather than a
+    meaningful aggregation choice.
+    """
+    try:
+        state = scan_region.load_publish_state()
+    except Exception:
+        return None
+    stamps = [v.get("published_ts") for v in state.values() if v.get("published_ts")]
+    return min(stamps) if stamps else None
+
+
 def _speed_row_to_json(r: dict, names: NameCache | None) -> dict:
     """Deliberately its own serializer, not _row_to_json(). That one is
     shaped around a snipe (buy_realm/sell_now/discount/appearance...), none
@@ -1066,6 +1095,7 @@ async def api_speed(request: Request, items: str | None = None,
         return out
 
     out_rows = await asyncio.to_thread(_build_rows)
+    _published_ts = _region_published_ts()
     return {"rows": out_rows, "count": len(out_rows), "caveat": speed_check.CAVEAT,
             "region": blizz.REGION, "tertiary": "Speed",
             "bonus_id": speed_check.SPEED_BONUS_ID,
@@ -1073,10 +1103,17 @@ async def api_speed(request: Request, items: str | None = None,
             "tarnished_match": speed_check.TARNISHED_NAME_MATCH,
             "armor_types": sorted(speed_check.ARMOR_TYPES),
             "armor_filter": armor_types, "quality_filter": qualities,
-            # When the region sweep behind these rows actually ran (epoch
-            # seconds). Blizzard republishes AH data hourly, so a user
-            # needs to know how old this is before acting on it.
-            "collected_ts": swept_ts,
+            # When Blizzard published the data behind these rows (epoch
+            # seconds) -- the same clock /dashboard's "Last auction data"
+            # reads, so the two pages agree. `swept_ts` (when our scanner
+            # fetched, always a few minutes later) rides along as a
+            # secondary signal rather than the headline number.
+            "collected_ts": _published_ts or swept_ts,
+            "fetched_ts": swept_ts,
+            # Whether collected_ts is really Blizzard's publish moment or the
+            # fetch-time fallback -- so the page can't label a fetch time
+            # "published", which is the exact mislabeling this change fixes.
+            "collected_is_publish": _published_ts is not None,
             "ilvl_filter": ilvls, "tracked_ilvls": speed_check.TRACKED_ILVLS,
             "known_ilvls": sorted(set(speed_check.ILVL_BONUS_IDS.values()), reverse=True)}
 

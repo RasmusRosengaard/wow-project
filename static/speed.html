@@ -138,12 +138,10 @@
   td.num .money { display: inline-flex; justify-content: flex-end; }
   .muted { color: var(--text-dim); }
   .variant { font-size: 0.75rem; color: var(--text-dim); }
-  .gap { font-weight: 700; color: var(--bullion); }
   .ilvl { font-weight: 700; font-variant-numeric: tabular-nums; }
   .account { font-size: 0.8rem; color: var(--verified); font-weight: 600; }
   .item-cell a { display: inline-flex; text-decoration: none; }
   .item-cell a:hover .item-icon { border-color: var(--bullion); }
-  .thin { color: var(--text-dim); font-weight: 400; }
   .count { font-size: 0.8rem; color: var(--text-dim); }
   /* Freshness sits directly under the result count, not in a topbar ticker
      like dashboard.html's: there it describes a realm you picked, here it
@@ -252,8 +250,6 @@
               <th>Realm</th>
               <th>Account</th>
               <th class="num">Price</th>
-              <th class="num">Gap</th>
-              <th class="num">Realms</th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
@@ -333,7 +329,7 @@ async function loadUserRealmAccounts() {
 // subtraction and a bare age hides which publish it came from.
 const STALE_AFTER_MINUTES = 90;
 
-function renderCollected(ts) {
+function renderCollected(ts, isPublish) {
   const el = $("collected");
   if (!ts) { el.textContent = ""; return; }
   const when = new Date(ts * 1000);
@@ -346,7 +342,12 @@ function renderCollected(ts) {
     : mins < 2880 ? Math.floor(mins / 60) + "h " + (mins % 60) + "m ago"
     : Math.floor(mins / 1440) + "d " + Math.floor((mins % 1440) / 60) + "h ago";
   el.textContent = "";
-  el.appendChild(document.createTextNode("Auction data collected "));
+  // "published" is Blizzard's own publish moment -- the same number /snipes
+  // shows as "Last auction data", so the two pages agree. Falls back to
+  // "collected" wording when only our fetch time is known, rather than
+  // labelling a fetch time as a publish.
+  el.appendChild(document.createTextNode(
+    isPublish ? "Auction data published " : "Auction data collected "));
   const span = document.createElement("span");
   span.className = "age" + (mins > STALE_AFTER_MINUTES ? " stale" : "");
   span.textContent = age;
@@ -371,7 +372,7 @@ function renderRows(rows) {
   if (!rows.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 7;
+    td.colSpan = 5;
     td.className = "muted";
     td.textContent = "No +Speed listings matched.";
     tr.appendChild(td);
@@ -451,26 +452,7 @@ function renderRows(rows) {
     priceTd.appendChild(moneyEl(r.price_copper));
     tr.appendChild(priceTd);
 
-    const gapTd = document.createElement("td");
-    gapTd.className = "num";
-    if (r.gap_x) {
-      const span = document.createElement("span");
-      // A gap built on 2-3 realms is dimmed rather than hidden: the
-      // project's "flag, never silently filter" rule applies to the UI too.
-      span.className = r.speed_realm_count >= 4 ? "gap" : "thin";
-      span.textContent = r.gap_x.toFixed(1) + "x";
-      gapTd.appendChild(span);
-    } else {
-      gapTd.textContent = "—";
-      gapTd.title = "only one realm lists this item with +Speed — no reference to compare against";
-    }
-    tr.appendChild(gapTd);
 
-    const realmsTd = document.createElement("td");
-    realmsTd.className = "num muted";
-    realmsTd.textContent = r.speed_realm_count;
-    realmsTd.title = r.speed_listing_count + " +Speed listing(s) region-wide";
-    tr.appendChild(realmsTd);
 
     tbody.appendChild(tr);
   }
@@ -504,7 +486,7 @@ async function runScan() {
     const data = await res.json();
     currentRegion = data.region;
     renderRows(data.rows);
-    renderCollected(data.collected_ts);
+    renderCollected(data.collected_ts, data.collected_is_publish);
     const scope = data.name_filter ? ' matching "' + data.name_filter + '"' : "";
     $("count").textContent = data.count + " +Speed listing(s)" + scope
       + " — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();

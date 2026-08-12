@@ -15,6 +15,8 @@ bearing beyond ordinary coverage:
    contain bonus 42" passes every naive test while silently matching 142,
    420 and 1042 -- which would quietly turn the whole feature into noise.
 """
+import json
+
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -26,6 +28,7 @@ import blizz
 import dashboard
 import fetch_snapshot
 import item_names
+import scan_region
 import speed_check
 from db import User
 from scan_region import LISTING_SCHEMA
@@ -601,6 +604,15 @@ UNVERIFIED_USER = User(email="u@example.com", hashed_password="x", is_active=Tru
 
 
 @pytest.fixture(autouse=True)
+def isolate_publish_state(tmp_path, monkeypatch):
+    """/api/speed's freshness figure reads scan_region's publish state (see
+    dashboard._region_published_ts). Point it at tmp_path so tests can't
+    depend on -- or be broken by -- whatever the real, gitignored local sweep
+    state happens to contain."""
+    monkeypatch.setattr(scan_region, "DATA", tmp_path)
+
+
+@pytest.fixture(autouse=True)
 def stub_realm_info(monkeypatch):
     monkeypatch.setattr(dashboard, "_realm_info_cache", {})
     monkeypatch.setattr(blizz, "connected_realm_realms",
@@ -653,9 +665,10 @@ def test_api_speed_returns_rows(listings_dir, monkeypatch):
     assert top_row["speed_region_median_g"] == 1000
     assert top_row["plain_cheapest_g"] == 100
     assert top_row["gap_x"] == pytest.approx(5.0)
-    # Freshness of the sweep these rows came from (Blizzard republishes
-    # hourly, so the user needs to know how old this is before acting).
+    # Freshness. With no publish state recorded, this falls back to the
+    # sweep's own fetch time.
     assert body["collected_ts"] == T1
+    assert body["fetched_ts"] == T1
 
 
 def test_api_speed_reports_collected_ts_even_with_no_matches(listings_dir, monkeypatch):
@@ -771,3 +784,34 @@ def test_speed_page_serves(listings_dir):
     r = client.get("/speed")
     assert r.status_code == 200
     assert "+Speed" in r.text
+
+
+def test_collected_ts_prefers_blizzards_publish_time(listings_dir, monkeypatch, tmp_path):
+    """The bug this fixes: /dashboard showed Blizzard's Last-Modified while
+    /speed showed `int(time.time())` from when our scanner ran, so the two
+    pages disagreed by the scan lag (~4 min live) for the same data. The
+    headline number is now the publish moment, with the fetch time kept
+    separately."""
+    as_user(monkeypatch, VERIFIED_USER)
+    published = T1 - 240  # Blizzard published 4 minutes before we fetched
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "sweep_publish.json").write_text(json.dumps({
+        "1111": {"published_ts": published, "last_modified": "x"},
+        "2222": {"published_ts": published + 1, "last_modified": "x"},
+    }))
+    monkeypatch.setattr(scan_region, "DATA", tmp_path)
+
+    body = client.get("/api/speed", params={"top": 100}).json()
+    # Oldest publish across realms, so the figure is never fresher than the
+    # stalest data on the page.
+    assert body["collected_ts"] == published
+    assert body["fetched_ts"] == T1
+
+
+def test_collected_ts_falls_back_when_no_publish_state(listings_dir, monkeypatch):
+    """A volume with listings but no recorded sweep state still has to report
+    something rather than blanking the freshness line."""
+    as_user(monkeypatch, VERIFIED_USER)
+    body = client.get("/api/speed", params={"top": 100}).json()
+    assert body["collected_ts"] == T1
