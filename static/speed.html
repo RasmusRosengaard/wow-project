@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>+Speed Scan — Realm Arbitrage</title>
+<!-- noindex while this is experimental, same reasoning as watchlist.html:
+     an indexed half-finished tool is a thin-content signal against the whole
+     site. Drop this tag (and add /speed to sitemap.xml) when it graduates. -->
+<meta name="robots" content="noindex, follow">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<script>
+  (function () {
+    var saved = localStorage.getItem("theme");
+    var theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --paper: #f6f7f5;
+    --card: #ffffff;
+    --hairline: #d8dbd4;
+    --hairline-strong: #c3c8bd;
+    --ink: #14161a;
+    --text-dim: #5b6259;
+    --bullion: #a67c2e;
+    --bullion-dim: #8a6624;
+    --verified: #2f7d72;
+    --verified-bg: rgba(47,125,114,0.08);
+    --alert: #b0392f;
+    --alert-bg: rgba(176,57,47,0.08);
+    --coin-gold: #d4af37; --coin-silver: #b7b7b7; --coin-copper: #b87333;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #14161a;
+    --card: #1b1e24;
+    --hairline: #333844;
+    --hairline-strong: #454b59;
+    --ink: #e8eaed;
+    --text-dim: #8b93a3;
+    --bullion: #d4af61;
+    --bullion-dim: #b8934f;
+    --verified: #3fa9a0;
+    --verified-bg: rgba(63,169,160,0.14);
+    --alert: #e0645a;
+    --alert-bg: rgba(224,100,90,0.14);
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: var(--paper); color: var(--ink); min-height: 100vh;
+  }
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 1rem; padding: 1rem 1.5rem; background: var(--card);
+    border-bottom: 1px solid var(--hairline-strong);
+  }
+  .brand { display: flex; align-items: center; gap: 0.6rem; }
+  .brand-link { display: contents; text-decoration: none; color: inherit; }
+  .brand h1 {
+    font-size: 1.05rem; margin: 0; font-weight: 800; letter-spacing: -0.01em;
+    text-transform: uppercase; color: var(--ink);
+  }
+  .seal { --coin: var(--bullion); --line: var(--ink); flex-shrink: 0; }
+  .nav { display: flex; gap: 0.4rem; align-items: center; }
+  .nav a, .nav button {
+    background: transparent; border: 1px solid transparent; color: var(--text-dim);
+    border-radius: 4px; padding: 0.45rem 0.8rem; cursor: pointer; font-size: 0.8rem;
+    text-decoration: none; font-weight: 600; font-family: inherit; text-transform: none;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  }
+  .nav a:hover, .nav button:hover { background: var(--paper); border-color: var(--hairline-strong); color: var(--ink); }
+  .nav a.active { color: var(--bullion); font-weight: 700; cursor: default; }
+  .nav a.active:hover { background: transparent; border-color: transparent; }
+  #theme-toggle { font-size: 1rem; line-height: 1; padding: 0.45rem 0.6rem; }
+
+  .shell { display: flex; justify-content: center; padding: 2rem 1.5rem 3rem; }
+  .wrap { max-width: 1600px; width: 100%; display: flex; flex-direction: column; gap: 1.5rem; }
+  h2 { font-size: 1.1rem; margin: 0; font-weight: 800; letter-spacing: -0.01em; }
+  .card {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: 6px;
+    padding: 1.25rem 1.5rem; display: flex; flex-direction: column; gap: 0.9rem;
+  }
+  .card p { margin: 0; font-size: 0.85rem; line-height: 1.6; color: var(--text-dim); }
+  .upsell { font-size: 0.9rem; }
+  .upsell a { color: var(--bullion); font-weight: 700; text-decoration: none; }
+  .upsell a:hover { text-decoration: underline; }
+  /* The experimental banner is deliberately loud and permanent, not a
+     dismissible toast: every number on this page is un-validated (no gold
+     check, no AH cut, no sell-realm price), and a user who misses that
+     reads gap_x as a profit multiple. */
+  .experiment {
+    border-left: 3px solid var(--bullion); background: var(--paper);
+    padding: 0.8rem 1rem; font-size: 0.82rem; line-height: 1.6; color: var(--text-dim);
+    border-radius: 0 4px 4px 0;
+  }
+  .experiment strong { color: var(--ink); }
+
+  label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
+  input[type=text], input[type=number], .field select {
+    background: var(--paper); border: 1px solid var(--hairline-strong); color: var(--ink);
+    border-radius: 3px; padding: 0.5rem 0.6rem; font-size: 0.85rem; font-family: inherit; width: 100%;
+  }
+  button {
+    background: var(--bullion); border: 1px solid var(--bullion); color: #fff;
+    border-radius: 3px; padding: 0.55rem 1rem; cursor: pointer; font-size: 0.8rem;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    font-family: inherit; white-space: nowrap;
+  }
+  button:hover { background: var(--bullion-dim); border-color: var(--bullion-dim); }
+  button:disabled { opacity: 0.55; cursor: default; }
+  .row { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
+  .field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .field.narrow { width: 120px; }
+  .field.grow { flex: 1; min-width: 140px; }
+  .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
+  .info-icon {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%; background: var(--hairline-strong);
+    color: var(--text-dim); font-size: 0.65rem; font-weight: 700; font-style: normal;
+    text-transform: none; letter-spacing: normal; cursor: help; margin-left: 0.4rem;
+    vertical-align: middle;
+  }
+  .info-icon:hover, .info-icon:focus { background: var(--bullion); color: #fff; outline: none; }
+  .info-icon .info-tooltip {
+    display: none; position: absolute; top: 135%; left: 0; z-index: 50;
+    background: var(--card); border: 1px solid var(--hairline-strong); border-radius: 4px;
+    padding: 0.55rem 0.7rem; font-size: 0.76rem; font-weight: 400; color: var(--ink);
+    width: 280px; line-height: 1.45; box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+    text-align: left;
+  }
+  .info-icon:hover .info-tooltip, .info-icon:focus .info-tooltip { display: block; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--hairline-strong); white-space: nowrap; }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  th.num, td.num { text-align: right; }
+  .item-cell { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+  .item-icon { width: 26px; height: 26px; border-radius: 4px; flex-shrink: 0; border: 1px solid var(--hairline-strong); box-shadow: inset 0 0 0 3px var(--q, transparent); background: var(--paper); }
+  .item-name { font-weight: 600; }
+  /* Money renders as WoW gold/silver/copper coins, copied from
+     dashboard.html rather than reinvented -- a plain localized number is
+     genuinely ambiguous here (a da-DK browser renders 25,000g as "25.000",
+     indistinguishable at a glance from this page's real sub-gold prices
+     like 0.01), and the rest of the product already speaks coins. */
+  .money { white-space: nowrap; font-variant-numeric: tabular-nums;
+           font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+  .money-part { display: inline-flex; align-items: center; gap: 3px; margin-right: 7px; }
+  .coin {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    box-shadow: inset -1px -1px 1px rgba(0,0,0,0.35), inset 1px 1px 1px rgba(255,255,255,0.5);
+  }
+  .coin-gold   { background: radial-gradient(circle at 35% 30%, #f3d78a, var(--coin-gold) 55%, #a3821f); }
+  .coin-silver { background: radial-gradient(circle at 35% 30%, #f4f4f4, var(--coin-silver) 55%, #7c7c7c); }
+  .coin-copper { background: radial-gradient(circle at 35% 30%, #dba573, var(--coin-copper) 55%, #7a4a20); }
+  td.num .money { display: inline-flex; justify-content: flex-end; }
+  .muted { color: var(--text-dim); }
+  .variant { font-size: 0.75rem; color: var(--text-dim); }
+  .gap { font-weight: 700; color: var(--bullion); }
+  .thin { color: var(--text-dim); font-weight: 400; }
+  .count { font-size: 0.8rem; color: var(--text-dim); }
+  .caveat { font-size: 0.78rem; color: var(--text-dim); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">
+    <a href="/" class="brand-link" aria-label="Realm Arbitrage home">
+    <svg class="seal" width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+      <defs>
+        <mask id="seal-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+          <rect width="32" height="32" fill="#fff"/>
+          <circle cx="16" cy="16" r="6.4" fill="none" stroke="#7a7a7a" stroke-width="0.7"/>
+          <g stroke="#000" stroke-width="1.5" stroke-linecap="round">
+            <line x1="16" y1="6" x2="16" y2="12.4"/>
+            <line x1="16" y1="19.6" x2="16" y2="26"/>
+            <line x1="6" y1="16" x2="12.4" y2="16"/>
+            <line x1="19.6" y1="16" x2="26" y2="16"/>
+          </g>
+          <circle cx="16" cy="16" r="1.5" fill="#000"/>
+        </mask>
+      </defs>
+      <circle cx="16" cy="16" r="12.2" fill="none" stroke="var(--line)" stroke-width="0.9" opacity="0.55"/>
+      <circle cx="16" cy="16" r="9" fill="var(--coin)" mask="url(#seal-cut)"/>
+      <g stroke="var(--line)" stroke-width="1.5" stroke-linecap="round">
+        <line x1="16" y1="1.5" x2="16" y2="6.2"/>
+        <line x1="16" y1="25.8" x2="16" y2="30.5"/>
+        <line x1="1.5" y1="16" x2="6.2" y2="16"/>
+        <line x1="25.8" y1="16" x2="30.5" y2="16"/>
+      </g>
+    </svg>
+    <h1>Realm Arbitrage</h1>
+    </a>
+  </div>
+  <div class="nav">
+    <button id="theme-toggle" title="Switch to dark mode" aria-label="Switch to dark mode">&#9789;</button>
+    <a href="/snipes">Dashboard</a>
+    <a href="/speed" class="active">+Speed</a>
+    <a href="/watchlist">Watchlist</a>
+    <a href="/snipe-board">Snipe Board</a>
+    <a href="/pricing" id="nav-pricing">Pricing</a>
+    <a href="/profile" id="nav-profile" style="display:none;">Profile</a>
+    <a href="/login" id="nav-login">Log in</a>
+    <button id="nav-logout" style="display:none;">Log out</button>
+  </div>
+</div>
+<div class="shell">
+<div class="wrap">
+  <div>
+    <h2>+Speed Scan<span class="info-icon" tabindex="0">?<span class="info-tooltip">Every current EU listing carrying the +Speed tertiary stat (bonus id 42), straight from the raw region scan. No sell realm, no discount rule, no AH cut &mdash; this is a census, not a snipe list.</span></span></h2>
+  </div>
+
+  <div id="logged-out-card" class="card" style="display:none;">
+    <p class="upsell">Log in to use the +Speed scan. <a href="/login">Log in &rarr;</a></p>
+  </div>
+
+  <div id="unverified-card" class="card" style="display:none;">
+    <p class="upsell">Confirm your email address to use the +Speed scan. <a href="/profile">Profile &rarr;</a></p>
+  </div>
+
+  <div id="app" style="display:none;">
+    <div class="card">
+      <div class="experiment">
+        <strong>Experimental.</strong> These rows are unfiltered raw auction data &mdash;
+        the +Speed tertiary is invisible to the normal snipe pricing, which pools every
+        variant of an item under one price, so none of this shows up on the Dashboard.
+        Nothing here is validated as profitable: <strong>no gold check, no AH cut, no
+        sell-realm price.</strong> &ldquo;Gap&rdquo; compares a listing to the median of
+        the per-realm cheapest +Speed listings of the same item &mdash; thin, and
+        meaningless where only a realm or two lists it. Sort and judge by eye.
+      </div>
+
+      <div class="row">
+        <div class="field narrow">
+          <label for="sort">Sort</label>
+          <select id="sort">
+            <option value="gap">Biggest gap</option>
+            <option value="price">Cheapest first</option>
+            <option value="price_desc">Priciest first</option>
+            <option value="median">Typical price</option>
+            <option value="item">Item id</option>
+          </select>
+        </div>
+        <div class="field narrow">
+          <label for="min-gold">Min gold</label>
+          <input type="number" id="min-gold" min="0" step="100" placeholder="any">
+        </div>
+        <div class="field narrow">
+          <label for="max-gold">Max gold</label>
+          <input type="number" id="max-gold" min="0" step="100" placeholder="any">
+        </div>
+        <div class="field narrow">
+          <label for="min-gap">Min gap (x)</label>
+          <input type="number" id="min-gap" min="0" step="0.5" placeholder="none">
+        </div>
+        <div class="field narrow">
+          <label for="top">Rows</label>
+          <input type="number" id="top" min="1" step="10" value="100">
+        </div>
+        <div class="field grow">
+          <label for="items">Item ids (optional)</label>
+          <input type="text" id="items" placeholder="e.g. 204414,204422">
+        </div>
+        <button id="run-btn">Scan</button>
+      </div>
+      <div class="error" id="error"></div>
+      <div class="count" id="count"></div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Realm</th>
+              <th class="num">Price</th>
+              <th class="num">Typical +Speed<span class="info-icon" tabindex="0">?<span class="info-tooltip">Median of the cheapest +Speed listing on each realm that has one. Per-realm floors are medianed rather than raw auctions, so a realm with many sellers doesn&rsquo;t dominate the number.</span></span></th>
+              <th class="num">Gap</th>
+              <th class="num">Plain cheapest<span class="info-icon" tabindex="0">?<span class="info-tooltip">Cheapest listing of the same item WITHOUT any tertiary, region-wide. This is roughly what the normal snipe pricing would value the item at &mdash; if the listing price is near this, the seller priced the +Speed at nothing.</span></span></th>
+              <th class="num">Realms</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="caveat" id="caveat"></div>
+    </div>
+  </div>
+</div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function showLoggedOut() { $("logged-out-card").style.display = "flex"; }
+function showUnverified() { $("unverified-card").style.display = "flex"; }
+
+// WoW gold/silver/copper, formatted only at this display boundary -- the API
+// sends raw copper end to end (CLAUDE.md's units rule). Built as DOM nodes
+// rather than dashboard.html's innerHTML template string: this page renders
+// every cell via textContent, and keeping one escaping discipline throughout
+// is easier to hold than two.
+function moneyEl(copper) {
+  const span = document.createElement("span");
+  if (copper === null || copper === undefined) { span.textContent = "—"; return span; }
+  copper = Math.round(copper);
+  const gold = Math.floor(copper / 10000);
+  const silver = Math.floor((copper % 10000) / 100);
+  const bronze = copper % 100;
+  span.className = "money";
+  const part = (value, coinClass) => {
+    const p = document.createElement("span");
+    p.className = "money-part";
+    p.appendChild(document.createTextNode(String(value)));
+    const c = document.createElement("span");
+    c.className = "coin " + coinClass;
+    p.appendChild(c);
+    span.appendChild(p);
+  };
+  if (gold > 0) part(gold.toLocaleString(), "coin-gold");
+  if (gold > 0 || silver > 0) part(silver, "coin-silver");
+  part(bronze, "coin-copper");
+  return span;
+}
+
+// Rarity is shown as the inset ring around the icon, never as the item
+// name's text colour -- dashboard.html made that call deliberately because
+// most of Blizzard's quality palette fails contrast as text on this design's
+// light "paper" background. Same reasoning applies here.
+const QUALITY_COLORS = {
+  POOR: "#9d9d9d", COMMON: "#ffffff", UNCOMMON: "#1eff00", RARE: "#0070dd",
+  EPIC: "#a335ee", LEGENDARY: "#ff8000", ARTIFACT: "#e6cc80", HEIRLOOM: "#00ccff",
+};
+
+function renderRows(rows) {
+  const tbody = $("rows");
+  tbody.innerHTML = "";
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 7;
+    td.className = "muted";
+    td.textContent = "No +Speed listings matched.";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+
+    const itemTd = document.createElement("td");
+    const cell = document.createElement("div");
+    cell.className = "item-cell";
+    if (r.icon) {
+      const img = document.createElement("img");
+      img.className = "item-icon";
+      img.src = r.icon;
+      img.alt = "";
+      img.loading = "lazy";
+      if (r.quality && QUALITY_COLORS[r.quality]) img.style.setProperty("--q", QUALITY_COLORS[r.quality]);
+      cell.appendChild(img);
+    }
+    const nameWrap = document.createElement("div");
+    const nameEl = document.createElement("div");
+    nameEl.className = "item-name";
+    // textContent, never innerHTML: item names come from the Blizzard API,
+    // but the variant string and anything else here still goes through the
+    // same discipline the rest of the app uses.
+    nameEl.textContent = r.name || String(r.item_id);
+    const variantEl = document.createElement("div");
+    variantEl.className = "variant";
+    variantEl.textContent = r.variant || "";
+    variantEl.title = r.variant_raw || "";
+    nameWrap.appendChild(nameEl);
+    nameWrap.appendChild(variantEl);
+    cell.appendChild(nameWrap);
+    itemTd.appendChild(cell);
+    tr.appendChild(itemTd);
+
+    const realmTd = document.createElement("td");
+    realmTd.textContent = r.realm_name;
+    if (r.realm_category) realmTd.title = r.realm_category;
+    tr.appendChild(realmTd);
+
+    const priceTd = document.createElement("td");
+    priceTd.className = "num";
+    priceTd.appendChild(moneyEl(r.price_copper));
+    tr.appendChild(priceTd);
+
+    const medTd = document.createElement("td");
+    medTd.className = "num muted";
+    medTd.appendChild(moneyEl(r.speed_region_median_copper));
+    tr.appendChild(medTd);
+
+    const gapTd = document.createElement("td");
+    gapTd.className = "num";
+    if (r.gap_x) {
+      const span = document.createElement("span");
+      // A gap built on 2-3 realms is dimmed rather than hidden: the
+      // project's "flag, never silently filter" rule applies to the UI too.
+      span.className = r.speed_realm_count >= 4 ? "gap" : "thin";
+      span.textContent = r.gap_x.toFixed(1) + "x";
+      gapTd.appendChild(span);
+    } else {
+      gapTd.textContent = "—";
+      gapTd.title = "only one realm lists this item with +Speed — no reference to compare against";
+    }
+    tr.appendChild(gapTd);
+
+    const plainTd = document.createElement("td");
+    plainTd.className = "num muted";
+    plainTd.appendChild(moneyEl(r.plain_cheapest_copper));
+    tr.appendChild(plainTd);
+
+    const realmsTd = document.createElement("td");
+    realmsTd.className = "num muted";
+    realmsTd.textContent = r.speed_realm_count;
+    realmsTd.title = r.speed_listing_count + " +Speed listing(s) region-wide";
+    tr.appendChild(realmsTd);
+
+    tbody.appendChild(tr);
+  }
+}
+
+async function runScan() {
+  const btn = $("run-btn");
+  btn.disabled = true;
+  $("error").textContent = "";
+  $("count").textContent = "Scanning every EU realm's listings…";
+  const params = new URLSearchParams({ sort: $("sort").value, top: $("top").value, names: "true" });
+  const minGold = $("min-gold").value, maxGold = $("max-gold").value;
+  const minGap = $("min-gap").value, items = $("items").value.trim();
+  if (minGold) params.set("min_gold", minGold);
+  if (maxGold) params.set("max_gold", maxGold);
+  if (minGap) params.set("min_gap", minGap);
+  if (items) params.set("items", items);
+  try {
+    const res = await fetch("/api/speed?" + params.toString());
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || ("request failed (" + res.status + ")"));
+    }
+    const data = await res.json();
+    renderRows(data.rows);
+    $("count").textContent = data.count + " +Speed listing(s) — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();
+    $("caveat").textContent = data.caveat;
+  } catch (e) {
+    $("error").textContent = e.message;
+    $("count").textContent = "";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("run-btn").addEventListener("click", runScan);
+
+(async function init() {
+  const me = await fetch("/api/me").catch(() => null);
+  if (!me || !me.ok) { showLoggedOut(); applyThemeButtonState(); return; }
+  const data = await me.json();
+  // /api/me returns 200 for anonymous visitors too (see dashboard.py) --
+  // .ok alone doesn't mean logged in, same trap watchlist.html documents.
+  if (data.is_anonymous) { showLoggedOut(); applyThemeButtonState(); return; }
+  $("nav-pricing").remove();
+  $("nav-login").remove();
+  $("nav-profile").style.display = "inline-block";
+  $("nav-logout").style.display = "inline-block";
+
+  // Mirrors /api/speed's own 403: a password account that never clicked the
+  // confirmation link can log in nowhere anyway (2026-08-09 gate), but an
+  // account can also reach this page mid-flow.
+  if (data.is_verified === false) { showUnverified(); applyThemeButtonState(); return; }
+
+  $("app").style.display = "block";
+  applyThemeButtonState();
+  await runScan();
+})();
+
+$("nav-logout").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+  window.location.href = "/login";
+});
+
+function applyThemeButtonState() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  const btn = $("theme-toggle");
+  btn.textContent = dark ? "☀" : "☽";
+  const label = dark ? "Switch to light mode" : "Switch to dark mode";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+$("theme-toggle").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  applyThemeButtonState();
+});
+applyThemeButtonState();
+</script>
+</body>
+</html>

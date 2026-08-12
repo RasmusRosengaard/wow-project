@@ -40,6 +40,7 @@ import fetch_snapshot
 import forum
 import mailer
 import snipe_check
+import speed_check
 import watchlist
 import wow_accounts
 from auth import (UserCreate, UserRead, auth_backend, current_active_user, current_subscribed_user,
@@ -908,6 +909,125 @@ async def api_snipes(request: Request, sell: int, items: str | None = None,
     }
 
 
+def _speed_row_to_json(r: dict, names: NameCache | None) -> dict:
+    """Deliberately its own serializer, not _row_to_json(). That one is
+    shaped around a snipe (buy_realm/sell_now/discount/appearance...), none
+    of which exists here -- reusing it would have meant either faking those
+    fields or widening a function the whole snipe path depends on. Both
+    `_g` and `_copper` variants are exposed per CLAUDE.md's money rule."""
+    def g(copper):
+        return None if copper is None else copper / 10_000
+
+    return {
+        "realm": r["cr_id"],
+        "realm_name": _realm_info(r["cr_id"])["name"] or str(r["cr_id"]),
+        "realm_category": _realm_info(r["cr_id"]).get("category"),
+        "item_id": r["item_id"],
+        "auction_id": r["auction_id"],
+        "name": names.get(r["item_id"]) if names else None,
+        "icon": names.icon(r["item_id"]) if names else None,
+        "quality": names.quality(r["item_id"]) if names else None,
+        "variant": _variant_label(r["bonus_key"] or "", r["item_id"], names),
+        "variant_raw": r["bonus_key"] or None,
+        "quantity": r["quantity"],
+        "price_copper": r["unit_price"],
+        "price_g": g(r["unit_price"]),
+        "speed_region_median_copper": r["speed_region_median"],
+        "speed_region_median_g": g(r["speed_region_median"]),
+        "plain_cheapest_copper": r["plain_cheapest"],
+        "plain_cheapest_g": g(r["plain_cheapest"]),
+        "gap_x": r["gap_x"],
+        "speed_realm_count": r["speed_realm_count"],
+        "speed_listing_count": r["speed_listing_count"],
+    }
+
+
+@app.get("/api/speed")
+async def api_speed(request: Request, items: str | None = None,
+                    min_gold: float | None = None, max_gold: float | None = None,
+                    min_gap: float | None = None,
+                    top: int = 50, sort: str = Query("gap"), names: bool = False) -> dict:
+    """Experimental +Speed listing census (2026-08-12). **Shares no filter,
+    threshold or pricing logic with /api/snipes** -- no discount, no sell
+    realm, no AH cut, no junk/value floor, no class quotas, no appearance or
+    sale-rate filter. Raw region-scan listings carrying bonus id 42, with
+    context columns attached for sorting only (see
+    speed_check.find_speed_listings()).
+
+    Auth, and the open question in it: this route requires a logged-in,
+    verified account, unlike /api/snipes' anonymous tier. Reason -- it is
+    region-wide by construction, so unlike the snipe path there is no sell
+    realm for _enforce_realm_lock() to pin, and the free tier's one-realm
+    lock simply has nothing to bite on here. Gating the whole route was the
+    conservative default for an experimental signal that may carry real
+    value; **it is a product decision the human should confirm**, and
+    opening it up is a one-line change (drop the 401/403 below and mirror
+    api_snipes()'s anonymous fallthrough).
+
+    auth.resolve_user_from_request() rather than Depends(current_verified_user)
+    for the same reason api_snipes() uses it (2026-08-01 Postgres pool
+    exhaustion incident): the Depends() chain holds a pooled connection
+    checked out for this route's entire duration, including the slow DuckDB
+    scan below. This resolves the user through its own session that closes
+    in milliseconds.
+    """
+    user = await auth.resolve_user_from_request(request)
+    if user is None:
+        raise HTTPException(401, "log in to use the +Speed scan")
+    # 403, not 401, so the frontend can tell "not logged in" from "logged in
+    # but unverified" -- same convention as auth.current_verified_user.
+    if not user.is_verified:
+        raise HTTPException(403, "confirm your email address to use the +Speed scan")
+
+    not_ready = speed_check.check_data_ready()
+    if not_ready:
+        raise HTTPException(400, not_ready)
+    if sort not in speed_check.SORT_COLUMNS:
+        raise HTTPException(400, f"sort must be one of {sorted(speed_check.SORT_COLUMNS)}")
+    # Row cap reuses the existing per-tier snipe numbers rather than
+    # inventing a second set -- no new product numbers were mandated for
+    # this experimental feature, and picking my own would be exactly the
+    # kind of un-asked-for calibration CLAUDE.md rules out.
+    top = min(top, _snipe_cap(user))
+
+    item_ids = snipe_check.parse_items(items, None)
+
+    def _run_query() -> list:
+        con = speed_check.connect()
+        try:
+            return speed_check.find_speed_listings(
+                con, items=item_ids, min_gold=min_gold, max_gold=max_gold,
+                min_gap=min_gap, top=top, sort=sort)
+        finally:
+            con.close()
+
+    # to_thread for both stages, per the blocking-event-loop failure mode
+    # this app has already hit twice (2026-07-25 and 2026-07-26, see
+    # .claude/docs/matching.md): the DuckDB scan is a multi-second CPU/IO
+    # burn over every realm's parquet, and names=true's NameCache lookups
+    # fall back to blocking Blizzard calls on a cold cache. Neither may run
+    # on the event loop.
+    rows = await asyncio.to_thread(_run_query)
+
+    def _build_rows() -> list[dict]:
+        name_cache = NameCache() if names else None
+        if name_cache is not None:
+            ids = [r["item_id"] for r in rows]
+            name_cache.ensure_many(ids, max_workers=24,
+                                   deadline_seconds=LIVE_RESOLVE_DEADLINE_SECONDS)
+            name_cache.ensure_icons_many(ids, max_workers=24,
+                                         deadline_seconds=LIVE_RESOLVE_DEADLINE_SECONDS)
+        out = [_speed_row_to_json(r, name_cache) for r in rows]
+        if name_cache is not None:
+            name_cache.save()
+        return out
+
+    out_rows = await asyncio.to_thread(_build_rows)
+    return {"rows": out_rows, "count": len(out_rows), "caveat": speed_check.CAVEAT,
+            "region": blizz.REGION, "tertiary": "Speed",
+            "bonus_id": speed_check.SPEED_BONUS_ID}
+
+
 def _realms_payload(cr_ids: list[int]) -> list[dict]:
     realms = []
     for cr_id in cr_ids:
@@ -1140,6 +1260,16 @@ def snipe_board_page() -> FileResponse:
     forum.py/`/api/forum/*` (module name doesn't need to track the
     user-facing label, same precedent as dashboard.py serving `/snipes`)."""
     return FileResponse(ROOT / "static" / "snipeboard.html")
+
+
+@app.get("/speed")
+def speed_page() -> FileResponse:
+    """Experimental +Speed listing census (2026-08-12). Public route serving
+    the static file only -- speed.html gates itself client-side off /api/me
+    like every other page here, and the data behind it is gated for real by
+    /api/speed's own auth check (see api_speed()'s docstring, including the
+    open product question about that gate)."""
+    return FileResponse(ROOT / "static" / "speed.html")
 
 
 @app.get("/watchlist")

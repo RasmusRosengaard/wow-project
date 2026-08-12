@@ -437,3 +437,35 @@ its validation error inline — zero console errors throughout. Every other
 authenticated page's nav (`dashboard.html`/`snipeboard.html`/`profile.html`)
 already had a `Watchlist` link from the placeholder's original addition;
 unchanged by this rebuild.
+
+## `speed.html` (experimental, 2026-08-12)
+
+The `/speed` tab: the +Speed tertiary census. Controls are sort / min gold /
+max gold / min gap / rows / item ids, all **empty by default** — the page
+ships no filter of its own, matching the un-calibrated backend.
+
+A permanent, non-dismissible banner states that the rows are raw auction data
+with **no gold check, no AH cut and no sell-realm price**. That is load-bearing
+copy, not decoration: without it `gap_x` reads as a profit multiple, which it
+is not.
+
+Two conventions it inherits rather than reinvents, both learned the hard way
+elsewhere in this app:
+
+- **Money renders as WoW gold/silver/copper coins** (`moneyEl()`), not a
+  localized decimal. A plain `toLocaleString()` was tried first and is
+  genuinely ambiguous on this page: a da-DK browser renders 25,000g as
+  "25.000", indistinguishable at a glance from the real sub-gold prices this
+  census surfaces (0.01g rows exist). Built from DOM nodes rather than
+  `dashboard.html`'s innerHTML template string, since every other cell here
+  goes through `textContent` and one escaping discipline is easier to hold
+  than two.
+- **Rarity is the inset ring around the icon, never the item name's text
+  colour** — `dashboard.html` made that call deliberately because most of
+  Blizzard's quality palette fails contrast as text on the light `--paper`
+  ground. An early draft of this page coloured the name and had to be
+  corrected.
+
+A `gap_x` built on fewer than 4 realms renders dimmed rather than hidden
+(`.thin`) — the "flag, never silently filter" rule applies to the UI too.
+A single-realm item shows "—" with a tooltip saying why, rather than a number.

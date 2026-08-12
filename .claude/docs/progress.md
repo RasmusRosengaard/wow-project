@@ -7,7 +7,21 @@ file is the scannable summary, kept short on purpose (restructured
 2026-07-25 after both this file and `CLAUDE.md` grew past the size of the
 entire codebase — see `history.md`'s "Full project cleanup pass" entry).
 
-Last updated: 2026-08-03 — new heuristic, **`price_suspect`**
+Last updated: 2026-08-12 — new **experimental** feature, the **+Speed scan**
+(`speed_check.py`, `/api/speed`, `static/speed.html`): a region-wide census of
+listings carrying the +Speed tertiary (`b:` bonus id 42), built because the
+2026-07-26 item_id-only matching makes tertiary stats invisible to pricing.
+Fully additive — reads only the raw region scan, needs no sell realm or
+snapshots, and shares no filter/threshold with `snipe_check.py`. Bonus-id
+mapping (40 Avoidance / 41 Leech / 42 Speed / 43 Indestructible) was
+**verified against a real listed item's tooltip**, plus corroborated by mutual
+exclusivity across 7,932 live bonus_keys. **Deliberately un-calibrated**: no
+default filter or cutoff — the human deferred gold validation to a later pass,
+so it lists and sorts only. Auth gate (verified login) and the eventual gold
+validation are the two open decisions. Requires a verified login; row caps
+reuse the existing tier numbers.
+
+2026-08-03 — new heuristic, **`price_suspect`**
 (`snipe_check.py`'s `PRICE_SUSPECT_MULTIPLE=10`): flags a row when the sell
 realm's own reference price is >= 10x the EU region median — a recalibrated
 revival of the `sell_price_suspect` flag removed 2026-07-31 (median instead

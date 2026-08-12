@@ -3617,3 +3617,69 @@ Also produced: `static/img/youtube-avatar.png` (800x800) and
 wordmark at a hand-picked 96pt, which ran past YouTube's centred 1235x338 safe
 area and would have cropped the brand name on mobile; the generator now fits the
 type to that box and prints the measured extents so the failure can't be silent.
+
+---
+
+## 2026-08-12 — +Speed tertiary scan (experimental, additive)
+
+**Ask:** "an experimental feature, to identify items with the +speed bonus for
+cheap", clarified mid-build as "a new backend operation... these items may be
+100% of the value but with speed they might have the value of 10x", and "not
+using same filters etc as the rest of the data. Like discount doesn't matter
+now, we just want to list these items from the raw blizz data."
+
+**Establishing the bonus id, without guessing.** Auction data gives
+`bonus_lists` ints and nothing else; Blizzard exposes no bonus-id→stat
+mapping. Rather than trust a remembered community mapping, two independent
+checks were run. First, the shape of our own live data: ids 40/41/42/43 each
+appear on 4,000-8,700 listings across ~1,100-1,200 items while their immediate
+neighbours (39, 45) sit at ~250-300 — a ~20x cliff — and across **7,932
+distinct bonus_keys carrying any of the four, not one carried two of them**.
+Mutual exclusivity is exactly the shape a tertiary stat must have. Second,
+confirmation of *which is which*: item 241035 (Arathi Soldier's Morningstar, a
+real item from our own scan) was rendered with each id in turn and the tooltip
+read back — 40 → "+8 Avoidance", 41 → "+8 Leech", 42 → "+8 Speed", 43 →
+"Indestructible". So the mapping is verified, not assumed. Worth noting the
+naming trap found in passing: `b:42` and modifier type `m:42` are unrelated
+namespaces that happen to share a number.
+
+**Why the feature is justified at all.** The 2026-07-26 matching change prices
+every variant of an `item_id` at the sell realm's overall cheapest listing,
+which makes a tertiary invisible to pricing — and worse than invisible: a
++Speed listing compared against a cheap plain baseline looks *overpriced* and
+gets filtered out of the snipe path entirely. Measured over the live sweep
+(2,471,830 listings; 8,751 +Speed across 1,153 items), the cheapest +Speed
+listing of an item sat at a **median 11.4x** its cheapest plain listing, which
+matches the human's 10x intuition. That number was reported to them **with its
+confound stated**: plain listings are far more numerous, so their minimum is
+naturally lower and part of the multiple is sample-size asymmetry rather than a
+measured premium. Directional evidence, not a measured premium.
+
+**What was asked vs. decided.** Four options were put to the human rather than
+picked (per the pricing-calibration guardrail): baseline, aggregate+cutoff,
+tertiary scope, surface. They chose: *"just list them for now, we'll add gold
+validation later"*, *"no cutoff — sort by gap, I filter"*, Speed only, and
+CLI + API + a `/speed` tab. So the module computes a reference
+(`speed_region_median`, built from per-realm floors so a many-seller realm
+can't dominate it) and a `gap_x` purely to make sorting possible, and applies
+**no** default filter. `gap_x` is NULL for single-realm items rather than
+falling back to the plain price — inventing a reference there would have been
+exactly the un-mandated pricing decision the whole module is avoiding.
+
+**Two things caught in review of my own work.** (1) The `b:42` match must be
+element-wise after splitting on commas; a substring test passes casual testing
+while silently matching 142/420/1042. Pinned by explicit test vectors. (2)
+Real-browser verification (which the definition of done requires, and which
+paid off here) surfaced two frontend divergences from existing convention: the
+page had coloured item names by rarity, which `dashboard.html` deliberately
+does *not* do because Blizzard's quality palette fails contrast as text on the
+light ground; and it formatted gold with `toLocaleString()`, which on the
+human's da-DK browser renders 25,000g as "25.000" — indistinguishable from the
+genuine sub-gold prices this census surfaces (0.01g rows exist). Both were
+changed to match the rest of the app (rarity ring on the icon; WoW coin
+display).
+
+**Left open for the human**: the auth gate (verified-login-only was the
+conservative default, chosen because the census is region-wide and the free
+tier's one-realm lock has nothing to bite on — trivially reversible), and the
+deferred gold validation.

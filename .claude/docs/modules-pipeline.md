@@ -450,3 +450,64 @@ in an imported group are silently skipped (not crashed on). Covered by
 test vector (not synthetic) -- metadata (group name, 300-item count), item-id
 parsing, nested-subgroup-path handling, and error cases all re-derived through
 the real module.
+
+
+## `speed_check.py`
+
+**Experimental, additive, and deliberately off the pricing path** (added
+2026-08-12). A region-wide census of current listings carrying the **+Speed
+tertiary stat** (`b:` bonus-list id **42**). Reads `data/listings/*.parquet`
+and nothing else -- **no sell realm, no snapshots, no `analyze.connect()`**,
+so it neither depends on nor can disturb `snipe_check.py`. Nothing in the
+snipe path calls it.
+
+**Why it exists.** Since the 2026-07-26 matching change, pricing pools every
+bonus/ilvl variant of an item under one `item_id` priced at the sell realm's
+cheapest listing -- which makes a tertiary stat *invisible*. A +Speed piece is
+priced as if it were the plain version, so the snipe path can't flag one, and
+usually does the opposite (the +Speed listing looks overpriced against a cheap
+plain baseline and gets filtered out).
+
+**The verified bonus-id mapping** (`TERTIARY_BONUS_IDS`): **40 = Avoidance,
+41 = Leech, 42 = Speed, 43 = Indestructible**. Not assumed -- each id was
+rendered against a real item from our own scan data (241035, Arathi Soldier's
+Morningstar) and read back off the resulting tooltip. Corroborated by the
+shape of live data: across 7,932 distinct `bonus_key`s carrying any of the
+four, **none ever carried two** (the mutual exclusivity a tertiary must have),
+and the four sit ~20x above neighbouring ids in frequency. Only Speed is used
+(human scope decision); the other three are recorded because the mapping is
+the expensive part to re-derive.
+
+**Naming footgun:** `b:42` (this bonus-list id) is a completely different
+namespace from **modifier type 42** (`m:42=...`, the per-craft stat roll
+`market_key()` strips as noise). Same number, unrelated meanings.
+
+**Two implementations, one rule.** `has_speed()` (pure Python) and
+`SPEED_FILTER_SQL` (DuckDB, so ~2.5M listings filter in-engine) are kept
+honest by a parity test over **real** bonus_key vectors, same convention as
+`market_key()`/`MARKET_KEY_MACRO_SQL`. Both match ids **element-wise after
+splitting on commas** -- a substring test would match 142/420/1042 and quietly
+turn the feature into noise. `tests/test_speed_check.py` pins that explicitly.
+
+**Deliberately un-calibrated** (human decision, 2026-08-12): it flags nothing
+and filters nothing by default. Gold validation was explicitly deferred to a
+later pass, so the default output is a census sorted by `gap_x`, with
+`--min-gap`/`--min-gold`/`--max-gold` available but **no defaults**. Don't add
+a cutoff without the human (CLAUDE.md's pricing-calibration guardrail).
+Context columns: `speed_region_median` (median of the **per-realm cheapest**
++Speed listing, the same shape as `find_snipes()`'s `region_median_cheapest`,
+so a realm with many sellers can't dominate it), `speed_realm_count`/
+`speed_listing_count` (how thin that reference is -- surfaced, never used to
+drop rows), `plain_cheapest` (the same item's cheapest **non**-tertiary
+listing, i.e. roughly what the snipe path would price it at), and `gap_x`
+(median / this listing's price, **NULL** when only one realm lists it -- there
+is no honest reference, and falling back to the plain price would be inventing
+the pricing judgement this module exists to avoid). No 5% AH cut is applied:
+unlike a snipe, this row makes no buy-here/sell-there claim to take a cut out
+of.
+
+Measured on the live sweep it was built against (2,471,830 listings, 8,751
++Speed across 1,153 items): the cheapest +Speed listing of an item sat at a
+**median 11.4x** its cheapest plain listing. Read that with care -- plain
+listings are far more numerous so their minimum is naturally lower; part of
+the multiple is sample-size asymmetry, not a measured premium.

@@ -286,6 +286,30 @@ rows and unlocks switching sell realms freely; see `/pricing` for the full
 comparison. Sell realm is picked from a dropdown (`GET /api/realms`), not a
 free-typed id. See `CLAUDE.md`/`.claude/docs/progress.md` for current status.
 
+## +Speed scan (experimental)
+
+`/speed` — a separate tab listing every current EU listing that carries the
+**+Speed tertiary stat**, straight from the raw region scan. It exists because
+the normal snipe pricing pools every variant of an item under one price, which
+makes a tertiary stat invisible: a +Speed piece is priced as if it were the
+plain version, so it never surfaces on the Dashboard.
+
+It shares **no logic with the snipe path** — no discount rule, no sell realm,
+no AH cut, no value floor. It is a census, not a validated snipe list, and it
+deliberately **filters and flags nothing by default**: gold validation is a
+later pass. Each row shows the listing's price, the item's typical +Speed
+price (median of the cheapest +Speed listing per realm), the gap between them,
+and the cheapest *plain* listing of the same item for comparison. A gap built
+on only two or three realms is dimmed rather than hidden.
+
+Requires a logged-in, confirmed account (it's region-wide, so the free tier's
+one-realm lock doesn't apply to it). CLI equivalent:
+
+```
+python speed_check.py --top 50 --names
+python speed_check.py --min-gap 3 --max-gold 5000
+```
+
 ## Verification protocol (algorithm validation, not a setup step)
 
 This is how you'd independently check the sale-inference classification is

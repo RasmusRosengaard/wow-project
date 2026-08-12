@@ -730,3 +730,37 @@ gated through `auth.has_active_subscription()` in Python rather than an
 equivalent SQL `WHERE` — that helper is this app's single definition of
 "subscribed" (`is_superuser or subscription_status == "active"`), and
 re-expressing it as SQL would be a second copy free to drift.
+
+## `/api/speed` and `/speed` (experimental, 2026-08-12)
+
+Read-only wrapper over `speed_check.find_speed_listings()` — the +Speed
+tertiary listing census. **Shares no filter, threshold or pricing logic with
+`/api/snipes`**: no discount, no sell realm, no AH cut, no `MIN_VALUE_FLOOR_G`,
+no class quotas, no appearance/sale-rate filter. Query params `items`,
+`min_gold`, `max_gold`, `min_gap`, `top`, `sort`, `names`; rows are built by
+`_speed_row_to_json()` (its own serializer — `_row_to_json()` is shaped around
+a snipe and reusing it would have meant faking `buy_realm`/`sell_now`/
+`discount` or widening a function the whole snipe path depends on). Money is
+exposed as both `_g` and `_copper`, per the units rule.
+
+**Event-loop discipline applies here too**: both the DuckDB scan (`_run_query`,
+a multi-second burn over every realm's parquet) and the `names=true` row build
+(`_build_rows`, blocking Blizzard calls on a cold cache) run inside
+`asyncio.to_thread()`. This is the failure mode that has already bitten twice.
+
+**Auth, and the open product question in it.** The route requires a logged-in,
+**verified** account (401 for anonymous, 403 for unverified — the same
+distinction `auth.current_verified_user` makes), unlike `/api/snipes`'
+anonymous tier. Reason: the census is region-wide by construction, so there is
+no sell realm for `_enforce_realm_lock()` to pin and the free tier's one-realm
+lock has nothing to bite on. Gating the whole route was the conservative
+default for an experimental signal that may carry real value — **it is a
+product decision the human should confirm**, and opening it up is a one-line
+change (drop the checks and mirror `api_snipes()`'s anonymous fallthrough).
+Row cap reuses the existing per-tier `_snipe_cap()` numbers rather than
+inventing a second set. Uses `auth.resolve_user_from_request()`, not
+`Depends(current_verified_user)`, for the same pool-exhaustion reason
+`api_snipes()` does.
+
+`/speed` serves `static/speed.html` (public route, client-side gate — same
+convention as every other page here).

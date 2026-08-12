@@ -10,7 +10,7 @@ unless the task actually touches them.
 
 | Read this | When |
 |---|---|
-| `.claude/docs/modules-pipeline.md` | Changing collection, scanning or pricing (`blizz`, `fetch_snapshot`, `scan_region`, `collect_all`, `snipe_check`, `diff_snapshots`, `analyze`, `appearance`, `item_names`, `tsm`, `tsm_import`) |
+| `.claude/docs/modules-pipeline.md` | Changing collection, scanning or pricing (`blizz`, `fetch_snapshot`, `scan_region`, `collect_all`, `snipe_check`, `speed_check`, `diff_snapshots`, `analyze`, `appearance`, `item_names`, `tsm`, `tsm_import`) |
 | `.claude/docs/modules-web.md` | Changing the API, auth, billing or DB models (`dashboard.py`, `auth`, `db`, `billing`, `forum`, `wow_accounts`, `watchlist`, `admin`, `mailer`) |
 | `.claude/docs/modules-frontend.md` | Changing any page under `static/` |
 | `.claude/docs/modules-infra.md` | Tests, Docker, migrations, dependencies, repo tooling |
@@ -43,6 +43,16 @@ Two product decisions that override anything you might infer from older code:
   pet_quality_id)`**. Every bonus/ilvl variant of an item is one market, priced
   at the sell realm's overall cheapest listing for that `item_id`. The buy-side
   listing's own `bonus_key`/ilvl is still shown per row, display only.
+
+One consequence of that matching model, and the one experimental feature built
+on it: pooling every variant under one `item_id` makes **tertiary stats
+invisible to pricing**. `speed_check.py` + `/api/speed` + `/speed` (added
+2026-08-12) are a deliberately **additive, off-the-pricing-path** census of
+listings carrying the **+Speed** tertiary (`b:` bonus id **42** — verified,
+not guessed; see `.claude/docs/modules-pipeline.md`). It reads the raw region
+scan only, shares no filter or threshold with `snipe_check.py`, and
+**flags/filters nothing by default** — gold validation was explicitly deferred
+by the human. Don't add a cutoff to it without them.
 
 Business model (decided — don't revisit without the human): free in-game addon
 (Blizzard requires addons to be free) + paid external data service. Competitors:
@@ -155,6 +165,8 @@ python analyze.py --cr-id 1096 summary --top 30
 python analyze.py --cr-id 1096 item 152510 --price 2500000   # copper
 python scan_region.py --exclude 1403          # one sweep of all EU realms
 python snipe_check.py --sell 1403             # flag discounted listings
+python speed_check.py --top 50                # +Speed tertiary census (experimental,
+                                              # no sell realm, no filters by default)
 python dashboard.py --sell 1403               # local dev on 127.0.0.1:8000
                                               # (leave ENABLE_BACKGROUND_COLLECTION unset)
 ```
@@ -170,6 +182,7 @@ duplicates that:
 | `static/*.html` only | no pytest — verify in a real browser instead |
 | `<module>.py` | `python -m pytest -q tests/test_<module>.py` |
 | `snipe_check.py` | + `tests/test_dashboard.py` |
+| `speed_check.py` | `tests/test_speed_check.py` (covers the CLI, `/api/speed` and the Python/SQL parity check) |
 | `db.py`, `auth.py`, `conftest.py` | full suite — wide blast radius |
 | unsure / cross-cutting | full suite |
 
