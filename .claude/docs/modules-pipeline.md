@@ -637,6 +637,31 @@ ilvl-266 +Speed listings carry no `m:9` at all**, so every one still comes
 through. (Same check showed zero ilvl-253 +Speed listings currently — 13900
 never co-occurs with the Speed id in the live sweep.)
 
+**Do not "correct" any of this from an in-game AH tooltip** (2026-08-13, after
+it was done once and reverted in full). The human reported the 253 tier showing
+as ilvl 133 in game, and the data made a persuasive case for a rewrite: every
+one of 13900/13901/13730/13729/13613/13573/4790 occurs *only* with `m:9`, while
+12817 and 12769 occur only without it, and the ids pair off by companion bonus
+ids (12817↔13901, 12769↔13730) exactly like a max-level item and a scaled twin.
+Then the human bought one: *"i choose the 253 ilvl version, hover it in auction
+house it says its actually ilvl 133, then i buy and it ends up being 253
+actually."* The **browse tooltip** renders an `m:9` listing at a scaled preview
+level; the delivered item is what the bonus id says. So `MAX_CHARACTER_LEVEL`'s
+exemption of `m:9=90` is correct, the table is correct, and the only oracle
+that settles this class of question is buying the item.
+
+Two consequences worth carrying forward. `test_max_character_level_listing_
+keeps_its_upgrade_track_level` guards the exemption. And the tooltip
+understatement is a **seller-side mispricing engine** — a browsing player sees
+133 on an item that is really 253 — which is the same premise the +Speed census
+rests on; recorded as a proposal for the human, deliberately not built.
+
+`TRACKED_ILVLS` is **[266]** (2026-08-13, human: *"NEVERSHOW 220, ONLY266"*),
+down from `[253, 266]` — the 253 half had never returned a row on `/speed`,
+since no 13900 listing carries the Speed bonus. 253 and 220 both stay in
+`ILVL_BONUS_IDS` and `--ilvl` still reaches them; they are simply not what the
+page shows.
+
 The ilvl filter runs **in SQL**, unlike name/quality/armor — item level is a
 property of the listing's own `bonus_key`, not of the item catalog, so it needs
 no `NameCache` round trip. It is applied to `speed_rows` **and** to the `plain`

@@ -54,10 +54,19 @@ scan only, shares no filter or threshold with `snipe_check.py`, and
 **flags/filters nothing by default** — gold validation was explicitly deferred
 by the human. Don't add a cutoff to it without them.
 
-Two things about that view that are easy to get wrong: **item level does not
+Three things about that view that are easy to get wrong. **Item level does not
 come from modifier 28** (which reports junk — 3321/5381 — for this family);
 it's resolved from upgrade-track bonus ids in `speed_check.ILVL_BONUS_IDS`,
-each tooltip-verified, and the tracked tiers are **253 and 266**. And any
+each tooltip-verified. **The in-game AH browse tooltip understates `m:9`
+listings** — it shows 133 where the item you actually receive is 253 (human,
+after buying one, 2026-08-13) — so never "correct" `ILVL_BONUS_IDS` or
+`MAX_CHARACTER_LEVEL` from a hover; the delivered item is ground truth, and
+that mistake has already been made and reverted once. The page's item-level
+control offers exactly **266 and 253**, one at a time, +Speed only, and never
+220 ("NEVERSHOW 220, ONLY266"); `TRACKED_ILVLS` is `[266]`. 253 is a real
+level but **no +Speed listing currently carries it region-wide**, so that
+option is empty by design and the page says so rather than looking broken.
+And any
 conclusion about *current* content must be checked against production data via
 `railway ssh`, not local `data/` — this machine powers off nightly, so the
 local sweep runs weeks stale and already produced one wrong conclusion
@@ -176,7 +185,7 @@ python scan_region.py --exclude 1403          # one sweep of all EU realms
 python snipe_check.py --sell 1403             # flag discounted listings
 python speed_check.py --top 50                # +Speed tertiary census (experimental,
                                               # no sell realm, no filters by default)
-python speed_check.py --tarnished --tracked   # Midnight set, ilvl 253+266 only
+python speed_check.py --tarnished --tracked   # Midnight set, ilvl 266 only
 python dashboard.py --sell 1403               # local dev on 127.0.0.1:8000
                                               # (leave ENABLE_BACKGROUND_COLLECTION unset)
 ```

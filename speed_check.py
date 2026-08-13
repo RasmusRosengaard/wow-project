@@ -184,6 +184,29 @@ ILVL_BONUS_IDS = {
 # ilvl-266 +Speed listing carries **no m:9 at all** and every ilvl-253 one is
 # `m:9=90`, so both come through unaffected -- while a hypothetical
 # "266 looted at 88" can no longer masquerade as a real 266.
+#
+# ---------------------------------------------------------------------------
+# **Do not "fix" this table from an in-game auction-house tooltip. The tooltip
+# is wrong; this table is right.** (2026-08-13, and the reason this paragraph
+# exists: I nearly rewrote the whole mapping on the strength of that tooltip.)
+#
+# Human, after buying one: "i choose the 253 ilvl version, hover it in auction
+# house it says its actually ilvl 133, then i buy and it ends up being 253
+# actually."
+#
+# So on a *browse* tooltip the AH renders an `m:9` listing at some scaled
+# preview level -- 133 for the 13900/`m:9=90` shape -- and the item that
+# actually lands in your bags is the 253 the bonus id says. Ground truth is
+# what you receive, not what the AH draws.
+#
+# Two things follow. `MAX_CHARACTER_LEVEL`'s exemption of `m:9=90` is
+# CORRECT: those really are full-level items. And the AH tooltip
+# understating them is a *seller-side mispricing engine* -- a browsing player
+# sees 133 and prices/passes accordingly -- which is the same "seller doesn't
+# know what they have" premise this whole module is built on. Nothing acts on
+# that yet; it is a product decision for the human, not a threshold to invent
+# here (see the module docstring's calibration note).
+# ---------------------------------------------------------------------------
 MAX_CHARACTER_LEVEL = 90
 ACQUIRED_LEVEL_MODIFIER = 9
 
@@ -321,10 +344,21 @@ SORT_COLUMNS = {
     "item": "item_id ASC, unit_price ASC",
 }
 
-# What the human actually wants to track (2026-08-12): "it's exactly the new
-# 253 versions and 266 versions we want to track". Named here so the CLI, the
-# API and the page all reference one list instead of three copies.
-TRACKED_ILVLS = [253, 266]
+# What the human actually wants to track. Named here so the CLI, the API and
+# the page all reference one list instead of three copies.
+#
+# **266 alone** since 2026-08-13 (human: "NEVERSHOW 220, ONLY266"). It was
+# [253, 266] for a day, from "it's exactly the new 253 versions and 266
+# versions we want to track" -- but 253 returns nothing here: the mapping is
+# right (13900 -> 253, confirmed by the human *buying* one), yet **no listing
+# carrying 13900 also carries the +Speed bonus** anywhere in the live region
+# sweep, so the tier was always empty. As a *tracked default* that made the
+# old "253 + 266" label a lie; `speed.html` still offers 253 as its own
+# explicitly-chosen option (human: "frontend should be able to search for
+# these 253 items also"), which is honest because the page names the tier and
+# says why it's empty. 220 is real and well-populated and is deliberately
+# absent from both. `--ilvl` reaches any of them.
+TRACKED_ILVLS = [266]
 
 CAVEAT = ("NOTE: +Speed listings only, region-wide -- this is a listing "
           "census, not a validated snipe. No sell-realm price, no AH cut "

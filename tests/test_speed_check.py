@@ -359,10 +359,25 @@ def test_acquired_level(bonus_key, expected):
     assert speed_check.acquired_level(bonus_key) == expected
 
 
-def test_tracked_ilvls_are_the_two_midnight_tiers():
-    assert speed_check.TRACKED_ILVLS == [253, 266]
+def test_tracked_ilvl_is_266_only():
+    """Human, 2026-08-13: "NEVERSHOW 220, ONLY266". 253 and 220 stay in
+    ILVL_BONUS_IDS -- both are real levels and `--ilvl` still reaches them --
+    they just aren't what the page tracks."""
+    assert speed_check.TRACKED_ILVLS == [266]
+    assert {220, 253}.issubset(speed_check.ILVL_BONUS_IDS.values())
     for lvl in speed_check.TRACKED_ILVLS:
         assert lvl in speed_check.ILVL_BONUS_IDS.values()
+
+
+def test_max_character_level_listing_keeps_its_upgrade_track_level():
+    """Regression guard, 2026-08-13. The in-game AH *browse tooltip* renders
+    an `m:9` listing at a scaled preview level -- it showed 133 for a listing
+    this table calls 253 -- but the human bought one and received a real 253.
+    So `m:9=90` is a full-level item and must keep its level; only a below-cap
+    loot is genuinely scaled down. Do not "fix" this from a tooltip."""
+    assert speed_check.ilvl_of("b:13900,13578|m:9=90,28=5381") == 253
+    assert speed_check.ilvl_of("b:42,12817,13578|m:9=90,28=5381") == 266
+    assert speed_check.ilvl_of("b:42,12817,13578|m:9=88,28=5381") is None
 
 
 def test_ilvl_filter_narrows_rows_and_reference(tmp_path, monkeypatch):
@@ -749,8 +764,36 @@ def test_api_speed_filters_by_ilvl(tmp_path, monkeypatch):
     assert {row["item_id"] for row in body["rows"]} == {101}
     assert body["rows"][0]["ilvl"] == 266
     assert body["ilvl_filter"] == [253, 266]
-    assert body["tracked_ilvls"] == [253, 266]
+    # The page pins 266 (2026-08-13); the API still takes any level.
+    assert body["tracked_ilvls"] == [266]
     assert 266 in body["known_ilvls"] and 253 in body["known_ilvls"]
+
+
+def test_api_speed_253_tier_is_empty_today_but_wired(tmp_path, monkeypatch):
+    """`speed.html`'s second item-level option. It returns nothing against
+    live data -- no listing carrying the 253 upgrade id (13900) also carries
+    the +Speed bonus anywhere in the region sweep -- and the page says so
+    rather than showing a bare empty table. This checks the plumbing is real
+    and not just an empty branch: given a 253 listing that *does* carry
+    +Speed, the tier returns it, so the view fills in by itself the moment one
+    is posted."""
+    as_user(monkeypatch, VERIFIED_USER)
+    monkeypatch.setattr(speed_check, "DATA", tmp_path)
+    d = tmp_path / "listings"
+    d.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([
+        listing_row(CR_A, 101, 500 * 10_000, 1, bonus_key="b:42,12817,13578"),
+        # The live shape of a 253, with the +Speed id added -- which is the
+        # one combination the real sweep has never contained.
+        listing_row(CR_A, 202, 90 * 10_000, 2,
+                    bonus_key="b:42,13663,13900|m:9=90,28=3022"),
+    ], schema=LISTING_SCHEMA), d / f"{CR_A}.parquet")
+
+    body = client.get("/api/speed", params={"ilvl": "253", "top": 100}).json()
+    assert [(r["item_id"], r["ilvl"]) for r in body["rows"]] == [(202, 253)]
+    # And the two options really are exclusive -- 266 doesn't leak into 253.
+    body = client.get("/api/speed", params={"ilvl": "266", "top": 100}).json()
+    assert [(r["item_id"], r["ilvl"]) for r in body["rows"]] == [(101, 266)]
 
 
 def test_api_speed_400s_on_non_numeric_ilvl(listings_dir, monkeypatch):

@@ -104,10 +104,12 @@
   .row { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
   .field.narrow { width: 120px; }
-  /* Widened for its longest option ("253 + 266 (tracked)"), which clipped
-     inside the shared 120px narrow width -- caught in the browser both times
-     it happened, never in the diff. */
-  .field.sort-field { width: 175px; }
+  /* .field.sort-field (a 175px widening for the item-level select, whose
+     longest option used to be "253 + 266 (tracked)") was dropped on
+     2026-08-13 -- its options are now "266"/"253" and fit the shared 120px
+     width. Re-add it for any wide control: the lesson that outlived it is
+     that an option clipping inside 120px is only ever caught in a browser,
+     never in the diff. */
   .field.grow { flex: 1; min-width: 140px; }
   .error { color: var(--alert); font-size: 0.8rem; min-height: 1em; }
 
@@ -143,6 +145,10 @@
   .item-cell a { display: inline-flex; text-decoration: none; }
   .item-cell a:hover .item-icon { border-color: var(--bullion); }
   .count { font-size: 0.8rem; color: var(--text-dim); }
+  /* Only rendered when a scan returns nothing -- an empty table on its own
+     reads as a broken page, which is what the old combined ilvl label caused.
+     Empty string when there are rows, so it collapses to nothing. */
+  .empty-note { font-size: 0.8rem; color: var(--text-dim); line-height: 1.5; margin-top: 0.35rem; max-width: 60ch; }
   /* Freshness sits directly under the result count, not in a topbar ticker
      like dashboard.html's: there it describes a realm you picked, here it
      describes the one region sweep every row on the page came from. */
@@ -212,12 +218,31 @@
   <div id="app" style="display:none;">
     <div class="card">
       <div class="row">
-        <div class="field narrow sort-field">
+        <!-- Item level: exactly two options, 266 and 253, one at a time
+             (2026-08-13, human: "NEVERSHOW 220, ONLY266", then "frontend
+             should be able to search for these 253 items also" / "only
+             return speed items with 266 or 253"). Deliberately NOT the old
+             "253 + 266 (tracked)" combined default, and deliberately not
+             `Any`:
+
+             253 currently returns **nothing**, because no listing carrying
+             the 253 upgrade id also carries the +Speed bonus anywhere in the
+             region sweep. The level is real (see speed_check.ILVL_BONUS_IDS
+             -- the human bought one), the intersection is just empty today,
+             and the combined label hid that behind 266's rows for a day.
+             Kept as its own option so it fills in by itself the moment a
+             +Speed 253 is posted; #empty-note (set in runScan) says so
+             rather than leaving a bare empty table.
+
+             Hardcoded here rather than built from the API's `known_ilvls`,
+             which lists every level ILVL_BONUS_IDS knows (220, 198, 192...)
+             -- same convention as the armor options below, whose real home
+             is speed_check.ARMOR_TYPES. -->
+        <div class="field narrow">
           <label for="ilvl">Item level</label>
           <select id="ilvl">
-            <option value="253,266">253 + 266 (tracked)</option>
-            <option value="266">266 only</option>
-            <option value="">Any</option>
+            <option value="266">266</option>
+            <option value="253">253</option>
           </select>
         </div>
         <div class="field narrow">
@@ -237,6 +262,7 @@
       </div>
       <div class="error" id="error"></div>
       <div class="count" id="count"></div>
+      <div class="empty-note" id="empty-note"></div>
       <div class="collected" id="collected"></div>
     </div>
 
@@ -462,6 +488,7 @@ async function runScan() {
   const btn = $("run-btn");
   btn.disabled = true;
   $("error").textContent = "";
+  $("empty-note").textContent = "";
   $("count").textContent = "Scanning every EU realm's listings…";
   // Trimmed to two controls plus Scan (2026-08-12, human: "just keep the
   // 253 + 266 and armortype and scan"). Everything else the API still
@@ -469,14 +496,17 @@ async function runScan() {
   // fixed here rather than removed from the backend, so `speed_check.py`'s
   // CLI keeps the full set. Tarnished is now permanent rather than a
   // checkbox: this page IS the Midnight view.
+  const ilvl = $("ilvl").value;
   const params = new URLSearchParams({
     tarnished: "true",
     sort: "price",   // cheapest first; the buy price is the decision
     top: "100",
     names: "true",
+    // Always sent as a literal level rather than `tracked=true`, so the
+    // request says which tier it means and the two options stay symmetric.
+    ilvl: ilvl,
   });
   if ($("armor").value) params.set("armor", $("armor").value);
-  if ($("ilvl").value) params.set("ilvl", $("ilvl").value);
   try {
     const res = await fetch("/api/speed?" + params.toString());
     if (!res.ok) {
@@ -489,10 +519,20 @@ async function runScan() {
     renderCollected(data.collected_ts, data.collected_is_publish);
     const scope = data.name_filter ? ' matching "' + data.name_filter + '"' : "";
     $("count").textContent = data.count + " +Speed listing(s)" + scope
-      + " — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();
+      + " at ilvl " + ilvl + " — bonus id " + data.bonus_id + ", " + data.region.toUpperCase();
+    // An empty table is ambiguous -- "is the page broken?" was exactly the
+    // confusion the old combined "253 + 266" label caused. Say which of the
+    // two filters emptied it.
+    $("empty-note").textContent = data.count ? "" :
+      ("No listing at ilvl " + ilvl + " currently carries the +Speed bonus anywhere in EU."
+       + (ilvl === "253"
+          ? " ilvl 253 is real and plentiful on the auction house, but none of it has +Speed"
+            + " in this sweep — this view fills in on its own the moment one is posted."
+          : ""));
   } catch (e) {
     $("error").textContent = e.message;
     $("count").textContent = "";
+    $("empty-note").textContent = "";
   } finally {
     btn.disabled = false;
   }

@@ -440,11 +440,38 @@ unchanged by this rebuild.
 
 ## `speed.html` (experimental, 2026-08-12)
 
-The `/speed` tab: the +Speed tertiary census. Controls are **two selects and a Scan button**: item level (defaulting to
-`253 + 266`, the two Midnight tiers worth tracking) and armor type. Stripped
-back on human request 2026-08-12 — *"just keep the 253 + 266 and armortype and
-scan"* — from a bar that had also carried quality, max buy price, min gold,
-min gap, rows, item ids and a Tarnished checkbox.
+The `/speed` tab: the +Speed tertiary census. Controls are **one select and a
+Scan button**: armor type. Stripped back on human request 2026-08-12 — *"just
+keep the 253 + 266 and armortype and scan"* — from a bar that had also carried
+quality, max buy price, min gold, min gap, rows, item ids and a Tarnished
+checkbox.
+
+The item-level select was rebuilt on 2026-08-13. It had offered
+`253 + 266 (tracked)` / `266 only` / `Any`, and its combined default had
+**never returned a row at 253** — the level is real (the human bought one),
+but no listing carrying its upgrade id also carries the +Speed bonus anywhere
+in the sweep, so the page had been showing 266-only results under a two-tier
+label. It now offers exactly **`266` and `253`, one at a time** (*"NEVERSHOW
+220, ONLY266"*, then *"frontend should be able to search for these 253 items
+also"* / *"only return speed items with 266 or 253"*). No combined option, no
+`Any`, no 220 — a combined label is what hid the empty tier in the first
+place. The count line names the active tier ("at ilvl 253"), and the two
+options are hardcoded in the markup rather than built from the API's
+`known_ilvls` (which lists every level `ILVL_BONUS_IDS` knows, 220 included) —
+same convention as the armor options, whose real home is
+`speed_check.ARMOR_TYPES`.
+
+`#empty-note` (new, same change) renders **only when a scan returns nothing**,
+because a bare empty table reads as a broken page — which is exactly how the
+old label failed. It names the filter that emptied the view, and for 253 adds
+that the tier is genuinely unpopulated today and fills in on its own the
+moment a +Speed 253 is posted. Cleared at the start of every scan and on the
+error path, so it can't linger over a later result.
+`test_api_speed_253_tier_is_empty_today_but_wired` proves the plumbing behind
+it is real rather than a permanently empty branch.
+
+The `.field.sort-field` CSS rule (a 175px widening for the old select's
+longest option) is gone — `266`/`253` fit the shared 120px width.
 
 Two things about that trim worth knowing. **Nothing was removed from the
 backend**: `/api/speed` and `speed_check.py`'s CLI still accept every one of

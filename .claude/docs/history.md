@@ -3843,3 +3843,90 @@ nothing has to be rebuilt if one comes back. Max buy price went with them,
 which is worth flagging against the earlier "filter by... buyprice" request —
 the later instruction was explicit about what to keep, so it won, and
 restoring it is one block of markup.
+
+## Session 2026-08-13: the in-game AH tooltip lies, and the empty "253" tier
+
+Human: *"There is issues with the 253 items on /speed. This is actual the case
+on the inngame auction house also, when i click the 253 version, it actually
+shows 133 ilvl items only."*
+
+Two separate things were tangled in that report, and I got the first one badly
+wrong before the human's follow-up settled it.
+
+### What actually happens (and the wrong turn I took first)
+
+Production has 36,935 listings carrying bonus id 13900 — the id the table maps
+to 253 — and **every one of them carries `m:9=90`**. Same for 13901/13730/
+13729/13613/13573/4790; meanwhile 12817 (266) and 12769 (220) are *never* seen
+with an `m:9`. The ids even pair off by companion bonus ids (12817 with 13901,
+12769 with 13730). That looks exactly like a max-level item and a scaled twin,
+which — combined with the human's in-game reading of 133 — made a tidy story:
+`m:9=90` isn't really "looted at cap", the twin ids render at an unscaled level
+they never actually have, and `MAX_CHARACTER_LEVEL`'s exemption of `m:9=90` was
+letting confidently wrong numbers through. I rewrote the mapping on that
+theory, cutting the table to the two "bare" ids and making any `m:9` resolve to
+unknown.
+
+Then the human bought one: *"i choose the 253 ilvl version, hover it in auction
+house it says its actually ilvl 133, then i buy and it ends up being 253
+actually."*
+
+So **the tooltip is the thing that's wrong, not the mapping**. On a browse
+tooltip the AH renders an `m:9` listing at some scaled preview level; the item
+delivered to your bags is the 253 its bonus id says. Ground truth is what you
+receive. The rewrite was reverted in full — `ILVL_BONUS_IDS`, `ilvl_of()`,
+`ILVL_SQL` and `MAX_CHARACTER_LEVEL` are all back to what they were, because
+they were right — and the whole episode is now a fenced-off comment in
+`speed_check.py` next to `MAX_CHARACTER_LEVEL`, ending "Do not 'fix' this table
+from an in-game auction-house tooltip", plus
+`test_max_character_level_listing_keeps_its_upgrade_track_level`.
+
+The lesson isn't "check production" — I did, twice, and the data was real. It's
+that **a coherent story built on consistent data is still a story**. Every
+number I gathered was true; the inference tying them together was not, and the
+only oracle that could settle it was a human buying the item. Worth pausing on
+before a large "correcting" rewrite, especially one that deletes a
+tooltip-verified mapping.
+
+### What was really broken
+
+The `/speed` page's default filter said "253 + 266 (tracked)" and **no listing
+carrying 13900 also carries the +Speed bonus id 42** — not one, region-wide. So
+that tier had never returned a row and the page had been quietly showing
+266-only results under a two-tier label. Nothing about the level was wrong; the
+intersection is simply empty today.
+
+Human's call: *"NEVERSHOW 220, ONLY266"*. `TRACKED_ILVLS` became `[266]` and
+the item-level select was removed outright rather than reduced to one option.
+Then, immediately after: *"frontend should be able to search for these 253
+items also"* — and, asked whether that meant dropping the +Speed requirement to
+reach the ~36k listings behind it, *"only return speed items with 266 or 253"*.
+
+So the select is back with **exactly two options, `266` and `253`, one at a
+time**: no combined "253 + 266", no `Any`, no 220. The combined label is what
+hid the empty tier for a day, so the two tiers are now mutually exclusive and
+the count line names the active one. 253 stays visible while returning nothing,
+deliberately — it's wired end to end
+(`test_api_speed_253_tier_is_empty_today_but_wired`) and starts working on its
+own the moment a +Speed 253 is listed.
+
+That made an empty-state message necessary rather than nice: an empty table on
+its own reads as a broken page, which is the failure this whole thread started
+with. `#empty-note` renders only when a scan returns zero rows, names the
+filter responsible, and for 253 says the level is real and plentiful on the AH
+but has no +Speed listing in this sweep.
+
+Verified in a browser against a stub server (production data can't reach a
+local page, and the local `data/` sweep is three weeks stale): 266 renders
+rows, 253 renders the empty note, switching back clears it, `ilvl` is sent
+correctly on each scan, no console errors.
+
+### The opportunity in the tooltip bug
+
+Worth recording rather than acting on: if the AH understates a scaled listing's
+level on hover, a browsing player sees 133 where the item is 253 — sellers
+price it accordingly and buyers pass. That is the same "seller doesn't know
+what they have" premise the +Speed census is built on, and arguably a stronger
+signal than the tertiary. Not built: it's a product/calibration decision, and
+the human asked *"maybe its just some issues we can make work in scanner"* —
+noted as a proposal, not a threshold to invent.

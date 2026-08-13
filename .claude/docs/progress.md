@@ -26,11 +26,23 @@ two-word phrase, since bare "Tarnished" also hits 22 vanilla-through-Legion
 items that would have silently contaminated the view. Then armor-type/quality
 filters, the default sort flipped to **cheapest first** (the seller already
 mispriced by ignoring the tertiary, so no reference validates a row), and
-finally a real **item-level** column and filter defaulting to the tracked
-**253 + 266** Midnight tiers — resolved from upgrade-track bonus ids
-(`ILVL_BONUS_IDS`, tooltip-verified), **not** modifier 28, which reports junk
-for this family. The ilvl filter also narrows the reference stats to the same
-tier so comparisons are like-for-like.
+finally a real **item-level** column and filter — resolved from upgrade-track
+bonus ids (`ILVL_BONUS_IDS`, tooltip-verified), **not** modifier 28, which
+reports junk for this family. The ilvl filter also narrows the reference stats
+to the same tier so comparisons are like-for-like.
+
+2026-08-13 — the item-level control is now exactly **266 or 253**, one at a
+time, +Speed only, never 220 (`TRACKED_ILVLS = [266]`; human: "NEVERSHOW 220,
+ONLY266", then "frontend should be able to search for these 253 items also").
+Its previous combined "253 + 266" default had never returned a row at 253: the
+level is real, but no listing carrying its upgrade id also carries the +Speed
+bonus, so the page had been showing 266-only results under a two-tier label. A
+new empty-state note names the filter that emptied the view instead of leaving
+a bare table. Also learned the
+hard way and recorded in `speed_check.py`: **the in-game AH browse tooltip
+understates level-scaled listings** (shows 133 for an item that arrives as a
+real 253), so `ILVL_BONUS_IDS`/`MAX_CHARACTER_LEVEL` must never be "fixed" from
+a hover — a rewrite on that basis was shipped-in-progress and reverted in full.
 
 2026-08-03 — new heuristic, **`price_suspect`**
 (`snipe_check.py`'s `PRICE_SUSPECT_MULTIPLE=10`): flags a row when the sell
